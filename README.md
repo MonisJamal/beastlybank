@@ -18,8 +18,6 @@
 | `/pay <user> <curr> <amt>` | `bb!pay <@user> <curr> <amt>` | Send Cash or Training Tokens directly to another BeastlyFC user. |
 | `/transfer <player> <@from_role> <@to_role> <amt>` | `bb!transfer <player> <@from_role> <@to_role> <amt>` | Official player transfer! Debits buying club vault and deposits directly into selling club vault (supports `26e6`, `3e7`, `26m`, `500k`, `0`). |
 | `/transactions [user]` | `bb!transactions`, `bb!txs` | View your recent transaction history with page navigation. |
-| `/daily` | `bb!daily` | Claim your daily BeastlyBank salary. |
-| `/work` | `bb!work`, `bb!drill` | Complete a football training drill for cash & token rewards. |
 
 #### ⭐ Community Points
 | Command | Prefix (`bb!`) | Description |

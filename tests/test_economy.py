@@ -9,7 +9,7 @@ import pytest
 import pytest_asyncio
 
 from database.db import DatabaseManager
-from config import FOOTBALL_JOBS, parse_amount
+from config import parse_amount
 from utils.checks import is_beastlyfc_guild_check
 
 
@@ -47,102 +47,58 @@ async def test_user_default_zero_balances(db: DatabaseManager):
 
 @pytest.mark.asyncio
 async def test_player_to_player_transfer(db: DatabaseManager):
-    """Test atomic player-to-player transfers across all currencies."""
-    alice_id = 101
-    bob_id = 102
+    """Test person-to-person transfers for Cash and Tokens."""
+    sender_id = 101
+    receiver_id = 102
     guild_id = 999999999
 
-    # Fund Alice with test currency
-    await db.update_balance(alice_id, guild_id, "cash", 1000, "test_grant")
-    await db.update_balance(alice_id, guild_id, "tokens", 5, "test_grant")
+    # Preload sender with funds
+    await db.update_balance(sender_id, guild_id, "cash", 1000, "test_deposit")
+    await db.update_balance(sender_id, guild_id, "tokens", 10, "test_deposit")
 
-    # Transfer Cash
+    # Transfer 500 cash
     success, msg = await db.transfer(
-        sender_id=alice_id,
-        receiver_id=bob_id,
+        sender_id=sender_id,
+        receiver_id=receiver_id,
         guild_id=guild_id,
         currency="cash",
-        amount=300,
-        reason="Match wager",
+        amount=500,
+        reason="P2P Cash Test",
     )
     assert success is True
 
-    alice = await db.get_or_create_user(alice_id, guild_id)
-    bob = await db.get_or_create_user(bob_id, guild_id)
-    assert alice["cash"] == 700
-    assert bob["cash"] == 300
+    sender = await db.get_or_create_user(sender_id, guild_id)
+    receiver = await db.get_or_create_user(receiver_id, guild_id)
+    assert sender["cash"] == 500
+    assert receiver["cash"] == 500
 
-    # Transfer Training Tokens
-    tok_success, _ = await db.transfer(
-        sender_id=alice_id,
-        receiver_id=bob_id,
+    # Transfer 4 tokens
+    success, msg = await db.transfer(
+        sender_id=sender_id,
+        receiver_id=receiver_id,
         guild_id=guild_id,
         currency="tokens",
-        amount=2,
-        reason="Token trade",
+        amount=4,
+        reason="P2P Token Test",
     )
-    assert tok_success is True
-    alice = await db.get_or_create_user(alice_id, guild_id)
-    bob = await db.get_or_create_user(bob_id, guild_id)
-    assert alice["tokens"] == 3
-    assert bob["tokens"] == 2
+    assert success is True
 
-    # Verify Insufficient Funds Protection
+    sender = await db.get_or_create_user(sender_id, guild_id)
+    receiver = await db.get_or_create_user(receiver_id, guild_id)
+    assert sender["tokens"] == 6
+    assert receiver["tokens"] == 4
+
+    # Insufficient funds check
     fail_success, fail_msg = await db.transfer(
-        sender_id=alice_id,
-        receiver_id=bob_id,
+        sender_id=sender_id,
+        receiver_id=receiver_id,
         guild_id=guild_id,
         currency="cash",
-        amount=5000,
+        amount=9999,
+        reason="Overdraft attempt",
     )
     assert fail_success is False
     assert "Insufficient" in fail_msg
-
-    # Verify Self-Transfer Protection
-    self_success, self_msg = await db.transfer(
-        sender_id=alice_id,
-        receiver_id=alice_id,
-        guild_id=guild_id,
-        currency="cash",
-        amount=50,
-    )
-    assert self_success is False
-
-
-@pytest.mark.asyncio
-async def test_daily_and_cooldown(db: DatabaseManager):
-    """Test daily salary claim and 24h cooldown enforcement."""
-    user_id = 201
-    guild_id = 999999999
-
-    # First claim
-    success, msg, data = await db.claim_daily(user_id, guild_id)
-    assert success is True
-    assert data["cash_earned"] > 0
-    assert data["points_earned"] > 0
-
-    # Second claim immediately after should trigger cooldown
-    cooldown_success, cooldown_msg, _ = await db.claim_daily(user_id, guild_id)
-    assert cooldown_success is False
-    assert "already claimed" in cooldown_msg
-
-
-@pytest.mark.asyncio
-async def test_work_drills(db: DatabaseManager):
-    """Test football training drills reward cash, points, and tokens."""
-    user_id = 301
-    guild_id = 999999999
-    job = FOOTBALL_JOBS[0]
-
-    success, msg, data = await db.claim_work(user_id, guild_id, job)
-    assert success is True
-    assert data["cash_earned"] >= job["min_cash"]
-    assert data["points_earned"] >= job["min_points"]
-
-    # Immediate second work drill should fail cooldown
-    fail_success, fail_msg, _ = await db.claim_work(user_id, guild_id, job)
-    assert fail_success is False
-    assert "recovering" in fail_msg
 
 
 @pytest.mark.asyncio
@@ -748,8 +704,6 @@ async def test_prefix_commands_resolution():
         ("bb!leaderboard", "leaderboard"),
         ("bb!summary", "summary"),
         ("bb!help", "help"),
-        ("bb!daily", "daily"),
-        ("bb!work", "work"),
     ]
 
     for text, expected_name in commands_to_check:

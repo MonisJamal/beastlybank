@@ -1,8 +1,7 @@
 """
-Economy Cog: Balances, Payments, Daily Salaries, Work Drills, and Transaction Records.
+Economy Cog: Balances, Payments, and Transaction Records.
 """
 import math
-import random
 from typing import Literal, Optional
 import discord
 from discord import app_commands
@@ -10,7 +9,6 @@ from discord.ext import commands
 
 from config import (
     CURRENCIES,
-    FOOTBALL_JOBS,
     COLOR_SUCCESS,
     COLOR_BEASTLY_GOLD,
     COLOR_PITCH_GREEN,
@@ -141,75 +139,6 @@ class Economy(commands.Cog):
                 f"🏦 *Transaction recorded in BeastlyBank automated ledger.*"
             ),
             color=COLOR_SUCCESS,
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(
-        name="daily",
-        description="Claim your daily BeastlyBank salary.",
-    )
-    @require_beastlyfc()
-    async def daily(self, interaction: discord.Interaction):
-        success, msg, data = await self.db.claim_daily(
-            interaction.user.id, interaction.guild_id
-        )
-
-        if not success:
-            await interaction.response.send_message(
-                embed=error_embed("Daily Already Claimed", msg),
-                ephemeral=True,
-            )
-            return
-
-        cash_earned = data["cash_earned"]
-        points_earned = data["points_earned"]
-
-        embed = create_beastly_embed(
-            title="📅 Daily Salary Deposited!",
-            description=(
-                f"Welcome back to **{SERVER_NAME}**, {interaction.user.mention}!\n\n"
-                f"💵 **Cash Credited:** `+{cash_earned:,}`\n"
-                f"⭐ **Community Points:** `+{points_earned:,}`\n\n"
-                f"🏦 *Funds deposited into your BeastlyBank account.*"
-            ),
-            color=COLOR_BEASTLY_GOLD,
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(
-        name="work",
-        description="Participate in a BeastlyFC training drill or matchday task to earn rewards.",
-    )
-    @require_beastlyfc()
-    async def work(self, interaction: discord.Interaction):
-        job = random.choice(FOOTBALL_JOBS)
-        success, msg, data = await self.db.claim_work(
-            interaction.user.id, interaction.guild_id, job
-        )
-
-        if not success:
-            await interaction.response.send_message(
-                embed=error_embed("Rest & Recovery", msg),
-                ephemeral=True,
-            )
-            return
-
-        cash_earned = data["cash_earned"]
-        points_earned = data["points_earned"]
-        tokens_earned = data["tokens_earned"]
-
-        token_line = f"\n🎟️ **Bonus Training Tokens:** `+{tokens_earned:,}`" if tokens_earned > 0 else ""
-
-        embed = create_beastly_embed(
-            title=f"⚽ Drill Completed: {job['title']}",
-            description=(
-                f"{job['desc']}\n\n"
-                f"💵 **Cash Payout:** `+{cash_earned:,}`\n"
-                f"⭐ **Points Earned:** `+{points_earned:,}`"
-                f"{token_line}\n\n"
-                f"*Funds have been deposited into your BeastlyBank vault.*"
-            ),
-            color=COLOR_PITCH_GREEN,
         )
         await interaction.response.send_message(embed=embed)
 
@@ -434,46 +363,6 @@ class Economy(commands.Cog):
             "Transfer Completed",
             f"Successfully transferred {emoji} **{parsed:,} {curr_info.get('name', 'Cash')}** to {recipient.mention}!\n"
             f"📝 *Memo: {memo or 'Direct Transfer'}*",
-        )
-        await ctx.send(embed=embed)
-
-    @commands.command(name="daily")
-    async def prefix_daily(self, ctx: commands.Context):
-        """bb!daily"""
-        success, msg, data = await self.db.claim_daily(ctx.author.id, ctx.guild.id)
-        if not success:
-            await ctx.send(embed=error_embed("Daily Claim", msg))
-            return
-        embed = create_beastly_embed(
-            title="📅 Daily Salary Received!",
-            description=(
-                f"{ctx.author.mention}, your daily BeastlyFC salary has been deposited into your BeastlyBank account!\n\n"
-                f"💵 **Cash Earned:** `+{data['cash_earned']:,}`\n"
-                f"⭐ **Community Points:** `+{data['points_earned']:,}`\n"
-                f"📊 **New Cash Balance:** `{data['user']['cash']:,}`"
-            ),
-            color=COLOR_SUCCESS,
-        )
-        await ctx.send(embed=embed)
-
-    @commands.command(name="work", aliases=["drill"])
-    async def prefix_work(self, ctx: commands.Context):
-        """bb!work"""
-        job = random.choice(FOOTBALL_JOBS)
-        success, msg, data = await self.db.claim_work(ctx.author.id, ctx.guild.id, job)
-        if not success:
-            await ctx.send(embed=error_embed("Training Recovery", msg))
-            return
-        embed = create_beastly_embed(
-            title=f"⚽ Training Drill: {job['title']}",
-            description=(
-                f"{ctx.author.mention} {job['desc']}\n\n"
-                f"💵 **Cash Payout:** `+{data['cash_earned']:,}`\n"
-                f"⭐ **Points Payout:** `+{data['points_earned']:,}`"
-                + (f"\n🎟️ **Bonus Token:** `+{data['tokens_earned']}`" if data["tokens_earned"] > 0 else "")
-                + f"\n\n📊 **Updated Cash Balance:** `{data['user']['cash']:,}`"
-            ),
-            color=COLOR_PITCH_GREEN,
         )
         await ctx.send(embed=embed)
 

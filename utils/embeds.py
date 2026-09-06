@@ -249,8 +249,7 @@ def summary_overview_embed(
             "• `/balance` — View Cash, Community Points & Training Tokens.\n"
             "• `/pay <user> <currency> <amount>` — Send Cash or Tokens to another user.\n"
             "• `/transactions` — View your recent transaction history.\n"
-            "• `/redeemcp <amount>` — Convert Community Points to Cash (1 CP = 2 Cash).\n"
-            "• `/daily` & `/work` — Claim daily salary & complete football training drills.\n\n"
+            "• `/redeemcp <amount>` — Convert Community Points to Cash (1 CP = 2 Cash).\n\n"
             "**🏟️ Club & Transfers**\n"
             "• `/transfer <player> <from> <to> <amount>` — Transfer player with fee disbursement (supports `26e6`, `30m`).\n"
             "• `/club create <name> <tag>` — Form your club and vault (100% Free!).\n"
@@ -363,9 +362,7 @@ def summary_commands_embed() -> discord.Embed:
             "• `/pay <user> <currency> <amount>` — Send money to another player\n"
             "• `/transfer <player> <from> <to> <amount>` — Transfer custom player with fee\n"
             "• `/transactions [user]` — View transaction records\n"
-            "• `/redeemcp <amount>` — Convert Community Points to Cash (1:2)\n"
-            "• `/daily` — Claim daily salary reward\n"
-            "• `/work` — Run football training drill minigames"
+            "• `/redeemcp <amount>` — Convert Community Points to Cash (1:2)"
         ),
         inline=False,
     )

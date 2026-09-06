@@ -275,9 +275,12 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
     @player_group.command(name="add", description="Add a player to a club squad (Starting XI or Bench).")
     @app_commands.describe(
         player="Player name or Discord mention",
-        position="Player position (e.g. ST, CB, CM, GK)",
+        position="Primary position (e.g. ST, CB, CM, GK)",
         status="Lineup status: starting or bench",
         number="Jersey number (0-99)",
+        rating="Overall player rating (1-99, default 75)",
+        potential="Player potential rating (1-99, default 80)",
+        alt_positions="Alternative positions separated by commas (e.g. 'LW, RW')",
         club="Target club role (defaults to your club)",
     )
     @app_commands.autocomplete(position=position_autocomplete)
@@ -288,6 +291,9 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         position: str,
         status: Literal["starting", "bench"] = "starting",
         number: Optional[int] = None,
+        rating: Optional[app_commands.Range[int, 1, 99]] = 75,
+        potential: Optional[app_commands.Range[int, 1, 99]] = 80,
+        alt_positions: Optional[str] = None,
         club: Optional[discord.Role] = None,
     ):
         await interaction.response.defer()
@@ -323,6 +329,9 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             position=position,
             status=status,
             number=number,
+            rating=rating,
+            potential=potential,
+            alt_positions=alt_positions,
             default_owner_id=interaction.user.id,
         )
         if not success:
@@ -336,9 +345,12 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
     @app_commands.describe(
         player="Player name or Discord mention to edit",
         new_name="New name for the player",
-        position="New position (e.g. ST, CB, CM, GK)",
+        position="New primary position (e.g. ST, CB, CM, GK)",
         status="Lineup status: starting or bench",
         number="New jersey number (0-99)",
+        rating="New overall rating (1-99)",
+        potential="New potential rating (1-99)",
+        alt_positions="New alternative positions (e.g. 'LW, RW')",
         club="Target club role (defaults to your club)",
     )
     @app_commands.autocomplete(position=position_autocomplete)
@@ -350,6 +362,9 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         position: Optional[str] = None,
         status: Optional[Literal["starting", "bench"]] = None,
         number: Optional[int] = None,
+        rating: Optional[app_commands.Range[int, 1, 99]] = None,
+        potential: Optional[app_commands.Range[int, 1, 99]] = None,
+        alt_positions: Optional[str] = None,
         club: Optional[discord.Role] = None,
     ):
         await interaction.response.defer()
@@ -386,6 +401,9 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             position=position,
             status=status,
             number=number,
+            rating=rating,
+            potential=potential,
+            alt_positions=alt_positions,
             default_owner_id=interaction.user.id,
         )
         if not success:
@@ -746,8 +764,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
     async def prefix_addplayer(self, ctx: commands.Context, *args):
         """
         Add a player to a club squad (Starting XI or Bench).
-        Usage: bb!addplayer <player> <position> [status: starting|bench] [jersey_number] [@club_role]
-        Example: bb!addplayer Cristiano ST starting 7 @RealMadrid
+        Usage: bb!addplayer <player> <position> [status] [number] [rating] [potential] [alt_pos] [@club_role]
+        Example: bb!addplayer Mbappe ST starting 9 91 95 "LW, RW" @RealMadrid
         """
         target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
         clean_args = [a for a in args if not (a.startswith("<@&") and a.endswith(">"))]
@@ -756,7 +774,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             await ctx.send(
                 embed=error_embed(
                     "Missing Parameters",
-                    "Usage: `bb!addplayer <player> <position> [status] [jersey_number] [@club_role]`\n"
+                    "Usage: `bb!addplayer <player> <position> [status] [number] [rating] [potential] [alt_pos] [@club_role]`\n"
                     f"Valid Positions: {', '.join(VALID_POSITIONS)}",
                 )
             )
@@ -764,13 +782,34 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
 
         player = clean_args[0]
         position = clean_args[1]
-        status = clean_args[2] if len(clean_args) > 2 and clean_args[2].lower() in ("starting", "bench") else "starting"
-        
+
+        status = "starting"
         number = None
+        rating = 75
+        potential = 80
+        alt_positions = None
+
+        nums = []
+        text_alts = []
+
         for arg in clean_args[2:]:
-            if arg.isdigit():
-                number = int(arg)
-                break
+            al = arg.lower().strip()
+            if al in ("starting", "bench"):
+                status = al
+            elif al.isdigit():
+                nums.append(int(al))
+            else:
+                text_alts.append(arg)
+
+        if len(nums) >= 1:
+            number = nums[0]
+        if len(nums) >= 2:
+            rating = nums[1]
+        if len(nums) >= 3:
+            potential = nums[2]
+
+        if text_alts:
+            alt_positions = " ".join(text_alts)
 
         if target_role:
             target_club = await self.db.get_or_create_club_from_role(
@@ -802,6 +841,9 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             position=position,
             status=status,
             number=number,
+            rating=rating,
+            potential=potential,
+            alt_positions=alt_positions,
             default_owner_id=ctx.author.id,
         )
         if not success:
@@ -816,8 +858,9 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         """
         Edit an existing player's details.
         Usage: bb!editplayer <player> <field> <value> [@club_role]
-        Fields: name, position (or pos), status, number (or jersey)
+        Fields: name, position (or pos), status, number, rating, potential, alt
         Example: bb!editplayer Messi pos RW @Barca
+        Example: bb!editplayer Mbappe rating 91 @RealMadrid
         """
         target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
         clean_args = [a for a in args if not (a.startswith("<@&") and a.endswith(">"))]
@@ -827,19 +870,22 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 embed=error_embed(
                     "Missing Parameters",
                     "Usage: `bb!editplayer <player> <field> <value> [@club_role]`\n"
-                    "Fields: `name`, `pos` (or `position`), `status` (`starting` or `bench`), `number` (or `jersey`)",
+                    "Fields: `name`, `pos`, `status`, `number`, `rating`, `potential`, `alt`",
                 )
             )
             return
 
         player = clean_args[0]
         field = clean_args[1].lower()
-        val = clean_args[2]
+        val = " ".join(clean_args[2:])
 
         new_name = None
         new_pos = None
         new_status = None
         new_num = None
+        new_rating = None
+        new_pot = None
+        new_alt = None
 
         if field in ("name", "newname"):
             new_name = val
@@ -852,11 +898,23 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 await ctx.send(embed=error_embed("Invalid Number", "Jersey number must be a number from 0 to 99."))
                 return
             new_num = int(val)
+        elif field in ("rating", "rate", "ovr"):
+            if not val.isdigit() or not (1 <= int(val) <= 99):
+                await ctx.send(embed=error_embed("Invalid Rating", "Player rating must be a number from 1 to 99."))
+                return
+            new_rating = int(val)
+        elif field in ("potential", "pot"):
+            if not val.isdigit() or not (1 <= int(val) <= 99):
+                await ctx.send(embed=error_embed("Invalid Potential", "Player potential must be a number from 1 to 99."))
+                return
+            new_pot = int(val)
+        elif field in ("alt", "altpos", "alt_positions", "alts"):
+            new_alt = val
         else:
             await ctx.send(
                 embed=error_embed(
                     "Invalid Field",
-                    f"Unknown field '{field}'. Valid fields are: `name`, `pos`, `status`, `number`.",
+                    f"Unknown field '{field}'. Valid fields are: `name`, `pos`, `status`, `number`, `rating`, `potential`, `alt`.",
                 )
             )
             return
@@ -892,6 +950,9 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             position=new_pos,
             status=new_status,
             number=new_num,
+            rating=new_rating,
+            potential=new_pot,
+            alt_positions=new_alt,
             default_owner_id=ctx.author.id,
         )
         if not success:

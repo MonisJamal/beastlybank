@@ -488,7 +488,8 @@ def club_lineup_embed(
     for p in starting_players:
         num = f"#{p['number']} " if p.get("number") is not None else ""
         name = p.get("player_name") or (f"<@{p['user_id']}>" if p.get("user_id") else "Player")
-        line_item = f"`{num}{p.get('position', '??')}` **{name}**"
+        r_tag = f" `[{p['rating']}]`" if p.get("rating") else ""
+        line_item = f"`{num}{p.get('position', '??')}` **{name}**{r_tag}"
 
         pos = (p.get("position") or "").upper()
         cat = POSITION_CATEGORIES.get(pos, "Midfield")
@@ -533,7 +534,8 @@ def club_lineup_embed(
     for p in bench_players:
         num = f"#{p['number']} " if p.get("number") is not None else ""
         name = p.get("player_name") or (f"<@{p['user_id']}>" if p.get("user_id") else "Player")
-        bench_items.append(f"`{num}{p.get('position', '??')}` **{name}**")
+        r_tag = f" `[{p['rating']}]`" if p.get("rating") else ""
+        bench_items.append(f"`{num}{p.get('position', '??')}` **{name}**{r_tag}")
 
     bench_text = "\n".join(f"• {x}" for x in bench_items) if bench_items else "*No bench players registered*"
     embed.add_field(
@@ -555,6 +557,9 @@ def player_card_embed(player: Dict[str, Any], club: Optional[Dict[str, Any]] = N
     status = player.get("status", "starting")
     status_str = "Starting XI 🟢" if status == "starting" else "Substitutes Bench 🟡"
     num = f"#{player['number']}" if player.get("number") is not None else "Unassigned"
+    rating = player.get("rating", 75)
+    potential = player.get("potential", 80)
+    alt_pos = player.get("alt_positions") or "None"
 
     club_str = "Free Agent"
     if club:
@@ -570,7 +575,10 @@ def player_card_embed(player: Dict[str, Any], club: Optional[Dict[str, Any]] = N
     )
 
     embed.add_field(name="🛡️ Club Affiliation", value=club_str, inline=True)
-    embed.add_field(name="📍 Position", value=f"**{pos}** ({cat})", inline=True)
+    embed.add_field(name="📍 Primary Position", value=f"**{pos}** ({cat})", inline=True)
+    embed.add_field(name="🔄 Alt Positions", value=f"**{alt_pos}**", inline=True)
+    embed.add_field(name="⭐ Overall Rating", value=f"**{rating}** OVR", inline=True)
+    embed.add_field(name="🚀 Potential Rating", value=f"**{potential}** POT", inline=True)
     embed.add_field(name="🔢 Jersey Number", value=f"**{num}**", inline=True)
     embed.add_field(name="📊 Lineup Status", value=f"**{status_str}**", inline=True)
 

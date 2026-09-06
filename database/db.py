@@ -120,6 +120,9 @@ class DatabaseManager:
                     status TEXT NOT NULL DEFAULT 'starting',
                     number INTEGER DEFAULT NULL,
                     user_id INTEGER DEFAULT NULL,
+                    rating INTEGER DEFAULT 75,
+                    potential INTEGER DEFAULT 80,
+                    alt_positions TEXT DEFAULT NULL,
                     transferred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE
                 );
@@ -297,6 +300,9 @@ class DatabaseManager:
                 "ALTER TABLE club_players ADD COLUMN status TEXT NOT NULL DEFAULT 'starting';",
                 "ALTER TABLE club_players ADD COLUMN number INTEGER DEFAULT NULL;",
                 "ALTER TABLE club_players ADD COLUMN user_id INTEGER DEFAULT NULL;",
+                "ALTER TABLE club_players ADD COLUMN rating INTEGER DEFAULT 75;",
+                "ALTER TABLE club_players ADD COLUMN potential INTEGER DEFAULT 80;",
+                "ALTER TABLE club_players ADD COLUMN alt_positions TEXT DEFAULT NULL;",
             ]:
                 try:
                     await cur.execute(col_stmt)
@@ -705,14 +711,17 @@ class DatabaseManager:
             else:
                 payee_desc = "Free Transfer"
 
-            # Fetch existing custom player details to preserve position & number
+            # Fetch existing custom player details to preserve position, number, rating, potential, alt_positions
             await cur.execute(
-                "SELECT position, number FROM club_players WHERE guild_id = ? AND LOWER(player_name) = LOWER(?);",
+                "SELECT position, number, rating, potential, alt_positions FROM club_players WHERE guild_id = ? AND LOWER(player_name) = LOWER(?);",
                 (guild_id, p_name),
             )
             old_p = await cur.fetchone()
             p_pos = old_p["position"] if old_p and old_p["position"] else "ST"
             p_num = old_p["number"] if old_p and old_p["number"] else None
+            p_rating = old_p["rating"] if old_p and old_p["rating"] is not None else 75
+            p_pot = old_p["potential"] if old_p and old_p["potential"] is not None else 80
+            p_alt = old_p["alt_positions"] if old_p and old_p["alt_positions"] else None
 
             # Update custom players roster
             await cur.execute(
@@ -721,10 +730,10 @@ class DatabaseManager:
             )
             await cur.execute(
                 """
-                INSERT INTO club_players (club_id, guild_id, player_name, role, position, status, number)
-                VALUES (?, ?, ?, 'Player', ?, 'starting', ?);
+                INSERT INTO club_players (club_id, guild_id, player_name, role, position, status, number, rating, potential, alt_positions)
+                VALUES (?, ?, ?, 'Player', ?, 'starting', ?, ?, ?, ?);
                 """,
-                (to_club["id"], guild_id, p_name, p_pos, p_num),
+                (to_club["id"], guild_id, p_name, p_pos, p_num, p_rating, p_pot, p_alt),
             )
 
             # If p_name happens to be a mention or numeric user id, also move in club_members
@@ -1738,6 +1747,9 @@ class DatabaseManager:
         position: str = "ST",
         status: str = "starting",
         number: Optional[int] = None,
+        rating: Optional[int] = 75,
+        potential: Optional[int] = 80,
+        alt_positions: Optional[str] = None,
         user_id: Optional[int] = None,
         default_owner_id: int = 0,
     ) -> Tuple[bool, str, Dict[str, Any]]:
@@ -1768,6 +1780,30 @@ class DatabaseManager:
 
         if number is not None and (number < 0 or number > 99):
             return False, "Jersey number must be between 0 and 99.", {}
+
+        # Rating and Potential validation (1-99)
+        r_val = rating if rating is not None else 75
+        if r_val < 1 or r_val > 99:
+            return False, "Player rating must be between 1 and 99.", {}
+
+        pot_val = potential if potential is not None else max(r_val, 80)
+        if pot_val < 1 or pot_val > 99:
+            return False, "Player potential must be between 1 and 99.", {}
+
+        # Clean alternate positions
+        clean_alt = None
+        if alt_positions:
+            cleaned = str(alt_positions).replace("/", ",").replace(";", ",")
+            parts = [p.strip().upper() for p in cleaned.split(",") if p.strip()]
+            valid_alts = [p for p in parts if p in VALID_POSITIONS and p != pos]
+            seen = set()
+            deduped = []
+            for p in valid_alts:
+                if p not in seen:
+                    seen.add(p)
+                    deduped.append(p)
+            if deduped:
+                clean_alt = ", ".join(deduped)
 
         club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=default_owner_id)
         if not club:
@@ -1825,10 +1861,10 @@ class DatabaseManager:
 
             await cur.execute(
                 """
-                INSERT INTO club_players (club_id, guild_id, player_name, role, position, status, number, user_id)
-                VALUES (?, ?, ?, 'Player', ?, ?, ?, ?);
+                INSERT INTO club_players (club_id, guild_id, player_name, role, position, status, number, rating, potential, alt_positions, user_id)
+                VALUES (?, ?, ?, 'Player', ?, ?, ?, ?, ?, ?, ?);
                 """,
-                (club["id"], guild_id, p_name, pos, st, number, uid),
+                (club["id"], guild_id, p_name, pos, st, number, r_val, pot_val, clean_alt, uid),
             )
             player_id = cur.lastrowid
 
@@ -1847,7 +1883,8 @@ class DatabaseManager:
             new_p = await cur.fetchone()
             num_str = f" #{number}" if number is not None else ""
             status_desc = "Starting XI 🟢" if st == "starting" else "Bench 🟡"
-            return True, f"Added **{p_name}**{num_str} as **{pos}** ({status_desc}) to **[{club['tag']}] {club['name']}**!", dict(new_p)
+            alt_desc = f" | Alt: {clean_alt}" if clean_alt else ""
+            return True, f"Added **{p_name}**{num_str} ({r_val} OVR / {pot_val} POT) as **{pos}**{alt_desc} ({status_desc}) to **[{club['tag']}] {club['name']}**!", dict(new_p)
 
     async def edit_club_player(
         self,
@@ -1858,10 +1895,13 @@ class DatabaseManager:
         position: Optional[str] = None,
         status: Optional[str] = None,
         number: Optional[int] = None,
+        rating: Optional[int] = None,
+        potential: Optional[int] = None,
+        alt_positions: Optional[str] = None,
         default_owner_id: int = 0,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
-        Edit an existing player's details (name, position, lineup status, jersey number).
+        Edit an existing player's details (name, position, lineup status, jersey number, rating, potential, alt positions).
         """
         p_name = str(player_name).strip()
         if not p_name:
@@ -1906,6 +1946,7 @@ class DatabaseManager:
                 params.append(clean_new_name)
                 changes.append(f"Name: **{clean_new_name}**")
 
+            curr_pos = player["position"]
             if position is not None and position.strip():
                 pos = position.upper().strip()
                 if pos not in VALID_POSITIONS:
@@ -1913,6 +1954,7 @@ class DatabaseManager:
                 updates.append("position = ?")
                 params.append(pos)
                 changes.append(f"Position: **{pos}**")
+                curr_pos = pos
 
             if status is not None and status.strip():
                 st = status.lower().strip()
@@ -1936,6 +1978,35 @@ class DatabaseManager:
                 updates.append("number = ?")
                 params.append(number)
                 changes.append(f"Jersey: **#{number}**")
+
+            if rating is not None:
+                if rating < 1 or rating > 99:
+                    return False, "Player rating must be between 1 and 99.", {}
+                updates.append("rating = ?")
+                params.append(rating)
+                changes.append(f"Rating: **{rating} OVR**")
+
+            if potential is not None:
+                if potential < 1 or potential > 99:
+                    return False, "Player potential must be between 1 and 99.", {}
+                updates.append("potential = ?")
+                params.append(potential)
+                changes.append(f"Potential: **{potential} POT**")
+
+            if alt_positions is not None:
+                cleaned = str(alt_positions).replace("/", ",").replace(";", ",")
+                parts = [p.strip().upper() for p in cleaned.split(",") if p.strip()]
+                valid_alts = [p for p in parts if p in VALID_POSITIONS and p != curr_pos]
+                seen = set()
+                deduped = []
+                for p in valid_alts:
+                    if p not in seen:
+                        seen.add(p)
+                        deduped.append(p)
+                clean_alt = ", ".join(deduped) if deduped else None
+                updates.append("alt_positions = ?")
+                params.append(clean_alt)
+                changes.append(f"Alt Positions: **{clean_alt or 'None'}**")
 
             if not updates:
                 return False, "No modifications provided. Specify at least one attribute to edit.", {}

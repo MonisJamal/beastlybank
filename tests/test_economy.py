@@ -1090,6 +1090,201 @@ async def test_mandatory_club_role_on_create(db: DatabaseManager):
     assert "Club Registered Successfully" in success_embed.title
 
 
+@pytest.mark.asyncio
+async def test_player_ratings_potential_and_alt_positions(db: DatabaseManager):
+    """
+    Test ratings (1-99), potential (1-99), and alt_positions for custom players:
+    - Adding with custom rating, potential, and alternate positions
+    - Alternate positions normalization (stripping, uppercasing, filtering valid, deduping, primary exclusion)
+    - Rating & potential bounds validation (1 to 99)
+    - Default values (75 OVR, 80 POT, None alt)
+    - Editing rating, potential, alt_positions via edit_club_player
+    - Official transfer preserving rating, potential, and alt_positions
+    - Embed display verification (player_card_embed and club_lineup_embed)
+    - Prefix command handling (bb!addplayer and bb!editplayer)
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    from cogs.squad import SquadCog
+    from utils.embeds import player_card_embed, club_lineup_embed
+
+    guild_id = 777666555
+    owner_id = 12345
+    role_id = 999000111222333444
+
+    # 1. Create club
+    c_ok, _, club = await db.create_club(guild_id, "Manchester City", "MCI", owner_id, role_id)
+    assert c_ok is True
+
+    # 2. Add player with rating, potential, and alternate positions
+    ok, msg, p = await db.add_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="De Bruyne",
+        position="CAM",
+        status="starting",
+        number=17,
+        rating=91,
+        potential=91,
+        alt_positions="cm / cdm ; CAM, rw, INVALID_POS",
+    )
+    assert ok is True
+    assert p["rating"] == 91
+    assert p["potential"] == 91
+    # CAM is primary so excluded; INVALID_POS is excluded; cm & cdm & rw kept
+    assert p["alt_positions"] == "CM, CDM, RW"
+
+    # 3. Test rating and potential bounds validation
+    bad_r1, bad_msg1, _ = await db.add_club_player(
+        guild_id=guild_id, club_query=club["id"], player_name="Bad1", position="ST", rating=0
+    )
+    assert bad_r1 is False
+    assert "between 1 and 99" in bad_msg1
+
+    bad_r2, bad_msg2, _ = await db.add_club_player(
+        guild_id=guild_id, club_query=club["id"], player_name="Bad2", position="ST", rating=100
+    )
+    assert bad_r2 is False
+    assert "between 1 and 99" in bad_msg2
+
+    bad_p1, bad_msg3, _ = await db.add_club_player(
+        guild_id=guild_id, club_query=club["id"], player_name="Bad3", position="ST", potential=0
+    )
+    assert bad_p1 is False
+    assert "between 1 and 99" in bad_msg3
+
+    bad_p2, bad_msg4, _ = await db.add_club_player(
+        guild_id=guild_id, club_query=club["id"], player_name="Bad4", position="ST", potential=105
+    )
+    assert bad_p2 is False
+    assert "between 1 and 99" in bad_msg4
+
+    # 4. Add player with default rating, potential, alt_positions
+    def_ok, _, def_p = await db.add_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="Foden",
+        position="LW",
+        status="starting",
+        number=47,
+    )
+    assert def_ok is True
+    assert def_p["rating"] == 75
+    assert def_p["potential"] == 80
+    assert def_p["alt_positions"] is None
+
+    # 5. Edit player details (rating, potential, alt_positions)
+    e_ok, e_msg, e_p = await db.edit_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="Foden",
+        rating=88,
+        potential=92,
+        alt_positions="CAM, RW",
+    )
+    assert e_ok is True
+    assert e_p["rating"] == 88
+    assert e_p["potential"] == 92
+    assert e_p["alt_positions"] == "CAM, RW"
+    assert "88 OVR" in e_msg
+    assert "92 POT" in e_msg
+
+    # 6. Test Embed Generation
+    card = player_card_embed(e_p, club)
+    field_dict = {f.name: f.value for f in card.fields}
+    assert "⭐ Overall Rating" in field_dict
+    assert "**88** OVR" in field_dict["⭐ Overall Rating"]
+    assert "🚀 Potential Rating" in field_dict
+    assert "**92** POT" in field_dict["🚀 Potential Rating"]
+    assert "🔄 Alt Positions" in field_dict
+    assert "**CAM, RW**" in field_dict["🔄 Alt Positions"]
+
+    # Lineup embed has [88] tag
+    lineup_emb = club_lineup_embed(
+        club=club,
+        formation="4-3-3",
+        starting_players=[e_p],
+        bench_players=[],
+    )
+    attack_or_mid_fields = [f.value for f in lineup_emb.fields if "[88]" in f.value]
+    assert len(attack_or_mid_fields) > 0
+
+    # 7. Official Transfer Preserves Rating, Potential, and Alt Positions
+    dest_role_id = 999000111222333555
+    _, _, dest_club = await db.create_club(guild_id, "Arsenal", "ARS", 99999, dest_role_id)
+    await db.update_club_treasury(guild_id, dest_club["id"], "cash", "set", 100_000_000, 99999)
+
+    tx_ok, tx_msg, _ = await db.transfer_player(
+        guild_id=guild_id,
+        player_name="Foden",
+        from_club_query=club["id"],
+        to_club_query=dest_club["id"],
+        amount=50_000_000,
+        payer_id=99999,
+    )
+    assert tx_ok is True
+
+    # Check transferred player in Arsenal
+    _, _, foden_info = await db.get_player_info(guild_id, "Foden", club_query=dest_club["id"])
+    assert foden_info["player"]["rating"] == 88
+    assert foden_info["player"]["potential"] == 92
+    assert foden_info["player"]["alt_positions"] == "CAM, RW"
+    assert foden_info["player"]["number"] == 47
+
+    # 8. Prefix Command Testing (bb!addplayer and bb!editplayer)
+    bot = MagicMock()
+    bot.db = db
+    squad_cog = SquadCog(bot)
+
+    mock_dest_role = MagicMock()
+    mock_dest_role.id = dest_role_id
+    mock_dest_role.mention = f"<@&{dest_role_id}>"
+
+    ctx = MagicMock()
+    ctx.guild.id = guild_id
+    ctx.author.id = 99999
+    ctx.message.role_mentions = [mock_dest_role]
+    ctx.send = AsyncMock()
+
+    # Call bb!addplayer Saka RW starting 7 87 90 "RM, LW" @Arsenal
+    await squad_cog.prefix_addplayer.callback(
+        squad_cog,
+        ctx,
+        "Saka",
+        "RW",
+        "starting",
+        "7",
+        "87",
+        "90",
+        "RM,",
+        "LW",
+        mock_dest_role.mention,
+    )
+    ctx.send.assert_called_once()
+    add_embed = ctx.send.call_args[1]["embed"]
+    assert "Success" in add_embed.title or "Player Added" in add_embed.title or "87 OVR" in add_embed.description
+
+    _, _, saka_info = await db.get_player_info(guild_id, "Saka", club_query=dest_club["id"])
+    assert saka_info["player"]["rating"] == 87
+    assert saka_info["player"]["potential"] == 90
+    assert saka_info["player"]["number"] == 7
+    assert saka_info["player"]["alt_positions"] == "RM, LW"
+
+    # Call bb!editplayer Saka rating 89 @Arsenal
+    ctx.send.reset_mock()
+    await squad_cog.prefix_editplayer.callback(
+        squad_cog,
+        ctx,
+        "Saka",
+        "rating",
+        "89",
+        mock_dest_role.mention,
+    )
+    ctx.send.assert_called_once()
+    _, _, saka_edited = await db.get_player_info(guild_id, "Saka", club_query=dest_club["id"])
+    assert saka_edited["player"]["rating"] == 89
+
+
+
 
 
 

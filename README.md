@@ -43,12 +43,12 @@
 #### ⚽ Squad, Lineups & Formations (`/lineup`, `/formation`, `/player`)
 | Command | Prefix (`bb!`) | Description |
 | :--- | :--- | :--- |
-| `/lineup [club: @role]` | `bb!lineup [@role]` | View tactical pitch lineup (GK, DEF, MID, FWD) and substitutes bench. |
+| `/lineup [club: @role]` | `bb!lineup [@role]` | View tactical pitch lineup (GK, DEF, MID, FWD) with OVR ratings and substitutes bench. |
 | `/formation set <formation> [club: @role]` | `bb!setformation <form> [@role]` | Set club tactical formation (all 12 formations supported). |
 | `/formation list` | `bb!formations` | Browse all 12 supported football formations with shapes and descriptions. |
-| `/player info <player> [club: @role]` | `bb!player <player> [@role]` | Inspect player profile card with position, number, status, and club role. |
-| `/player add <player> <pos> [status] [num] [club: @role]` | `bb!addplayer <player> <pos> [status] [num] [@role]` | Register a custom or Discord player to Starting XI or Bench. |
-| `/player edit <player> [name] [pos] [status] [num] [club: @role]` | `bb!editplayer <player> <field> <val> [@role]` | Edit player position, status, jersey number, or name. |
+| `/player info <player> [club: @role]` | `bb!player <player> [@role]` | Inspect player profile card with position, alternate positions, rating (OVR), potential (POT), jersey number, and club. |
+| `/player add <player> <pos> [status] [num] [rating] [potential] [alt_pos] [club: @role]` | `bb!addplayer <player> <pos> [status] [num] [rating] [pot] [alt_pos] [@role]` | Register a player with primary position, overall rating (1-99), potential (1-99), and alternate positions (e.g. `LW, RW`). |
+| `/player edit <player> [name] [pos] [status] [num] [rating] [potential] [alt_pos] [club: @role]` | `bb!editplayer <player> <field> <val> [@role]` | Edit player position, status, jersey number, name, rating (`ovr`), potential (`pot`), or alternate positions (`alt`). |
 | `/player remove <player> [club: @role]` | `bb!removeplayer <player> [@role]` | Remove a player from the club squad. |
 | `/player start <player> [pos] [club: @role]` | `bb!start <player> [pos] [@role]` | Promote a player to Starting XI (enforces max 11 starters). |
 | `/player bench <player> [club: @role]` | `bb!bench <player> [@role]` | Move a player to the Substitutes Bench. |

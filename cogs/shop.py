@@ -24,7 +24,15 @@ class Shop(commands.Cog):
     )
     @require_beastlyfc()
     async def shop(self, interaction: discord.Interaction):
-        items = await self.db.get_shop_items(interaction.guild_id)
+        settings = await self.db.get_settings(interaction.guild_id)
+        if not settings.get("shop_enabled", 1):
+            await interaction.response.send_message(
+                embed=error_embed("Shop Closed", "The BeastlyBank store is currently closed by administrators."),
+                ephemeral=True,
+            )
+            return
+
+        items = await self.db.get_shop_items(interaction.guild_id, include_inactive=False)
 
         embed = create_beastly_embed(
             title="🛒 BeastlyBank Official Store",
@@ -68,6 +76,14 @@ class Shop(commands.Cog):
         item_id: int,
         quantity: int = 1,
     ):
+        settings = await self.db.get_settings(interaction.guild_id)
+        if not settings.get("purchases_enabled", 1):
+            await interaction.response.send_message(
+                embed=error_embed("Purchases Disabled", "Shop purchases are temporarily disabled by administrators."),
+                ephemeral=True,
+            )
+            return
+
         if quantity <= 0:
             await interaction.response.send_message(
                 embed=error_embed("Invalid Quantity", "Quantity must be at least 1."),
@@ -146,7 +162,7 @@ class Shop(commands.Cog):
         await interaction.response.send_message(embed=embed)
 
 
-class ShopAdmin(commands.GroupCog, name="shop-admin", description="Banker & Staff Shop Management"):
+class ShopAdmin(commands.GroupCog, name="shopadmin", description="Banker & Staff Shop Management"):
     """Staff commands to maintain the store inventory."""
 
     def __init__(self, bot: commands.Bot):
@@ -189,8 +205,8 @@ class ShopAdmin(commands.GroupCog, name="shop-admin", description="Banker & Staf
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                INSERT INTO shop_items (guild_id, name, description, price, currency, role_reward_id, stock, category)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'Custom');
+                INSERT INTO shop_items (guild_id, name, description, price, currency, role_reward_id, stock, category, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'Custom', 1);
                 """,
                 (interaction.guild_id, name, description, price, currency, role_id, stock),
             )
@@ -204,8 +220,96 @@ class ShopAdmin(commands.GroupCog, name="shop-admin", description="Banker & Staf
         await interaction.response.send_message(embed=embed)
 
     @app_commands.command(
+        name="edit",
+        description="Edit an existing shop item's details, price, or stock.",
+    )
+    @app_commands.describe(
+        item_id="ID of the item to edit",
+        name="New display name (optional)",
+        description="New description (optional)",
+        price="New price (optional)",
+        currency="New currency (optional)",
+        stock="New stock count (-1 for unlimited, optional)",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def shop_edit(
+        self,
+        interaction: discord.Interaction,
+        item_id: int,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        price: Optional[int] = None,
+        currency: Optional[Literal["cash", "points", "tokens"]] = None,
+        stock: Optional[int] = None,
+    ):
+        success, msg = await self.db.edit_shop_item(
+            guild_id=interaction.guild_id,
+            item_id=item_id,
+            name=name,
+            description=description,
+            price=price,
+            currency=currency,
+            stock=stock,
+        )
+
+        if not success:
+            await interaction.response.send_message(embed=error_embed("Edit Failed", msg), ephemeral=True)
+            return
+
+        await interaction.response.send_message(embed=success_embed("Item Updated", msg))
+
+    @app_commands.command(
+        name="list",
+        description="View all shop items including hidden/disabled items.",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def shop_list(self, interaction: discord.Interaction):
+        items = await self.db.get_shop_items(interaction.guild_id, include_inactive=True)
+
+        embed = create_beastly_embed(
+            title="🛒 Shop Admin • Full Catalogue",
+            description="All active and disabled shop items in BeastlyBank:\n━━━━━━━━━━━━━━━━━━━━━━",
+            color=COLOR_BEASTLY_GOLD,
+        )
+
+        if not items:
+            embed.description += "\n*No items registered in the shop.*"
+            await interaction.response.send_message(embed=embed)
+            return
+
+        for itm in items:
+            curr_emoji = CURRENCIES.get(itm["currency"], {}).get("emoji", "💰")
+            status_icon = "🟢 Active" if itm.get("is_active", 1) == 1 else "🔴 Disabled"
+            stock_str = "Unlimited" if itm["stock"] == -1 else f"{itm['stock']} left"
+
+            embed.add_field(
+                name=f"#{itm['id']} • {itm['name']} — {curr_emoji} {itm['price']:,}",
+                value=f"Status: **{status_icon}** | Stock: `{stock_str}` | Curr: `{itm['currency']}`",
+                inline=False,
+            )
+
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="toggle",
+        description="Enable or disable a shop item from appearing in the store.",
+    )
+    @app_commands.describe(item_id="ID of the item to toggle on/off")
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def shop_toggle(self, interaction: discord.Interaction, item_id: int):
+        success, msg, new_status = await self.db.toggle_shop_item(interaction.guild_id, item_id)
+        if not success:
+            await interaction.response.send_message(embed=error_embed("Toggle Failed", msg), ephemeral=True)
+            return
+
+        await interaction.response.send_message(embed=success_embed("Item Toggled", msg))
+
+    @app_commands.command(
         name="remove",
-        description="Remove an item from the BeastlyBank Shop catalogue.",
+        description="Permanently remove an item from the BeastlyBank Shop catalogue.",
     )
     @app_commands.describe(item_id="ID of the shop item to remove")
     @require_beastlyfc()
@@ -221,12 +325,11 @@ class ShopAdmin(commands.GroupCog, name="shop-admin", description="Banker & Staf
                 "DELETE FROM shop_items WHERE id = ? AND (guild_id = ? OR guild_id = 0);",
                 (item_id, interaction.guild_id),
             )
-            changes = conn.total_changes
             await conn.commit()
 
         embed = success_embed(
             "Item Removed",
-            f"Item #{item_id} has been removed from the BeastlyBank Shop.",
+            f"Item #{item_id} has been permanently removed from the BeastlyBank Shop.",
         )
         await interaction.response.send_message(embed=embed)
 
@@ -234,3 +337,4 @@ class ShopAdmin(commands.GroupCog, name="shop-admin", description="Banker & Staf
 async def setup(bot: commands.Bot):
     await bot.add_cog(Shop(bot))
     await bot.add_cog(ShopAdmin(bot))
+

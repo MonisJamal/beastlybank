@@ -116,7 +116,25 @@ class DatabaseManager:
                     role_reward_id INTEGER DEFAULT NULL,
                     stock INTEGER DEFAULT -1,
                     category TEXT DEFAULT 'Perk',
+                    is_active INTEGER NOT NULL DEFAULT 1,
                     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            # Safe migration for existing tables without is_active column
+            try:
+                await cur.execute("ALTER TABLE shop_items ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1;")
+            except Exception:
+                pass
+
+            # Server Settings (Economy, Purchases, Shop toggles)
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS server_settings (
+                    guild_id INTEGER PRIMARY KEY,
+                    economy_enabled INTEGER NOT NULL DEFAULT 1,
+                    purchases_enabled INTEGER NOT NULL DEFAULT 1,
+                    shop_enabled INTEGER NOT NULL DEFAULT 1
                 );
                 """
             )
@@ -533,6 +551,57 @@ class DatabaseManager:
         }
         return True, "Drill completed!", result_info
 
+    async def redeem_cp(
+        self, user_id: int, guild_id: int, points_amount: int, rate: int = 2
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Convert Community Points into Cash.
+        rate: 1 Point = rate Cash (default: 1 CP = 2 Cash).
+        """
+        if points_amount <= 0:
+            return False, "Amount of Community Points to convert must be greater than 0.", {}
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            user = await self.get_or_create_user(user_id, guild_id)
+            if user["points"] < points_amount:
+                return False, f"Insufficient Community Points! You have ⭐ {user['points']:,}, requested {points_amount:,}.", {}
+
+            cash_received = points_amount * rate
+
+            await cur.execute(
+                """
+                UPDATE users
+                SET points = points - ?,
+                    cash = cash + ?
+                WHERE user_id = ? AND guild_id = ?;
+                """,
+                (points_amount, cash_received, user_id, guild_id),
+            )
+
+            await cur.execute(
+                """
+                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                VALUES (?, ?, NULL, 'points', ?, 'cp_redeem', ?);
+                """,
+                (guild_id, user_id, points_amount, f"Converted {points_amount:,} CP to Cash"),
+            )
+            await cur.execute(
+                """
+                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                VALUES (?, NULL, ?, 'cash', ?, 'cp_redeem', ?);
+                """,
+                (guild_id, user_id, cash_received, f"Received Cash from {points_amount:,} CP conversion"),
+            )
+            await conn.commit()
+
+        updated_user = await self.get_or_create_user(user_id, guild_id)
+        return True, f"Successfully converted ⭐ **{points_amount:,} CP** into 💵 **{cash_received:,} Cash**!", {
+            "points_redeemed": points_amount,
+            "cash_received": cash_received,
+            "user": updated_user,
+        }
+
     # ------------------ Transactions & Ledger ------------------ #
 
     async def get_transactions(
@@ -783,8 +852,8 @@ class DatabaseManager:
                 (club_id, user_id),
             )
             member = await cur.fetchone()
-            if not member or member["role"] not in ("Owner", "Captain"):
-                return False, "Only Club Owners and Captains can withdraw from the Treasury."
+            if not member or member["role"] not in ("Owner", "Captain", "Manager"):
+                return False, "Only Club Owners, Captains, and Managers can withdraw from the Treasury."
 
             # Check club treasury
             await cur.execute("SELECT * FROM clubs WHERE id = ?;", (club_id,))
@@ -816,6 +885,61 @@ class DatabaseManager:
             await conn.commit()
             return True, f"Withdrew {amount:,} {currency} from the Club Treasury."
 
+    async def set_club_manager(
+        self, club_id: int, owner_id: int, target_user_id: int, is_manager: bool
+    ) -> Tuple[bool, str]:
+        """Promote or demote a club member to/from Manager role (Owner only)."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT owner_id, tag, name FROM clubs WHERE id = ?;", (club_id,))
+            club = await cur.fetchone()
+            if not club:
+                return False, "Club not found."
+            if club["owner_id"] != owner_id:
+                return False, "Only the Club Owner can assign or remove Club Managers."
+
+            if target_user_id == owner_id:
+                return False, "The Club Owner already has full management privileges."
+
+            await cur.execute(
+                "SELECT * FROM club_members WHERE club_id = ? AND user_id = ?;",
+                (club_id, target_user_id),
+            )
+            target = await cur.fetchone()
+            if not target:
+                return False, "That player is not a member of your club!"
+
+            new_role = "Manager" if is_manager else "Member"
+            await cur.execute(
+                "UPDATE club_members SET role = ? WHERE club_id = ? AND user_id = ?;",
+                (new_role, club_id, target_user_id),
+            )
+            await conn.commit()
+            action = "promoted to **Club Manager**" if is_manager else "returned to **Squad Member**"
+            return True, f"<@{target_user_id}> has been {action} for **[{club['tag']}] {club['name']}**."
+
+    async def get_club_transactions(
+        self, club_id: int, guild_id: int, limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Get recent transaction history for a club treasury."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT tag, name FROM clubs WHERE id = ?;", (club_id,))
+            club = await cur.fetchone()
+            tag = club["tag"] if club else ""
+
+            await cur.execute(
+                """
+                SELECT * FROM transactions
+                WHERE guild_id = ? AND (reason LIKE ? OR reason LIKE ? OR tx_type LIKE 'club_%')
+                ORDER BY id DESC
+                LIMIT ?;
+                """,
+                (guild_id, f"%#{club_id}%", f"%[{tag}]%", limit),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
     async def get_club_leaderboard(self, guild_id: int, limit: int = 10) -> List[Dict[str, Any]]:
         """Get clubs ranked by total treasury wealth."""
         conn = await self.connect()
@@ -837,21 +961,91 @@ class DatabaseManager:
 
     # ------------------ Shop & Inventory ------------------ #
 
-    async def get_shop_items(self, guild_id: int) -> List[Dict[str, Any]]:
-        """Get active items in the BeastlyBank server shop."""
+    async def get_shop_items(self, guild_id: int, include_inactive: bool = False) -> List[Dict[str, Any]]:
+        """Get items in the BeastlyBank server shop."""
         conn = await self.connect()
         async with conn.cursor() as cur:
-            # We fetch items for guild_id OR guild_id=0 (default items)
-            await cur.execute(
-                """
-                SELECT * FROM shop_items
-                WHERE guild_id = ? OR guild_id = 0
-                ORDER BY id ASC;
-                """,
-                (guild_id,),
-            )
+            if include_inactive:
+                await cur.execute(
+                    """
+                    SELECT * FROM shop_items
+                    WHERE guild_id = ? OR guild_id = 0
+                    ORDER BY id ASC;
+                    """,
+                    (guild_id,),
+                )
+            else:
+                await cur.execute(
+                    """
+                    SELECT * FROM shop_items
+                    WHERE (guild_id = ? OR guild_id = 0) AND (is_active = 1 OR is_active IS NULL)
+                    ORDER BY id ASC;
+                    """,
+                    (guild_id,),
+                )
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
+
+    async def edit_shop_item(
+        self,
+        guild_id: int,
+        item_id: int,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        price: Optional[int] = None,
+        currency: Optional[str] = None,
+        stock: Optional[int] = None,
+    ) -> Tuple[bool, str]:
+        """Edit an existing shop item."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM shop_items WHERE id = ? AND (guild_id = ? OR guild_id = 0);",
+                (item_id, guild_id),
+            )
+            item = await cur.fetchone()
+            if not item:
+                return False, f"Shop item #{item_id} not found."
+
+            new_name = name if name is not None else item["name"]
+            new_desc = description if description is not None else item["description"]
+            new_price = price if price is not None else item["price"]
+            new_currency = currency if currency is not None else item["currency"]
+            new_stock = stock if stock is not None else item["stock"]
+
+            await cur.execute(
+                """
+                UPDATE shop_items
+                SET name = ?, description = ?, price = ?, currency = ?, stock = ?
+                WHERE id = ?;
+                """,
+                (new_name, new_desc, new_price, new_currency, new_stock, item_id),
+            )
+            await conn.commit()
+            return True, f"Successfully updated item #{item_id} (**{new_name}**)."
+
+    async def toggle_shop_item(self, guild_id: int, item_id: int) -> Tuple[bool, str, bool]:
+        """Toggle active status of a shop item."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM shop_items WHERE id = ? AND (guild_id = ? OR guild_id = 0);",
+                (item_id, guild_id),
+            )
+            item = await cur.fetchone()
+            if not item:
+                return False, f"Shop item #{item_id} not found.", False
+
+            curr_status = item["is_active"] if "is_active" in item.keys() and item["is_active"] is not None else 1
+            new_status = 0 if curr_status == 1 else 1
+
+            await cur.execute(
+                "UPDATE shop_items SET is_active = ? WHERE id = ?;",
+                (new_status, item_id),
+            )
+            await conn.commit()
+            status_text = "enabled" if new_status == 1 else "disabled"
+            return True, f"Shop item #{item_id} (**{item['name']}**) is now **{status_text}**.", bool(new_status)
 
     async def buy_item(
         self, user_id: int, guild_id: int, item_id: int, quantity: int = 1
@@ -1097,3 +1291,61 @@ class DatabaseManager:
 
         updated = await self.get_or_create_user(user_id, guild_id)
         return True, f"Updated <@{user_id}>'s {currency} balance to {amount:,}.", updated
+
+    # ------------------ Server Settings ------------------ #
+
+    async def get_settings(self, guild_id: int) -> Dict[str, Any]:
+        """Fetch server settings for economy, purchases, and shop."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM server_settings WHERE guild_id = ?;", (guild_id,)
+            )
+            row = await cur.fetchone()
+            if row:
+                return dict(row)
+
+            # Initialize defaults
+            await cur.execute(
+                """
+                INSERT INTO server_settings (guild_id, economy_enabled, purchases_enabled, shop_enabled)
+                VALUES (?, 1, 1, 1);
+                """,
+                (guild_id,),
+            )
+            await conn.commit()
+            return {
+                "guild_id": guild_id,
+                "economy_enabled": 1,
+                "purchases_enabled": 1,
+                "shop_enabled": 1,
+            }
+
+    async def update_setting(
+        self, guild_id: int, setting_key: str, enabled: bool
+    ) -> Tuple[bool, str]:
+        """Toggle an economy/shop setting on or off."""
+        valid_keys = {
+            "economy": "economy_enabled",
+            "economy_enabled": "economy_enabled",
+            "purchases": "purchases_enabled",
+            "purchases_enabled": "purchases_enabled",
+            "shop": "shop_enabled",
+            "shop_enabled": "shop_enabled",
+        }
+        actual_col = valid_keys.get(setting_key)
+        if not actual_col:
+            return False, f"Invalid setting '{setting_key}'. Must be 'economy', 'purchases', or 'shop'."
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await self.get_settings(guild_id)
+            int_val = 1 if enabled else 0
+            await cur.execute(
+                f"UPDATE server_settings SET {actual_col} = ? WHERE guild_id = ?;",
+                (int_val, guild_id),
+            )
+            await conn.commit()
+            label = actual_col.replace("_enabled", "").title()
+            state = "ENABLED ✅" if enabled else "DISABLED ❌"
+            return True, f"**{label}** is now **{state}** in BeastlyFC."

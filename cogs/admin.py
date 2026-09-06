@@ -1,5 +1,8 @@
 """
-Bank Administration Cog: Staff management, fund adjustments, audits, and official announcements.
+Admin & Settings Cogs:
+- /manage: Add, remove, set Cash, CP, and Training Tokens.
+- /settings: Toggle economy, purchases, shop, and view status.
+- /bank: Server announcements and user financial audits.
 """
 from typing import Literal, Optional
 import discord
@@ -18,8 +21,8 @@ from utils.checks import require_beastlyfc, require_banker_or_admin
 from utils.embeds import create_beastly_embed, error_embed, success_embed
 
 
-class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff & Banker Controls"):
-    """Banker and Staff administrative management."""
+class ManageCurrency(commands.GroupCog, name="manage", description="Manage User Cash, CP, and Training Tokens"):
+    """Staff commands to adjust player currency balances."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -27,23 +30,23 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
 
     @app_commands.command(
         name="add",
-        description="Credit Cash, Points, or Tokens to a player's BeastlyBank account.",
+        description="Add Cash, CP or Training Tokens to a user.",
     )
     @app_commands.describe(
         user="Player to credit",
-        currency="Currency to add",
-        amount="Amount to credit",
+        currency="Currency to add (Cash, Points/CP, Tokens)",
+        amount="Amount to add",
         reason="Reason for credit adjustment",
     )
     @require_beastlyfc()
     @require_banker_or_admin()
-    async def bank_add(
+    async def manage_add(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
         currency: Literal["cash", "points", "tokens"],
         amount: int,
-        reason: Optional[str] = "Staff Grant",
+        reason: Optional[str] = "Admin Grant",
     ):
         if amount <= 0:
             await interaction.response.send_message(
@@ -58,7 +61,7 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
             currency=currency,
             delta=amount,
             tx_type="admin_add",
-            reason=f"Staff grant by {interaction.user}: {reason}",
+            reason=f"Admin grant by {interaction.user}: {reason}",
             related_user_id=interaction.user.id,
         )
 
@@ -67,10 +70,11 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
             return
 
         curr_emoji = CURRENCIES[currency]["emoji"]
+        curr_name = CURRENCIES[currency]["name"]
         embed = create_beastly_embed(
-            title="🏦 Funds Credited",
+            title="🏦 Currency Added",
             description=(
-                f"Successfully credited {curr_emoji} **{amount:,} {CURRENCIES[currency]['name']}** to {user.mention}!\n\n"
+                f"Successfully credited {curr_emoji} **{amount:,} {curr_name}** to {user.mention}!\n\n"
                 f"📊 **New Balance:** `{updated[currency]:,}`\n"
                 f"📝 **Reason:** *{reason}*\n"
                 f"👮 **Authorized by:** {interaction.user.mention}"
@@ -81,23 +85,23 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
 
     @app_commands.command(
         name="remove",
-        description="Debit Cash, Points, or Tokens from a player's BeastlyBank account.",
+        description="Remove Cash, CP or Training Tokens from a user.",
     )
     @app_commands.describe(
         user="Player to debit",
-        currency="Currency to remove",
-        amount="Amount to debit",
-        reason="Reason for debit adjustment",
+        currency="Currency to remove (Cash, Points/CP, Tokens)",
+        amount="Amount to remove",
+        reason="Reason for deduction",
     )
     @require_beastlyfc()
     @require_banker_or_admin()
-    async def bank_remove(
+    async def manage_remove(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
         currency: Literal["cash", "points", "tokens"],
         amount: int,
-        reason: Optional[str] = "Staff Deduction",
+        reason: Optional[str] = "Admin Deduction",
     ):
         if amount <= 0:
             await interaction.response.send_message(
@@ -112,7 +116,7 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
             currency=currency,
             delta=-amount,
             tx_type="admin_remove",
-            reason=f"Staff deduction by {interaction.user}: {reason}",
+            reason=f"Admin deduction by {interaction.user}: {reason}",
             related_user_id=interaction.user.id,
         )
 
@@ -121,10 +125,11 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
             return
 
         curr_emoji = CURRENCIES[currency]["emoji"]
+        curr_name = CURRENCIES[currency]["name"]
         embed = create_beastly_embed(
-            title="🏦 Funds Deducted",
+            title="🏦 Currency Removed",
             description=(
-                f"Successfully removed {curr_emoji} **{amount:,} {CURRENCIES[currency]['name']}** from {user.mention}.\n\n"
+                f"Successfully removed {curr_emoji} **{amount:,} {curr_name}** from {user.mention}.\n\n"
                 f"📊 **New Balance:** `{updated[currency]:,}`\n"
                 f"📝 **Reason:** *{reason}*\n"
                 f"👮 **Authorized by:** {interaction.user.mention}"
@@ -135,30 +140,30 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
 
     @app_commands.command(
         name="set",
-        description="Directly set a player's BeastlyBank balance to a specific amount.",
+        description="Set a user's Cash, CP or Training Tokens to a specific amount.",
     )
     @app_commands.describe(
-        user="Player whose balance to modify",
-        currency="Currency to set",
+        user="Player whose balance to set",
+        currency="Currency to modify (Cash, Points/CP, Tokens)",
         amount="Exact new balance",
-        reason="Reason for manual override",
+        reason="Reason for override",
     )
     @require_beastlyfc()
     @require_banker_or_admin()
-    async def bank_set(
+    async def manage_set(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
         currency: Literal["cash", "points", "tokens"],
         amount: int,
-        reason: Optional[str] = "Manual Audit Override",
+        reason: Optional[str] = "Admin Override",
     ):
         success, msg, updated = await self.db.admin_set_balance(
             user_id=user.id,
             guild_id=interaction.guild_id,
             currency=currency,
             amount=amount,
-            reason=reason or "Manual Override",
+            reason=reason or "Admin Override",
             admin_id=interaction.user.id,
         )
 
@@ -167,16 +172,92 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
             return
 
         curr_emoji = CURRENCIES[currency]["emoji"]
+        curr_name = CURRENCIES[currency]["name"]
         embed = create_beastly_embed(
-            title="🏦 Balance Overridden",
+            title="🏦 Balance Set",
             description=(
-                f"Set {user.mention}'s {curr_emoji} **{CURRENCIES[currency]['name']}** balance to **{amount:,}**.\n\n"
+                f"Set {user.mention}'s {curr_emoji} **{curr_name}** balance to **{amount:,}**.\n\n"
                 f"📝 **Reason:** *{reason}*\n"
                 f"👮 **Authorized by:** {interaction.user.mention}"
             ),
             color=COLOR_BEASTLY_GOLD,
         )
         await interaction.response.send_message(embed=embed)
+
+
+class ServerSettings(commands.GroupCog, name="settings", description="Manage Server Economy & Shop Settings"):
+    """Staff controls for server-wide toggles."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db = bot.db  # type: ignore
+
+    @app_commands.command(
+        name="economy",
+        description="Enable or disable the server economy.",
+    )
+    @app_commands.describe(enabled="True to enable economy, False to disable")
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def settings_economy(self, interaction: discord.Interaction, enabled: bool):
+        success, msg = await self.db.update_setting(interaction.guild_id, "economy", enabled)
+        await interaction.response.send_message(embed=success_embed("Economy Setting Updated", msg))
+
+    @app_commands.command(
+        name="purchases",
+        description="Enable or disable shop purchases.",
+    )
+    @app_commands.describe(enabled="True to enable purchases, False to disable")
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def settings_purchases(self, interaction: discord.Interaction, enabled: bool):
+        success, msg = await self.db.update_setting(interaction.guild_id, "purchases", enabled)
+        await interaction.response.send_message(embed=success_embed("Purchases Setting Updated", msg))
+
+    @app_commands.command(
+        name="shop",
+        description="Enable or disable the shop.",
+    )
+    @app_commands.describe(enabled="True to enable shop, False to disable")
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def settings_shop(self, interaction: discord.Interaction, enabled: bool):
+        success, msg = await self.db.update_setting(interaction.guild_id, "shop", enabled)
+        await interaction.response.send_message(embed=success_embed("Shop Setting Updated", msg))
+
+    @app_commands.command(
+        name="view",
+        description="View current server settings.",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def settings_view(self, interaction: discord.Interaction):
+        cfg = await self.db.get_settings(interaction.guild_id)
+
+        econ_status = "🟢 Enabled" if cfg.get("economy_enabled", 1) else "🔴 Disabled"
+        purchases_status = "🟢 Enabled" if cfg.get("purchases_enabled", 1) else "🔴 Disabled"
+        shop_status = "🟢 Enabled" if cfg.get("shop_enabled", 1) else "🔴 Disabled"
+
+        embed = create_beastly_embed(
+            title=f"⚙️ Server Settings • {SERVER_NAME}",
+            description="Current financial and store configurations:\n━━━━━━━━━━━━━━━━━━━━━━",
+            color=COLOR_PITCH_GREEN,
+        )
+
+        embed.add_field(name="💰 Server Economy", value=f"**{econ_status}**", inline=True)
+        embed.add_field(name="🛒 Server Shop", value=f"**{shop_status}**", inline=True)
+        embed.add_field(name="🛍️ Item Purchases", value=f"**{purchases_status}**", inline=True)
+
+        embed.set_footer(text="Use /settings <economy|shop|purchases> to toggle settings.")
+        await interaction.response.send_message(embed=embed)
+
+
+class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff & Banker Controls"):
+    """Banker and Staff administrative management."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db = bot.db  # type: ignore
 
     @app_commands.command(
         name="audit",
@@ -285,4 +366,6 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
 
 
 async def setup(bot: commands.Bot):
+    await bot.add_cog(ManageCurrency(bot))
+    await bot.add_cog(ServerSettings(bot))
     await bot.add_cog(BankAdmin(bot))

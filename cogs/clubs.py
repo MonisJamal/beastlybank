@@ -233,6 +233,174 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
 
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(
+        name="addmanager",
+        description="Promote a squad member to Club Manager (Owner only).",
+    )
+    @app_commands.describe(user="The squad member to promote to Manager")
+    @require_beastlyfc()
+    async def club_addmanager(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+    ):
+        user_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+        if not user_club:
+            await interaction.response.send_message(
+                embed=error_embed("No Club", "You are not in a club!"), ephemeral=True
+            )
+            return
+
+        success, msg = await self.db.set_club_manager(
+            club_id=user_club["id"],
+            owner_id=interaction.user.id,
+            target_user_id=user.id,
+            is_manager=True,
+        )
+
+        if not success:
+            await interaction.response.send_message(
+                embed=error_embed("Action Failed", msg), ephemeral=True
+            )
+            return
+
+        embed = success_embed("Manager Promoted", msg)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="removemanager",
+        description="Demote a Club Manager back to normal squad member (Owner only).",
+    )
+    @app_commands.describe(user="The manager to demote")
+    @require_beastlyfc()
+    async def club_removemanager(
+        self,
+        interaction: discord.Interaction,
+        user: discord.Member,
+    ):
+        user_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+        if not user_club:
+            await interaction.response.send_message(
+                embed=error_embed("No Club", "You are not in a club!"), ephemeral=True
+            )
+            return
+
+        success, msg = await self.db.set_club_manager(
+            club_id=user_club["id"],
+            owner_id=interaction.user.id,
+            target_user_id=user.id,
+            is_manager=False,
+        )
+
+        if not success:
+            await interaction.response.send_message(
+                embed=error_embed("Action Failed", msg), ephemeral=True
+            )
+            return
+
+        embed = success_embed("Manager Demoted", msg)
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="history",
+        description="View recent transactions and activity for your club treasury.",
+    )
+    @require_beastlyfc()
+    async def club_history(
+        self,
+        interaction: discord.Interaction,
+    ):
+        user_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+        if not user_club:
+            await interaction.response.send_message(
+                embed=error_embed("No Club", "You are not a member of any club!"), ephemeral=True
+            )
+            return
+
+        txs = await self.db.get_club_transactions(user_club["id"], interaction.guild_id, limit=8)
+
+        embed = create_beastly_embed(
+            title=f"📜 Club Treasury History • [{user_club['tag']}] {user_club['name']}",
+            description=f"Recent deposits, withdrawals, and club activity:\n━━━━━━━━━━━━━━━━━━━━━━",
+            color=COLOR_PITCH_GREEN,
+        )
+
+        if not txs:
+            embed.description += "\n*No recorded transactions found for this club.*"
+        else:
+            for t in txs:
+                curr_info = CURRENCIES.get(t["currency"], {})
+                emoji = curr_info.get("emoji", "💰")
+                tx_type = t["tx_type"].replace("_", " ").title()
+                reason = t.get("reason") or "No memo"
+                time_str = t.get("created_at", "")[:16]
+                embed.add_field(
+                    name=f"#{t['id']} | {tx_type} — {emoji} {t['amount']:,}",
+                    value=f"📝 *{reason}* • `{time_str}`",
+                    inline=False,
+                )
+
+        await interaction.response.send_message(embed=embed)
+
+
+class ClubHistoryTop(commands.Cog):
+    """Top-level /clubhistory command."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db = bot.db  # type: ignore
+
+    @app_commands.command(
+        name="clubhistory",
+        description="View recent transactions and ledger history for your club treasury.",
+    )
+    @app_commands.describe(club_query="Club name or tag (defaults to your own club)")
+    @require_beastlyfc()
+    async def clubhistory_top(
+        self,
+        interaction: discord.Interaction,
+        club_query: Optional[str] = None,
+    ):
+        if club_query:
+            club = await self.db.get_club_by_name(interaction.guild_id, club_query)
+        else:
+            club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+
+        if not club:
+            target_str = f"matching '{club_query}'" if club_query else "for your account"
+            await interaction.response.send_message(
+                embed=error_embed("Club Not Found", f"No club found {target_str}."),
+                ephemeral=True,
+            )
+            return
+
+        txs = await self.db.get_club_transactions(club["id"], interaction.guild_id, limit=8)
+
+        embed = create_beastly_embed(
+            title=f"📜 Club Treasury History • [{club['tag']}] {club['name']}",
+            description=f"Official treasury activity for **[{club['tag']}] {club['name']}**:\n━━━━━━━━━━━━━━━━━━━━━━",
+            color=COLOR_PITCH_GREEN,
+        )
+
+        if not txs:
+            embed.description += "\n*No recorded transactions found for this club.*"
+        else:
+            for t in txs:
+                curr_info = CURRENCIES.get(t["currency"], {})
+                emoji = curr_info.get("emoji", "💰")
+                tx_type = t["tx_type"].replace("_", " ").title()
+                reason = t.get("reason") or "No memo"
+                time_str = t.get("created_at", "")[:16]
+                embed.add_field(
+                    name=f"#{t['id']} | {tx_type} — {emoji} {t['amount']:,}",
+                    value=f"📝 *{reason}* • `{time_str}`",
+                    inline=False,
+                )
+
+        await interaction.response.send_message(embed=embed)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Clubs(bot))
+    await bot.add_cog(ClubHistoryTop(bot))
+

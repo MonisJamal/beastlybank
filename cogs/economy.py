@@ -61,11 +61,11 @@ class Economy(commands.Cog):
 
     @app_commands.command(
         name="pay",
-        description="Send money directly to another BeastlyFC player (Cash, Points, or Tokens).",
+        description="Send Cash or Training Tokens to another BeastlyFC member.",
     )
     @app_commands.describe(
         recipient="The player to receive the payment",
-        currency="The currency to transfer (Cash, Community Points, Training Tokens)",
+        currency="Currency to send (Cash or Training Tokens)",
         amount="The amount of currency to send",
         reason="Optional memo for the transaction history",
     )
@@ -74,10 +74,18 @@ class Economy(commands.Cog):
         self,
         interaction: discord.Interaction,
         recipient: discord.Member,
-        currency: Literal["cash", "points", "tokens"],
+        currency: Literal["cash", "tokens"],
         amount: int,
         reason: Optional[str] = None,
     ):
+        settings = await self.db.get_settings(interaction.guild_id)
+        if not settings.get("economy_enabled", 1):
+            await interaction.response.send_message(
+                embed=error_embed("Economy Paused", "The server economy is currently paused by administrators."),
+                ephemeral=True,
+            )
+            return
+
         if recipient.bot:
             await interaction.response.send_message(
                 embed=error_embed("Transfer Error", "You cannot transfer funds to Discord bots!"),
@@ -251,6 +259,50 @@ class Economy(commands.Cog):
         )
         await interaction.response.send_message(embed=initial_embed, view=view)
 
+    @app_commands.command(
+        name="redeemcp",
+        description="Convert your Community Points into Cash (Exchange rate: 1 CP = 2 Cash).",
+    )
+    @app_commands.describe(points="Amount of Community Points (CP) to convert into Cash")
+    @require_beastlyfc()
+    async def redeemcp(self, interaction: discord.Interaction, points: int):
+        settings = await self.db.get_settings(interaction.guild_id)
+        if not settings.get("economy_enabled", 1):
+            await interaction.response.send_message(
+                embed=error_embed("Economy Paused", "The server economy is currently paused by administrators."),
+                ephemeral=True,
+            )
+            return
+
+        success, msg, data = await self.db.redeem_cp(
+            user_id=interaction.user.id,
+            guild_id=interaction.guild_id,
+            points_amount=points,
+            rate=2,
+        )
+
+        if not success:
+            await interaction.response.send_message(
+                embed=error_embed("Redemption Failed", msg),
+                ephemeral=True,
+            )
+            return
+
+        embed = create_beastly_embed(
+            title="⭐ Community Points Converted!",
+            description=(
+                f"{interaction.user.mention} successfully converted ⭐ **{points:,} CP** "
+                f"into 💵 **{data['cash_received']:,} Cash**!\n\n"
+                f"📊 **New Balances:**\n"
+                f"• 💵 Cash: `{data['user']['cash']:,}`\n"
+                f"• ⭐ CP: `{data['user']['points']:,}`\n\n"
+                f"🏦 *Transaction logged in BeastlyBank automated ledger.*"
+            ),
+            color=COLOR_SUCCESS,
+        )
+        await interaction.response.send_message(embed=embed)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Economy(bot))
+

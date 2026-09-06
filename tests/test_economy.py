@@ -313,3 +313,109 @@ def test_server_lock_check():
         assert is_beastlyfc_guild_check(mock_interaction) is False
     finally:
         config.BEASTLYFC_GUILD_ID = original_guild
+
+
+@pytest.mark.asyncio
+async def test_redeem_cp(db: DatabaseManager):
+    """Verify converting Community Points to Cash."""
+    user_id = 801
+    guild_id = 999999999
+
+    # User starts with 1,000 Cash and 250 Points
+    # Redeem 100 Points at 1:2 rate -> 200 Cash
+    success, msg, data = await db.redeem_cp(user_id, guild_id, points_amount=100, rate=2)
+    assert success is True
+    assert data["cash_received"] == 200
+    assert data["user"]["cash"] == 1200
+    assert data["user"]["points"] == 150
+
+    # Over-redeem fails
+    fail_success, fail_msg, _ = await db.redeem_cp(user_id, guild_id, points_amount=500, rate=2)
+    assert fail_success is False
+    assert "Insufficient" in fail_msg
+
+
+@pytest.mark.asyncio
+async def test_server_settings(db: DatabaseManager):
+    """Test getting and toggling server settings."""
+    guild_id = 999999999
+
+    settings = await db.get_settings(guild_id)
+    assert settings["economy_enabled"] == 1
+    assert settings["purchases_enabled"] == 1
+    assert settings["shop_enabled"] == 1
+
+    # Disable economy
+    await db.update_setting(guild_id, "economy", False)
+    updated = await db.get_settings(guild_id)
+    assert updated["economy_enabled"] == 0
+
+    # Re-enable economy
+    await db.update_setting(guild_id, "economy", True)
+    re_enabled = await db.get_settings(guild_id)
+    assert re_enabled["economy_enabled"] == 1
+
+
+@pytest.mark.asyncio
+async def test_club_managers_and_history(db: DatabaseManager):
+    """Test appointing club managers and fetching club treasury history."""
+    owner_id = 901
+    member_id = 902
+    guild_id = 999999999
+
+    await db.update_balance(owner_id, guild_id, "cash", 5000, "credit")
+    _, _, club = await db.create_club(guild_id, "Thunder FC", "THN", owner_id)
+
+    # Join member to club
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO club_members (club_id, user_id, guild_id, role) VALUES (?, ?, ?, 'Member');",
+            (club["id"], member_id, guild_id),
+        )
+        await conn.commit()
+
+    # Promote to Manager
+    success, msg = await db.set_club_manager(club["id"], owner_id, member_id, is_manager=True)
+    assert success is True
+    assert "promoted" in msg
+
+    # Manager can withdraw from treasury
+    w_success, w_msg = await db.club_withdraw(
+        club["id"], member_id, guild_id, "cash", 100, "Manager kit purchase"
+    )
+    assert w_success is True
+
+    # History shows transaction
+    txs = await db.get_club_transactions(club["id"], guild_id)
+    assert len(txs) >= 1
+    assert any("Manager kit purchase" in str(t["reason"]) for t in txs)
+
+
+@pytest.mark.asyncio
+async def test_shop_admin_features(db: DatabaseManager):
+    """Test shop item editing, listing, and toggling."""
+    guild_id = 999999999
+
+    items = await db.get_shop_items(guild_id, include_inactive=True)
+    assert len(items) > 0
+    item = items[0]
+
+    # Edit item
+    success, msg = await db.edit_shop_item(
+        guild_id=guild_id,
+        item_id=item["id"],
+        name="Super Boost V2",
+        price=999,
+    )
+    assert success is True
+
+    # Toggle item off
+    t_success, t_msg, status = await db.toggle_shop_item(guild_id, item["id"])
+    assert t_success is True
+    assert status is False  # now disabled
+
+    # Verify not in normal shop items list
+    active_items = await db.get_shop_items(guild_id, include_inactive=False)
+    assert not any(i["id"] == item["id"] for i in active_items)
+

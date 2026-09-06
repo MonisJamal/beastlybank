@@ -20,7 +20,7 @@ from config import (
 from database.db import DatabaseManager
 from utils.checks import NotBankerError, NotInBeastlyFCError
 from utils.embeds import error_embed
-from utils.views import GiveawayView, AnnouncementView
+from utils.views import GiveawayView
 
 # Configure Logging
 logging.basicConfig(
@@ -116,7 +116,6 @@ class BeastlyBankBot(commands.Bot):
 
         # Register persistent views
         self.add_view(GiveawayView(self.db))
-        self.add_view(AnnouncementView(self.db))
 
         # Load extension cogs
         for cog in COGS:

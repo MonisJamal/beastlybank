@@ -19,8 +19,7 @@ from config import (
     parse_amount,
 )
 from utils.checks import require_beastlyfc, require_banker_or_admin
-from utils.embeds import create_beastly_embed, error_embed, success_embed, beastlybank_announcement_embed
-from utils.views import AnnouncementView
+from utils.embeds import create_beastly_embed, error_embed, success_embed
 from cogs.clubs import club_name_autocomplete
 
 
@@ -388,28 +387,6 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
         embed.set_footer(text=f"Audited by {interaction.user.display_name} • BeastlyBank Security")
         await interaction.response.send_message(embed=embed)
 
-    @app_commands.command(
-        name="announce",
-        description="Broadcast the official BeastlyBank Launch Announcement into a channel.",
-    )
-    @app_commands.describe(channel="Target channel for announcement (defaults to current channel)")
-    @require_beastlyfc()
-    @require_banker_or_admin()
-    async def bank_announce(
-        self,
-        interaction: discord.Interaction,
-        channel: Optional[discord.TextChannel] = None,
-    ):
-        target_channel = channel or interaction.channel
-
-        embed = beastlybank_announcement_embed()
-        view = AnnouncementView(self.db)
-
-        await target_channel.send(embed=embed, view=view)
-        await interaction.response.send_message(
-            f"✅ BeastlyBank announcement sent to {target_channel.mention}!", ephemeral=True
-        )
-
 
 class BankerPrefixCommands(commands.Cog):
     """Prefix commands for BeastlyBank Bankers and Admins."""
@@ -417,48 +394,6 @@ class BankerPrefixCommands(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db  # type: ignore
-
-    @app_commands.command(
-        name="announce",
-        description="Broadcast the official BeastlyBank System & Feature Announcement.",
-    )
-    @app_commands.describe(channel="Target channel for announcement (defaults to current channel)")
-    @require_beastlyfc()
-    @require_banker_or_admin()
-    async def slash_announce(
-        self,
-        interaction: discord.Interaction,
-        channel: Optional[discord.TextChannel] = None,
-    ):
-        target_channel = channel or interaction.channel
-        embed = beastlybank_announcement_embed()
-        view = AnnouncementView(self.db)
-        await target_channel.send(embed=embed, view=view)
-        await interaction.response.send_message(
-            f"✅ BeastlyBank announcement successfully sent to {target_channel.mention}!", ephemeral=True
-        )
-
-    @commands.command(name="announce", aliases=["bankannounce"])
-    @require_banker_or_admin()
-    async def prefix_announce(
-        self,
-        ctx: commands.Context,
-        channel: Optional[discord.TextChannel] = None,
-    ):
-        """
-        bb!announce [#channel]
-        Broadcasts the official BeastlyBank System Announcement to the specified channel (or current channel).
-        """
-        target_channel = channel or ctx.channel
-        embed = beastlybank_announcement_embed()
-        view = AnnouncementView(self.db)
-        await target_channel.send(embed=embed, view=view)
-        await ctx.send(
-            embed=success_embed(
-                "Announcement Broadcasted",
-                f"✅ Official BeastlyBank Announcement successfully broadcasted to {target_channel.mention}!",
-            )
-        )
 
     @commands.command(name="vault")
     @require_banker_or_admin()

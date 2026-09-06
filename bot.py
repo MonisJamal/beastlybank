@@ -94,8 +94,8 @@ class BeastlyCommandTree(app_commands.CommandTree):
 class BeastlyBankBot(commands.Bot):
     def __init__(self):
         intents = discord.Intents.default()
-        intents.members = True
-        intents.message_content = False  # Pure modern slash commands
+        intents.message_content = False
+        # Do not require privileged members intent so bot runs without manual Developer Portal toggles
 
         super().__init__(
             command_prefix="!",  # Slash commands primary
@@ -113,21 +113,6 @@ class BeastlyBankBot(commands.Bot):
         # Register persistent views
         self.add_view(GiveawayView(self.db))
 
-        # Start lightweight health-check server for cloud hosts (Render, Koyeb, etc.)
-        port_str = os.getenv("PORT")
-        if port_str and port_str.isdigit():
-            try:
-                from aiohttp import web
-                app = web.Application()
-                app.router.add_get("/", lambda r: web.Response(text="BeastlyBank is online ⚽"))
-                runner = web.AppRunner(app)
-                await runner.setup()
-                site = web.TCPSite(runner, "0.0.0.0", int(port_str))
-                await site.start()
-                logger.info("Cloud health check server listening on port %s", port_str)
-            except Exception as e:
-                logger.warning("Could not start cloud health server: %s", e)
-
         # Load extension cogs
         for cog in COGS:
             try:
@@ -137,18 +122,21 @@ class BeastlyBankBot(commands.Bot):
                 logger.error("Failed to load extension %s: %s", cog, e, exc_info=True)
 
         # Sync Slash Commands
-        if BEASTLYFC_GUILD_ID != 0:
-            guild_obj = discord.Object(id=BEASTLYFC_GUILD_ID)
-            self.tree.copy_global_to(guild=guild_obj)
-            synced = await self.tree.sync(guild=guild_obj)
-            logger.info(
-                "⚡ Instantly synced %d commands exclusively to BeastlyFC (Guild ID: %d)",
-                len(synced),
-                BEASTLYFC_GUILD_ID,
-            )
-        else:
-            synced = await self.tree.sync()
-            logger.info("Synced %d commands globally (No BEASTLYFC_GUILD_ID set).", len(synced))
+        try:
+            if BEASTLYFC_GUILD_ID != 0:
+                guild_obj = discord.Object(id=BEASTLYFC_GUILD_ID)
+                self.tree.copy_global_to(guild=guild_obj)
+                synced = await self.tree.sync(guild=guild_obj)
+                logger.info(
+                    "⚡ Instantly synced %d commands exclusively to BeastlyFC (Guild ID: %d)",
+                    len(synced),
+                    BEASTLYFC_GUILD_ID,
+                )
+            else:
+                synced = await self.tree.sync()
+                logger.info("Synced %d commands globally (No BEASTLYFC_GUILD_ID set).", len(synced))
+        except Exception as e:
+            logger.warning("Slash command tree sync postponed: %s", e)
 
     async def on_ready(self):
         logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -176,17 +164,45 @@ class BeastlyBankBot(commands.Bot):
 bot = BeastlyBankBot()
 
 
+async def start_web_server(port: int):
+    """Instantly bind to $PORT for cloud platforms (Render, Koyeb)."""
+    try:
+        import os
+        from aiohttp import web
+        app = web.Application()
+        app.router.add_get("/", lambda r: web.Response(text="BeastlyBank is online ⚽"))
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "0.0.0.0", port)
+        await site.start()
+        logger.info("⚡ Cloud health server listening on port %d", port)
+    except Exception as e:
+        logger.warning("Could not start cloud health server: %s", e)
+
+
+async def main_async():
+    import os
+    port_str = os.getenv("PORT")
+    if port_str and port_str.isdigit():
+        await start_web_server(int(port_str))
+
+    await bot.start(DISCORD_TOKEN)
+
 
 def main():
     if not DISCORD_TOKEN or DISCORD_TOKEN == "your_bot_token_here":
         print("\n" + "=" * 60)
-        print("❌ ERROR: DISCORD_TOKEN is not set in .env!")
-        print("Please copy .env.example to .env and configure your Discord Bot Token.")
+        print("❌ ERROR: DISCORD_TOKEN is not set in environment or .env!")
+        print("Please configure DISCORD_TOKEN.")
         print("=" * 60 + "\n")
         sys.exit(1)
 
-    bot.run(DISCORD_TOKEN)
+    try:
+        asyncio.run(main_async())
+    except KeyboardInterrupt:
+        logger.info("BeastlyBank stopped.")
 
 
 if __name__ == "__main__":
     main()
+

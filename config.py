@@ -9,8 +9,8 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 
-# Discord Bot Token
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "")
+# Discord Bot Token (sanitize quotes and whitespace from cloud environment)
+DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "").strip().strip("'\"")
 
 # Server Lock: BeastlyFC Guild ID
 # If set, all slash commands and interactions are restricted strictly to this Guild ID.

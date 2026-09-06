@@ -143,3 +143,49 @@ class SummaryView(discord.ui.View):
         stats = await self.db.get_economy_stats(interaction.guild_id)
         embed = summary_economy_embed(stats)
         await interaction.response.edit_message(embed=embed, view=self)
+
+
+class AnnouncementView(discord.ui.View):
+    """Interactive action buttons attached to official announcements."""
+
+    def __init__(self, db_manager):
+        super().__init__(timeout=None)
+        self.db = db_manager
+
+    @discord.ui.button(
+        label="📖 Open /help Guide",
+        style=discord.ButtonStyle.primary,
+        custom_id="beastly_announcement_help_btn",
+        emoji="📖",
+    )
+    async def help_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from utils.embeds import summary_overview_embed
+        user_data = await self.db.get_or_create_user(interaction.user.id, interaction.guild_id)
+        club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+        embed = summary_overview_embed(interaction.user, user_data, club)
+        view = SummaryView(self.db, interaction.user, user_data, club)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+    @discord.ui.button(
+        label="💰 Check My Balance",
+        style=discord.ButtonStyle.secondary,
+        custom_id="beastly_announcement_bal_btn",
+        emoji="💰",
+    )
+    async def balance_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from utils.embeds import bank_card_embed
+        account = await self.db.get_or_create_user(interaction.user.id, interaction.guild_id)
+        club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+        embed = bank_card_embed(interaction.user, account, club)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @discord.ui.button(
+        label="⚽ Squad Lineup Guide",
+        style=discord.ButtonStyle.success,
+        custom_id="beastly_announcement_squad_btn",
+        emoji="⚽",
+    )
+    async def squad_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from utils.embeds import summary_squad_embed
+        embed = summary_squad_embed()
+        await interaction.response.send_message(embed=embed, ephemeral=True)

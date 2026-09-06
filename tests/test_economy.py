@@ -1391,6 +1391,89 @@ async def test_player_ratings_potential_and_alt_positions(db: DatabaseManager):
     assert ode_new_pos["player"]["alt_positions"] == "RW, LW, CF"
 
 
+@pytest.mark.asyncio
+async def test_announcement_system(db: DatabaseManager):
+    """Verify official BeastlyBank announcement embed, buttons view, and announce commands."""
+    from unittest.mock import AsyncMock, MagicMock
+    import discord
+    from utils.embeds import beastlybank_announcement_embed
+    from utils.views import AnnouncementView
+    from cogs.admin import BankAdmin, BankerPrefixCommands
+
+    # 1. Validate the announcement embed
+    embed = beastlybank_announcement_embed()
+    assert "BEASTLYBANK SYSTEM GUIDE & OVERVIEW" in embed.title
+    field_names = [f.name for f in embed.fields]
+    assert any("Slash" in name and "Prefix" in name for name in field_names)
+    assert any("Multi-Currency" in name for name in field_names)
+    assert any("Free Clubs" in name for name in field_names)
+    assert any("Transfer Market" in name for name in field_names)
+    assert any("Squad Lineups, Formations" in name for name in field_names)
+    assert any("Store & Stash" in name for name in field_names)
+    assert any("Interactive Help" in name for name in field_names)
+
+    # Check key features mentioned in description / field values
+    combined_text = embed.description + " " + " ".join(f.value for f in embed.fields)
+    assert "bb!" in combined_text
+    assert "Message Content Intent" in combined_text
+    assert "26e6" in combined_text
+    assert "12 Supported Formations" in combined_text
+    assert "pos1, pos2, pos3, ....." in combined_text
+    assert "1–99 OVR" in combined_text
+    assert "1–99 POT" in combined_text
+
+    # 2. Validate AnnouncementView
+    view = AnnouncementView(db)
+    assert len(view.children) == 3
+    custom_ids = [btn.custom_id for btn in view.children]
+    assert "beastly_announcement_help_btn" in custom_ids
+    assert "beastly_announcement_bal_btn" in custom_ids
+    assert "beastly_announcement_squad_btn" in custom_ids
+
+    # 3. Test Prefix Command bb!announce
+    bot = MagicMock()
+    bot.db = db
+    admin_cog = BankAdmin(bot)
+    prefix_cog = BankerPrefixCommands(bot)
+
+    mock_channel = MagicMock(spec=discord.TextChannel)
+    mock_channel.id = 888888
+    mock_channel.mention = "<#888888>"
+    mock_channel.send = AsyncMock()
+
+    ctx = MagicMock()
+    ctx.channel = mock_channel
+    ctx.send = AsyncMock()
+
+    await prefix_cog.prefix_announce.callback(prefix_cog, ctx, channel=mock_channel)
+    mock_channel.send.assert_called_once()
+    sent_embed = mock_channel.send.call_args[1]["embed"]
+    sent_view = mock_channel.send.call_args[1]["view"]
+    assert "BEASTLYBANK SYSTEM GUIDE & OVERVIEW" in sent_embed.title
+    assert isinstance(sent_view, AnnouncementView)
+    ctx.send.assert_called_once()
+
+    # 4. Test Slash Command /announce
+    mock_interaction = MagicMock(spec=discord.Interaction)
+    mock_interaction.channel = mock_channel
+    mock_interaction.response = MagicMock()
+    mock_interaction.response.send_message = AsyncMock()
+
+    mock_channel.send.reset_mock()
+    await prefix_cog.slash_announce.callback(prefix_cog, mock_interaction, channel=mock_channel)
+    mock_channel.send.assert_called_once()
+    mock_interaction.response.send_message.assert_called_once()
+    assert mock_interaction.response.send_message.call_args[1]["ephemeral"] is True
+
+    # 5. Test Slash Command /bank announce
+    mock_channel.send.reset_mock()
+    mock_interaction.response.send_message.reset_mock()
+    await admin_cog.bank_announce.callback(admin_cog, mock_interaction, channel=mock_channel)
+    mock_channel.send.assert_called_once()
+    mock_interaction.response.send_message.assert_called_once()
+
+
+
 
 
 

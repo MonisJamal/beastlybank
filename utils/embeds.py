@@ -692,3 +692,99 @@ def player_card_embed(player: Dict[str, Any], club: Optional[Dict[str, Any]] = N
 
     return embed
 
+
+def beastlybank_announcement_embed() -> discord.Embed:
+    """Creates the official comprehensive BeastlyBank system guide & launch announcement embed."""
+    embed = create_beastly_embed(
+        title="🏦 OFFICIAL BEASTLYBANK SYSTEM GUIDE & OVERVIEW ⚽",
+        description=(
+            "Welcome to **BeastlyBank**, the automated financial infrastructure, treasury vault, and squad management ecosystem engineered exclusively for **BeastlyFC**! 💰\n\n"
+            "Below is your complete guide to all features, currencies, clubs, squad management, and commands.\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=COLOR_BEASTLY_GOLD,
+    )
+
+    embed.add_field(
+        name="💡 Slash (/) & Prefix (bb!) Commands",
+        value=(
+            "Every command in BeastlyBank can be triggered via standard Discord **Slash Commands (`/`)** or traditional **Prefix Commands (`bb!`)**:\n"
+            "• Examples: `/balance` or `bb!balance` (or `bb!bal`), `/transfer` or `bb!transfer`, `/help` or `bb!help`\n"
+            "*(Note: If `bb!` commands don't respond, ensure 'Message Content Intent' is enabled in the Discord Developer Portal, or simply use `/` slash commands).* "
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="💵 Multi-Currency Economy",
+        value=(
+            "• 💵 **Cash** — Primary currency used for player transfers, store items, and club prize payouts.\n"
+            "• ⭐ **Community Points (CP)** — Earned through server activities, competitions, and matches.\n"
+            "• 🎟️ **Training Tokens** — Specialized currency for player development drills and club training.\n"
+            "• **Commands:** `/balance [user]` | `bb!bal`, `/pay <user> <currency> <amount>` | `bb!pay`, `/transactions` | `bb!txs`."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🏟️ 100% Free Clubs & Role-Linked Treasuries",
+        value=(
+            "• **Free Club Registration:** Register your team with `/club create <name> <tag> <role: @role>` (or `bb!club create`). Zero creation fee!\n"
+            "• **Role Mentions Everywhere:** Mention your club's role (`@Role`) directly in all commands (`/club info [@role]`, `/club deposit`, `/club withdraw`, `/clubhistory [@role]`).\n"
+            "• **Secure Vaults:** Clubs hold dedicated vaults to finance operations and sign new star players."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="💸 Official Player Transfer Market",
+        value=(
+            "• **Official Transfer:** `/transfer <player> <from_club: @role> <to_club: @role> <amount>`\n"
+            "• **Prefix Transfer:** `bb!transfer <player> <@from_role> <@to_role> <amount>`\n"
+            "• **Automated Vault Settlement:** Automatically debits the buying club's vault and deposits into the selling club's vault!\n"
+            "• **Number Formats:** Supports standard (`5000000`), human notation (`30m`, `500k`), and scientific (`26e6`, `3e7`, or `0` for free transfers).\n"
+            "• **Attribute Preservation:** Position, jersey number, overall rating (OVR), potential (POT), and alternate positions are 100% preserved!"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="⚽ Squad Lineups, Formations & Player Management",
+        value=(
+            "• **Tactical Pitch Lineup:** `/lineup [club: @role]` | `bb!lineup [@role]` displays tactical pitch layout (🧤 GK, 🛡️ DEF, ⚙️ MID, ⚡ ATT) with `[OVR]` rating tags + Substitutes Bench!\n"
+            "• **12 Supported Formations:** `/formation set <form>` | `bb!setformation` (`4-3-3`, `4-4-2`, `4-2-3-1`, `3-5-2`, `3-4-3`, `5-3-2`, `4-1-2-1-2`, `4-5-1`, `5-2-3`, `3-4-1-2`, `4-3-2-1`, `4-2-2-2`). Browse with `/formation list`.\n"
+            "• **Player Creation:** `/player add` | `bb!addplayer` registers custom or Discord players with:\n"
+            "  - Primary Position (`GK`, `CB`, `LB`, `RB`, `CDM`, `CM`, `CAM`, `LW`, `RW`, `ST`, etc.)\n"
+            "  - Overall Rating (`1–99 OVR`, default 75)\n"
+            "  - Growth Potential (`1–99 POT`, default 80)\n"
+            "  - Alternate Positions: Comma-separated list `\"pos1, pos2, pos3, .....\"` (e.g. `\"LW, RW, CAM\"`)\n"
+            "  - Lineup Status: `starting` (enforces max 11 starters) or `bench`\n"
+            "• **Player Editing:** `/player edit` | `bb!editplayer <player> <field> <value>` (edit `rating`, `potential`, `alt`, `pos`, `number`, `status`).\n"
+            "• **Tactical Swaps:** `/player swap <p1> <p2>` | `bb!swap` (tactical substitution starter ⇄ bench or pitch position switch starter ⇄ starter)."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🛒 BeastlyBank Store & Stash",
+        value=(
+            "• Browse custom roles, VIP perks, and server boosts with `/shop` or `bb!shop`.\n"
+            "• Purchase items with `/buy <item_id> [quantity]` or `bb!buy`.\n"
+            "• Inspect your collected inventory with `/inventory` or `bb!inv`."
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📖 Interactive Help & Summary Menu",
+        value=(
+            "• Run `/help` or `bb!help` anytime to open the interactive 5-tab menu (**Overview**, **Squad & Lineup**, **Cheatsheet**, **Finances**, **Stats**)!\n"
+            "• Jump directly to any section: `/help category:squad`, `/help category:cheatsheet` (or `bb!help squad`).\n"
+            "• Check your personal profile card with `/summary` or `bb!summary`."
+        ),
+        inline=False,
+    )
+
+    embed.set_footer(text="Official Announcement • BeastlyBank System • BeastlyFC")
+    return embed
+

@@ -85,11 +85,12 @@
 | `/settings view` | View current server settings. |
 
 #### 🏆 Other & Utility
-| Command | Description |
-| :--- | :--- |
-| `/leaderboard <category: cash\|points\|tokens\|clubs>` | View the richest users or top clubs in the server with medals (🥇🥈🥉). |
-| `/giveaway start <duration> <prize> [winners] [curr] [amount]` | Start a new giveaway with interactive button entries & automated payouts. |
-| `/giveaway end <message_id>` | Conclude an active giveaway immediately. |
-| `/giveaway reroll <message_id>` | Redraw random winners from an existing giveaway. |
-| `/bank audit <user>` | Run a full forensic financial audit on any member. |
-| `/bank announce [channel]` | Broadcast the official BeastlyBank announcement embed to the server. |
+| Command | Prefix (`bb!`) | Description |
+| :--- | :--- | :--- |
+| `/leaderboard <category: cash\|points\|tokens\|clubs>` | — | View the richest users or top clubs in the server with medals (🥇🥈🥉). |
+| `/giveaway start <duration> <prize> [winners] [curr] [amount]` | — | Start a new giveaway with interactive button entries & automated payouts. |
+| `/giveaway end <message_id>` | — | Conclude an active giveaway immediately. |
+| `/giveaway reroll <message_id>` | — | Redraw random winners from an existing giveaway. |
+| `/bank audit <user>` | — | Run a full forensic financial audit on any member. |
+| `/bank announce [channel]` | — | Broadcast the official BeastlyBank announcement embed to the server (from `/bank` group). |
+| `/announce [channel]` | `bb!announce [#channel]` | Broadcast the official BeastlyBank System Guide & Feature Announcement with interactive buttons (📖 Help Guide, 💰 Check Balance, ⚽ Squad Lineup Guide). Buttons are ephemeral and persistent across bot restarts. |

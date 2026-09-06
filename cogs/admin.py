@@ -19,7 +19,8 @@ from config import (
     parse_amount,
 )
 from utils.checks import require_beastlyfc, require_banker_or_admin
-from utils.embeds import create_beastly_embed, error_embed, success_embed
+from utils.embeds import create_beastly_embed, error_embed, success_embed, beastlybank_announcement_embed
+from utils.views import AnnouncementView
 from cogs.clubs import club_name_autocomplete
 
 
@@ -401,36 +402,12 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
     ):
         target_channel = channel or interaction.channel
 
-        embed = create_beastly_embed(
-            title="🏦 BEASTLYBANK IS HERE!",
-            description=(
-                f"We're introducing **{BOT_NAME}**, the official economy and finance system for **{SERVER_NAME}**! 💰⚽\n\n"
-                f"**{BOT_NAME}** handles all server financial activities, including:\n\n"
-                f"💵 **Cash** — Your main server currency\n"
-                f"⭐ **Community Points** — Earned through server activities & match events\n"
-                f"🎟️ **Training Tokens** — Used for player drills & club training\n"
-                f"💸 **Player-to-Player Payments** — Instant slash payments\n"
-                f"🛒 **Shop Purchases** — Unlock exclusive roles & boosts\n"
-                f"🏟️ **Club Treasuries** — Dedicated vaults for BeastlyFC squads\n"
-                f"🎉 **Giveaways** — Live interactive entry buttons & automated payouts\n"
-                f"📜 **Transaction History** — Complete automated double-entry ledger\n"
-                f"🏆 **Leaderboards** — Real-time wealth rankings\n\n"
-                f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"💰 **Your Economy**\n"
-                f"Every member has their own **BeastlyBank** account automatically created with a starter pack!\n"
-                f"Check your balances anytime using:\n\n"
-                f"👉 </balance:0>\n\n"
-                f"⚠️ **Important Notice**\n"
-                f"Do not send money manually or keep track of transactions yourself.\n"
-                f"**BeastlyBank** automatically records all supported transactions and manages balances through the secure database.\n\n"
-                f"⚽ *Welcome to the next level of BeastlyFC!*"
-            ),
-            color=COLOR_BEASTLY_GOLD,
-        )
+        embed = beastlybank_announcement_embed()
+        view = AnnouncementView(self.db)
 
-        await target_channel.send(embed=embed)
+        await target_channel.send(embed=embed, view=view)
         await interaction.response.send_message(
-            f"✅ Announcement sent to {target_channel.mention}!", ephemeral=True
+            f"✅ BeastlyBank announcement sent to {target_channel.mention}!", ephemeral=True
         )
 
 
@@ -440,6 +417,48 @@ class BankerPrefixCommands(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.db = bot.db  # type: ignore
+
+    @app_commands.command(
+        name="announce",
+        description="Broadcast the official BeastlyBank System & Feature Announcement.",
+    )
+    @app_commands.describe(channel="Target channel for announcement (defaults to current channel)")
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def slash_announce(
+        self,
+        interaction: discord.Interaction,
+        channel: Optional[discord.TextChannel] = None,
+    ):
+        target_channel = channel or interaction.channel
+        embed = beastlybank_announcement_embed()
+        view = AnnouncementView(self.db)
+        await target_channel.send(embed=embed, view=view)
+        await interaction.response.send_message(
+            f"✅ BeastlyBank announcement successfully sent to {target_channel.mention}!", ephemeral=True
+        )
+
+    @commands.command(name="announce", aliases=["bankannounce"])
+    @require_banker_or_admin()
+    async def prefix_announce(
+        self,
+        ctx: commands.Context,
+        channel: Optional[discord.TextChannel] = None,
+    ):
+        """
+        bb!announce [#channel]
+        Broadcasts the official BeastlyBank System Announcement to the specified channel (or current channel).
+        """
+        target_channel = channel or ctx.channel
+        embed = beastlybank_announcement_embed()
+        view = AnnouncementView(self.db)
+        await target_channel.send(embed=embed, view=view)
+        await ctx.send(
+            embed=success_embed(
+                "Announcement Broadcasted",
+                f"✅ Official BeastlyBank Announcement successfully broadcasted to {target_channel.mention}!",
+            )
+        )
 
     @commands.command(name="vault")
     @require_banker_or_admin()

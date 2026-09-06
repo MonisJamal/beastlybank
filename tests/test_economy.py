@@ -714,4 +714,55 @@ async def test_transfer_auto_registers_unknown_club_roles(db: DatabaseManager):
     assert buyer["treasury_cash"] == -30_000_000
 
 
+@pytest.mark.asyncio
+async def test_prefix_commands_resolution():
+    """Verify that bb! prefix commands (balance, transfer, club, leaderboard) are properly registered."""
+    from bot import BeastlyBankBot
+    import asyncio
+    from unittest.mock import MagicMock
+    import discord
+
+    bot = BeastlyBankBot()
+    loop = asyncio.get_running_loop()
+    bot.loop = loop
+    bot.http.loop = loop
+    bot._connection.loop = loop
+    mock_user = MagicMock(spec=discord.ClientUser)
+    mock_user.id = 999999999
+    bot._connection.user = mock_user
+
+    await bot.setup_hook()
+
+    guild = MagicMock(spec=discord.Guild)
+    guild.id = 1222195412295745536
+    author = MagicMock(spec=discord.Member)
+    author.id = 12345
+    author.bot = False
+
+    commands_to_check = [
+        ("bb!balance", "balance"),
+        ("bb!bal", "balance"),
+        ("bb!transfer Player @ClubA @ClubB 26e6", "transfer"),
+        ("bb!club", "club"),
+        ("bb!clubhistory", "clubhistory"),
+        ("bb!leaderboard", "leaderboard"),
+        ("bb!summary", "summary"),
+        ("bb!help", "help"),
+        ("bb!daily", "daily"),
+        ("bb!work", "work"),
+    ]
+
+    for text, expected_name in commands_to_check:
+        msg = MagicMock(spec=discord.Message)
+        msg.content = text
+        msg.guild = guild
+        msg.author = author
+        ctx = await bot.get_context(msg)
+        assert ctx.command is not None, f"Command not found for '{text}'"
+        assert ctx.command.name == expected_name
+
+    await bot.close()
+
+
+
 

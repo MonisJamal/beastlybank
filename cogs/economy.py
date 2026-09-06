@@ -372,37 +372,68 @@ class Economy(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name="pay")
-    async def prefix_pay(self, ctx: commands.Context, recipient: discord.Member, currency: str, amount: str, *, reason: Optional[str] = None):
-        """bb!pay <@user> <cash|tokens> <amount> [reason]"""
-        c_low = currency.lower().strip()
-        if c_low not in ("cash", "tokens", "token"):
-            await ctx.send(embed=error_embed("Invalid Currency", "Currency must be `cash` or `tokens`."))
+    async def prefix_pay(self, ctx: commands.Context, recipient: discord.Member, arg1: str, arg2: Optional[str] = None, *, reason: Optional[str] = None):
+        """bb!pay <@user> <amount> [currency=cash] [reason] OR bb!pay <@user> <currency> <amount> [reason]"""
+        curr_key = "cash"
+        amount_str = None
+        memo = reason
+
+        c1 = arg1.lower().strip()
+        p1 = parse_amount(arg1)
+
+        if c1 in ("cash", "tokens", "token"):
+            curr_key = "tokens" if "token" in c1 else "cash"
+            if arg2:
+                amount_str = arg2
+            else:
+                await ctx.send(embed=error_embed("Missing Amount", "Please provide the amount to transfer: `bb!pay @user [currency] <amount> [reason]`"))
+                return
+        elif p1 is not None and p1 > 0:
+            amount_str = arg1
+            if arg2:
+                c2 = arg2.lower().strip()
+                if c2 in ("cash", "tokens", "token"):
+                    curr_key = "tokens" if "token" in c2 else "cash"
+                else:
+                    memo = f"{arg2} {reason}" if reason else arg2
+        else:
+            await ctx.send(embed=error_embed(
+                "Invalid Amount",
+                f"Invalid amount or format: `{arg1}`.\n\n"
+                "**Supported Formats:**\n"
+                "• `bb!pay @user 5000` (defaults to Cash)\n"
+                "• `bb!pay @user 26e6 tokens Prize money`\n"
+                "• `bb!pay @user cash 500k`"
+            ))
             return
-        curr_key = "tokens" if "token" in c_low else "cash"
-        parsed = parse_amount(amount)
+
+        parsed = parse_amount(amount_str)
         if parsed is None or parsed <= 0:
-            await ctx.send(embed=error_embed("Invalid Amount", f"Invalid amount: `{amount}`"))
+            await ctx.send(embed=error_embed("Invalid Amount", f"Invalid amount: `{amount_str}`"))
             return
+
         if recipient.bot or recipient.id == ctx.author.id:
             await ctx.send(embed=error_embed("Transfer Error", "You cannot send money to bots or yourself!"))
             return
+
         success, msg = await self.db.transfer(
             sender_id=ctx.author.id,
             receiver_id=recipient.id,
             guild_id=ctx.guild.id,
             currency=curr_key,
             amount=parsed,
-            reason=reason,
+            reason=memo,
         )
         if not success:
             await ctx.send(embed=error_embed("Transfer Failed", msg))
             return
+
         curr_info = CURRENCIES.get(curr_key, {})
         emoji = curr_info.get("emoji", "💰")
         embed = success_embed(
             "Transfer Completed",
-            f"Successfully transferred {emoji} **{parsed:,}** to {recipient.mention}!\n"
-            f"📝 *Memo: {reason or 'Direct Transfer'}*",
+            f"Successfully transferred {emoji} **{parsed:,} {curr_info.get('name', 'Cash')}** to {recipient.mention}!\n"
+            f"📝 *Memo: {memo or 'Direct Transfer'}*",
         )
         await ctx.send(embed=embed)
 

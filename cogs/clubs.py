@@ -1,10 +1,13 @@
 """
 Club Treasuries Cog: Club vaults, formations, deposits, withdrawals, and leaderboards.
 """
+import logging
 from typing import Literal, Optional
 import discord
 from discord import app_commands
 from discord.ext import commands
+
+logger = logging.getLogger("BeastlyBank.Clubs")
 
 from config import CURRENCIES, COLOR_BEASTLY_GOLD, COLOR_PITCH_GREEN, COLOR_SUCCESS, parse_amount
 from utils.checks import require_beastlyfc, is_banker_or_admin
@@ -727,9 +730,245 @@ class ClubHistoryTop(commands.Cog):
 
         await interaction.response.send_message(embed=embed)
 
+    @commands.command(name="clubhistory", aliases=["chistory", "ch"])
+    async def prefix_clubhistory(self, ctx: commands.Context, *, club_query: Optional[str] = None):
+        """bb!clubhistory [club_name]"""
+        if club_query:
+            club = await self.db.get_club_by_name(ctx.guild.id, club_query.strip())
+        else:
+            club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+
+        if not club:
+            target_str = f"matching '{club_query}'" if club_query else "for your account"
+            await ctx.send(embed=error_embed("Club Not Found", f"No club found {target_str}."))
+            return
+
+        txs = await self.db.get_club_transactions(club["id"], ctx.guild.id, limit=8)
+
+        embed = create_beastly_embed(
+            title=f"📜 Club Treasury History • [{club['tag']}] {club['name']}",
+            description=f"Official treasury activity for **[{club['tag']}] {club['name']}**:\n━━━━━━━━━━━━━━━━━━━━━━",
+            color=COLOR_PITCH_GREEN,
+        )
+
+        if not txs:
+            embed.description += "\n*No recorded transactions found for this club.*"
+        else:
+            for t in txs:
+                curr_info = CURRENCIES.get(t["currency"], {})
+                emoji = curr_info.get("emoji", "💰")
+                tx_type = t["tx_type"].replace("_", " ").title()
+                reason = t.get("reason") or "No memo"
+                time_str = t.get("created_at", "")[:16]
+                embed.add_field(
+                    name=f"#{t['id']} | {tx_type} — {emoji} {t['amount']:,}",
+                    value=f"📝 *{reason}* • `{time_str}`",
+                    inline=False,
+                )
+
+        await ctx.send(embed=embed)
+
+
+class ClubPrefixCommands(commands.Cog):
+    """Prefix commands for BeastlyFC Clubs (bb!club ...)."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db = bot.db  # type: ignore
+
+    @commands.group(name="club", invoke_without_command=True)
+    async def prefix_club(self, ctx: commands.Context, *, club_query: Optional[str] = None):
+        """bb!club [club_name]"""
+        if club_query:
+            club = await self.db.get_club_by_name(ctx.guild.id, club_query.strip())
+        else:
+            club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+
+        if not club:
+            target_text = f"matching '{club_query}'" if club_query else "for your account"
+            await ctx.send(embed=error_embed("Club Not Found", f"Could not find an active club {target_text}."))
+            return
+
+        members = await self.db.get_club_members(club["id"])
+        embed = club_info_embed(club, members)
+        await ctx.send(embed=embed)
+
+    @prefix_club.command(name="info")
+    async def prefix_club_info(self, ctx: commands.Context, *, club_query: Optional[str] = None):
+        """bb!club info [club_name]"""
+        await self.prefix_club(ctx, club_query=club_query)
+
+    @prefix_club.command(name="create")
+    async def prefix_club_create(self, ctx: commands.Context, name: str, tag: str):
+        """bb!club create <name> <tag>"""
+        success, msg, club = await self.db.create_club(
+            guild_id=ctx.guild.id,
+            name=name,
+            tag=tag,
+            owner_id=ctx.author.id,
+        )
+        if not success:
+            await ctx.send(embed=error_embed("Club Registration Failed", msg))
+            return
+
+        embed = create_beastly_embed(
+            title="🏟️ Club Registered Successfully!",
+            description=(
+                f"Congratulations {ctx.author.mention}! **[{club['tag']}] {club['name']}** is now officially affiliated with BeastlyFC!\n\n"
+                f"🏦 **Club Treasury Vault Activated:**\n"
+                f"• 💵 **Cash:** `0`\n"
+                f"• ⭐ **Points:** `0`\n"
+                f"• 🎟️ **Tokens:** `0`\n\n"
+                f"Use `bb!club deposit` to fund your treasury or `bb!club info` to view your squad!"
+            ),
+            color=COLOR_SUCCESS,
+        )
+        await ctx.send(embed=embed)
+
+    @prefix_club.command(name="deposit")
+    async def prefix_club_deposit(self, ctx: commands.Context, currency: str, amount: str, *, club: Optional[str] = None):
+        """bb!club deposit <cash|points|tokens> <amount> [club_name]"""
+        c_low = currency.lower().strip()
+        if c_low not in ("cash", "points", "tokens", "token", "point"):
+            parsed_test = parse_amount(currency)
+            if parsed_test is not None and amount.lower().strip() in ("cash", "points", "tokens", "token", "point"):
+                parsed_amount = parsed_test
+                curr_key = "points" if "point" in amount.lower() else ("tokens" if "token" in amount.lower() else "cash")
+            else:
+                await ctx.send(embed=error_embed("Invalid Currency", "Currency must be `cash`, `points`, or `tokens`."))
+                return
+        else:
+            curr_key = "points" if "point" in c_low else ("tokens" if "token" in c_low else "cash")
+            parsed_amount = parse_amount(amount)
+
+        if parsed_amount is None or parsed_amount <= 0:
+            await ctx.send(embed=error_embed("Invalid Amount", f"Deposit amount must be greater than 0: `{amount}`"))
+            return
+
+        is_banker = is_banker_or_admin(ctx.author)
+
+        if club:
+            target_club = await self.db.get_club_by_name(ctx.guild.id, club.strip())
+            if not target_club:
+                await ctx.send(embed=error_embed("Club Not Found", f"No club found matching `{club}`."))
+                return
+            if not is_banker:
+                user_club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+                if not user_club or user_club["id"] != target_club["id"]:
+                    await ctx.send(embed=error_embed("Permission Denied", "You must be a BeastlyBank Banker to deposit directly into another club's vault."))
+                    return
+        else:
+            target_club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+            if not target_club:
+                await ctx.send(embed=error_embed("No Club Affiliation", "You must be a member of a club to deposit funds (or specify a club if you are a BeastlyBank Banker)!"))
+                return
+
+        success, msg = await self.db.club_deposit(
+            club_id=target_club["id"],
+            user_id=ctx.author.id,
+            guild_id=ctx.guild.id,
+            currency=curr_key,
+            amount=parsed_amount,
+            is_banker=is_banker,
+        )
+
+        if not success:
+            await ctx.send(embed=error_embed("Deposit Failed", msg))
+            return
+
+        curr_emoji = CURRENCIES.get(curr_key, {}).get("emoji", "💰")
+        banker_note = " *(Authorized by BeastlyBank Banker)*" if is_banker else ""
+        embed = create_beastly_embed(
+            title="📥 Club Treasury Deposit",
+            description=(
+                f"{ctx.author.mention} contributed {curr_emoji} **{parsed_amount:,}** into the "
+                f"**[{target_club['tag']}] {target_club['name']}** Treasury!{banker_note}\n\n"
+                f"🏦 *Recorded in BeastlyBank automated club ledger.*"
+            ),
+            color=COLOR_SUCCESS,
+        )
+        await ctx.send(embed=embed)
+
+    @prefix_club.command(name="withdraw")
+    async def prefix_club_withdraw(self, ctx: commands.Context, currency: str, amount: str, *, reason: str = "Club Withdrawal"):
+        """bb!club withdraw <cash|points|tokens> <amount> [reason]"""
+        c_low = currency.lower().strip()
+        if c_low not in ("cash", "points", "tokens", "token", "point"):
+            await ctx.send(embed=error_embed("Invalid Currency", "Currency must be `cash`, `points`, or `tokens`."))
+            return
+        curr_key = "points" if "point" in c_low else ("tokens" if "token" in c_low else "cash")
+        parsed_amount = parse_amount(amount)
+        if parsed_amount is None or parsed_amount <= 0:
+            await ctx.send(embed=error_embed("Invalid Amount", f"Withdrawal amount must be greater than 0: `{amount}`"))
+            return
+
+        user_club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+        if not user_club:
+            await ctx.send(embed=error_embed("No Club", "You are not in a club!"))
+            return
+
+        is_banker = is_banker_or_admin(ctx.author)
+        success, msg = await self.db.club_withdraw(
+            club_id=user_club["id"],
+            user_id=ctx.author.id,
+            guild_id=ctx.guild.id,
+            currency=curr_key,
+            amount=parsed_amount,
+            reason=reason,
+            is_banker=is_banker,
+        )
+
+        if not success:
+            await ctx.send(embed=error_embed("Withdrawal Denied", msg))
+            return
+
+        curr_emoji = CURRENCIES.get(curr_key, {}).get("emoji", "💰")
+        banker_note = " *(Authorized by BeastlyBank Banker)*" if is_banker else ""
+        embed = create_beastly_embed(
+            title="📤 Club Treasury Withdrawal",
+            description=(
+                f"{ctx.author.mention} withdrew {curr_emoji} **{parsed_amount:,}** from "
+                f"**[{user_club['tag']}] {user_club['name']}** Treasury.{banker_note}\n\n"
+                f"📝 **Reason:** *{reason}*\n"
+                f"🏦 *Funds credited to personal account.*"
+            ),
+            color=COLOR_BEASTLY_GOLD,
+        )
+        await ctx.send(embed=embed)
+
+    @prefix_club.command(name="list")
+    async def prefix_club_list(self, ctx: commands.Context):
+        """bb!club list"""
+        clubs = await self.db.get_club_leaderboard(ctx.guild.id, limit=10)
+        embed = create_beastly_embed(
+            title="🏟️ BeastlyFC Club Treasuries Leaderboard",
+            description="Ranking of all registered clubs by total treasury assets:\n━━━━━━━━━━━━━━━━━━━━━━",
+            color=COLOR_BEASTLY_GOLD,
+        )
+        if not clubs:
+            embed.description += "\n*No clubs have registered with BeastlyBank yet. Be the first with `bb!club create`!*"
+            await ctx.send(embed=embed)
+            return
+
+        medals = ["🥇", "🥈", "🥉"]
+        for idx, c in enumerate(clubs, start=1):
+            rank_str = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
+            embed.add_field(
+                name=f"{rank_str} [{c['tag']}] {c['name']} (Owner: <@{c['owner_id']}>)",
+                value=(
+                    f"👥 Squad: **{c.get('member_count', 1)}** | "
+                    f"💵 Cash: `{c['treasury_cash']:,}` | "
+                    f"⭐ Points: `{c['treasury_points']:,}` | "
+                    f"🎟️ Tokens: `{c['treasury_tokens']:,}`"
+                ),
+                inline=False,
+            )
+        await ctx.send(embed=embed)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Clubs(bot))
     await bot.add_cog(ClubHistoryTop(bot))
+    await bot.add_cog(ClubPrefixCommands(bot))
     await bot.add_cog(TransferMarket(bot))
 

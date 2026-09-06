@@ -148,7 +148,16 @@ class BeastlyBankBot(commands.Bot):
             logger.info("🔒 SERVER LOCK: ACTIVE (Locked to Guild: %d)", BEASTLYFC_GUILD_ID)
         else:
             logger.warning("⚠️ SERVER LOCK: INACTIVE (Set BEASTLYFC_GUILD_ID in .env)")
-        logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        if not self.intents.message_content:
+            logger.warning("⚠️" * 30)
+            logger.warning("⚠️ [IMPORTANT] MESSAGE CONTENT INTENT IS DISABLED IN DISCORD DEVELOPER PORTAL!")
+            logger.warning("⚠️ 'bb!' prefix commands cannot respond because Discord strips message text.")
+            logger.warning("👉 To fix: Open https://discord.com/developers/applications")
+            logger.warning("👉 Select your Bot -> Bot tab -> Privileged Gateway Intents -> Enable 'Message Content Intent' -> Save Changes")
+            logger.warning("ℹ️ Fallback: Mentioning the bot always works (e.g. '@BeastlyBank balance') or use slash commands.")
+            logger.warning("⚠️" * 30)
+        else:
+            logger.info("✅ MESSAGE CONTENT INTENT: ENABLED ('bb!' prefix commands fully operational).")
 
         # Set football economy presence
         activity = discord.Activity(
@@ -157,19 +166,44 @@ class BeastlyBankBot(commands.Bot):
         )
         await self.change_presence(status=discord.Status.online, activity=activity)
 
+    async def on_message(self, message: discord.Message):
+        """Process incoming messages and enforce guild locks and bot checks."""
+        if message.author.bot:
+            return
+
+        # Direct messages check
+        if not message.guild:
+            if message.content and any(message.content.lower().strip().startswith(p) for p in ("bb!", "bb ", f"<@{self.user.id}>", f"<@!{self.user.id}>")):
+                await message.channel.send(embed=error_embed("Access Denied", f"{BOT_NAME} commands can only be used inside the **{SERVER_NAME}** server!"))
+            return
+
+        # Enforce BeastlyFC server lock for prefix commands
+        if BEASTLYFC_GUILD_ID != 0 and message.guild.id != BEASTLYFC_GUILD_ID:
+            if message.content and any(message.content.lower().strip().startswith(p) for p in ("bb!", "bb ", f"<@{self.user.id}>", f"<@!{self.user.id}>")):
+                await message.channel.send(embed=error_embed("Server Locked", f"{BOT_NAME} is strictly exclusive to the **{SERVER_NAME}** server!"))
+            return
+
+        if message.content:
+            low = message.content.lower().strip()
+            if low.startswith(("bb!", "bb ", f"<@{self.user.id}>", f"<@!{self.user.id}>")):
+                logger.info("Prefix command triggered by %s (%d): %s", message.author, message.author.id, message.content[:80])
+
+        await self.process_commands(message)
+
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
         """Global Prefix Command Error Handler."""
-        if isinstance(error, commands.CommandNotFound):
+        actual_error = getattr(error, "original", error)
+        if isinstance(actual_error, commands.CommandNotFound):
             return
-        elif isinstance(error, commands.MissingRequiredArgument):
-            await ctx.send(embed=error_embed("Missing Argument", f"Missing required parameter: `{error.param.name}`\nUse `bb!help` or `/help` for usage."))
-        elif isinstance(error, commands.BadArgument):
-            await ctx.send(embed=error_embed("Invalid Parameter", str(error)))
-        elif isinstance(error, commands.CommandOnCooldown):
-            await ctx.send(embed=error_embed("Cooldown Active", f"Please wait **{error.retry_after:.1f}s** before using this command again."))
+        elif isinstance(actual_error, commands.MissingRequiredArgument):
+            await ctx.send(embed=error_embed("Missing Argument", f"Missing required parameter: `{actual_error.param.name}`\nUse `bb!help` or `/help` for usage."))
+        elif isinstance(actual_error, commands.BadArgument):
+            await ctx.send(embed=error_embed("Invalid Parameter", str(actual_error)))
+        elif isinstance(actual_error, commands.CommandOnCooldown):
+            await ctx.send(embed=error_embed("Cooldown Active", f"Please wait **{actual_error.retry_after:.1f}s** before using this command again."))
         else:
-            logger.error("Unhandled Prefix Command Error in %s: %s", ctx.command, error, exc_info=error)
-            await ctx.send(embed=error_embed("Command Error", f"An error occurred while running `{ctx.invoked_with}`: {str(error)}"))
+            logger.error("Unhandled Prefix Command Error in %s: %s", ctx.command, actual_error, exc_info=actual_error)
+            await ctx.send(embed=error_embed("Command Error", f"An error occurred while running `{ctx.invoked_with}`: {str(actual_error)}"))
 
     async def close(self):
         logger.info("Shutting down BeastlyBank and closing database connections...")

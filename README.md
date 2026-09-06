@@ -19,10 +19,12 @@
 | `/transfer <player> <@from_role> <@to_role> <amt>` | `bb!transfer <player> <@from_role> <@to_role> <amt>` | Official player transfer! Debits buying club vault and deposits directly into selling club vault (supports `26e6`, `3e7`, `26m`, `500k`, `0`). |
 | `/transactions [user]` | `bb!transactions`, `bb!txs` | View your recent transaction history with page navigation. |
 
-#### ⭐ Community Points
+#### 🛒 Store & Inventory
 | Command | Prefix (`bb!`) | Description |
 | :--- | :--- | :--- |
-| `/redeemcp <points>` | `bb!redeemcp`, `bb!rcp` | Convert your Community Points into Cash (Exchange rate: 1 CP = 2 Cash). |
+| `/shop` | `bb!shop`, `bb!store` | Browse the official BeastlyFC store for roles and perks. |
+| `/buy <item_id> [quantity]` | `bb!buy <item_id> [quantity]` | Purchase an item or role from the store. |
+| `/inventory [user]` | `bb!inventory`, `bb!inv` | Inspect items, roles, and perks in your personal stash. |
 
 #### 🏟️ Club & Treasuries
 | Command | Description |
@@ -50,10 +52,21 @@
 | `/manage set <user> <currency> <amount> [reason]` | Set a user's Cash, CP or Training Tokens to a specific amount. |
 | `/manage vault <club> <currency> <action> <amount>` | Add, remove, or set club vault treasury balances directly. |
 
+#### 🛒 Manage Shop (`/shopadmin`)
+| Command | Description |
+| :--- | :--- |
+| `/shopadmin add <name> <desc> <price> <curr> [stock] [role]` | Add an item or role reward to the store. |
+| `/shopadmin edit <item_id> [name] [desc] [price] [curr] [stock]` | Update an existing store item. |
+| `/shopadmin list` | View all store items including disabled items. |
+| `/shopadmin toggle <item_id>` | Enable or disable a store item. |
+| `/shopadmin remove <item_id>` | Permanently delete a store item. |
+
 #### ⚙️ Server Settings (`/settings`)
 | Command | Description |
 | :--- | :--- |
 | `/settings economy <enabled: bool>` | Enable or disable the server economy. |
+| `/settings shop <enabled: bool>` | Enable or disable the shop. |
+| `/settings purchases <enabled: bool>` | Enable or disable item purchases. |
 | `/settings view` | View current server settings. |
 
 #### 🏆 Other & Utility

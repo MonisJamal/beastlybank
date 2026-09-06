@@ -273,6 +273,28 @@ class ServerSettings(commands.GroupCog, name="settings", description="Manage Ser
         await interaction.response.send_message(embed=success_embed("Economy Setting Updated", msg))
 
     @app_commands.command(
+        name="purchases",
+        description="Enable or disable shop purchases.",
+    )
+    @app_commands.describe(enabled="True to enable purchases, False to disable")
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def settings_purchases(self, interaction: discord.Interaction, enabled: bool):
+        success, msg = await self.db.update_setting(interaction.guild_id, "purchases", enabled)
+        await interaction.response.send_message(embed=success_embed("Purchases Setting Updated", msg))
+
+    @app_commands.command(
+        name="shop",
+        description="Enable or disable the shop.",
+    )
+    @app_commands.describe(enabled="True to enable shop, False to disable")
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def settings_shop(self, interaction: discord.Interaction, enabled: bool):
+        success, msg = await self.db.update_setting(interaction.guild_id, "shop", enabled)
+        await interaction.response.send_message(embed=success_embed("Shop Setting Updated", msg))
+
+    @app_commands.command(
         name="view",
         description="View current server settings.",
     )
@@ -282,15 +304,20 @@ class ServerSettings(commands.GroupCog, name="settings", description="Manage Ser
         cfg = await self.db.get_settings(interaction.guild_id)
 
         econ_status = "🟢 Enabled" if cfg.get("economy_enabled", 1) else "🔴 Disabled"
+        purchases_status = "🟢 Enabled" if cfg.get("purchases_enabled", 1) else "🔴 Disabled"
+        shop_status = "🟢 Enabled" if cfg.get("shop_enabled", 1) else "🔴 Disabled"
 
         embed = create_beastly_embed(
             title=f"⚙️ Server Settings • {SERVER_NAME}",
-            description="Current financial configurations:\n━━━━━━━━━━━━━━━━━━━━━━",
+            description="Current financial and store configurations:\n━━━━━━━━━━━━━━━━━━━━━━",
             color=COLOR_PITCH_GREEN,
         )
 
         embed.add_field(name="💰 Server Economy", value=f"**{econ_status}**", inline=True)
-        embed.set_footer(text="Use /settings economy <enabled> to toggle the server economy.")
+        embed.add_field(name="🛒 Server Shop", value=f"**{shop_status}**", inline=True)
+        embed.add_field(name="🛍️ Item Purchases", value=f"**{purchases_status}**", inline=True)
+
+        embed.set_footer(text="Use /settings <economy|shop|purchases> to toggle settings.")
         await interaction.response.send_message(embed=embed)
 
 

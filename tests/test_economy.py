@@ -248,26 +248,43 @@ def test_server_lock_check():
 
 
 @pytest.mark.asyncio
-async def test_redeem_cp(db: DatabaseManager):
-    """Verify converting Community Points to Cash."""
+async def test_shop_and_purchases(db: DatabaseManager):
+    """Verify adding items to shop, purchasing, and stock tracking."""
     user_id = 801
     guild_id = 999999999
 
-    # Grant user test balance of 1,000 Cash and 250 Points
+    # Add item
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO shop_items (guild_id, name, description, price, currency, stock, is_active)
+            VALUES (?, 'VIP Role', 'Special server role', 500, 'cash', 5, 1);
+            """,
+            (guild_id,),
+        )
+        await conn.commit()
+
+    items = await db.get_shop_items(guild_id)
+    assert len(items) >= 1
+    item = next(i for i in items if i["name"] == "VIP Role")
+    assert item["price"] == 500
+
+    # User with 0 cash fails to buy
+    fail_buy, msg, _ = await db.buy_item(user_id, guild_id, item["id"], quantity=1)
+    assert fail_buy is False
+    assert "Insufficient" in msg
+
+    # Grant cash and purchase
     await db.update_balance(user_id, guild_id, "cash", 1000, "test_grant")
-    await db.update_balance(user_id, guild_id, "points", 250, "test_grant")
-
-    # Redeem 100 Points at 1:2 rate -> 200 Cash
-    success, msg, data = await db.redeem_cp(user_id, guild_id, points_amount=100, rate=2)
+    success, msg, _ = await db.buy_item(user_id, guild_id, item["id"], quantity=1)
     assert success is True
-    assert data["cash_received"] == 200
-    assert data["user"]["cash"] == 1200
-    assert data["user"]["points"] == 150
 
-    # Over-redeem fails
-    fail_success, fail_msg, _ = await db.redeem_cp(user_id, guild_id, points_amount=500, rate=2)
-    assert fail_success is False
-    assert "Insufficient" in fail_msg
+    # Check inventory
+    inv = await db.get_inventory(user_id, guild_id)
+    assert len(inv) == 1
+    assert inv[0]["name"] == "VIP Role"
+    assert inv[0]["quantity"] == 1
 
 
 @pytest.mark.asyncio
@@ -704,6 +721,8 @@ async def test_prefix_commands_resolution():
         ("bb!leaderboard", "leaderboard"),
         ("bb!summary", "summary"),
         ("bb!help", "help"),
+        ("bb!shop", "shop"),
+        ("bb!inventory", "inventory"),
     ]
 
     for text, expected_name in commands_to_check:

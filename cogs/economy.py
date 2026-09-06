@@ -192,49 +192,6 @@ class Economy(commands.Cog):
         await interaction.response.send_message(embed=initial_embed, view=view)
 
     @app_commands.command(
-        name="redeemcp",
-        description="Convert your Community Points into Cash (Exchange rate: 1 CP = 2 Cash).",
-    )
-    @app_commands.describe(points="Amount of Community Points (CP) to convert into Cash")
-    @require_beastlyfc()
-    async def redeemcp(self, interaction: discord.Interaction, points: int):
-        settings = await self.db.get_settings(interaction.guild_id)
-        if not settings.get("economy_enabled", 1):
-            await interaction.response.send_message(
-                embed=error_embed("Economy Paused", "The server economy is currently paused by administrators."),
-                ephemeral=True,
-            )
-            return
-
-        success, msg, data = await self.db.redeem_cp(
-            user_id=interaction.user.id,
-            guild_id=interaction.guild_id,
-            points_amount=points,
-            rate=2,
-        )
-
-        if not success:
-            await interaction.response.send_message(
-                embed=error_embed("Redemption Failed", msg),
-                ephemeral=True,
-            )
-            return
-
-        embed = create_beastly_embed(
-            title="⭐ Community Points Converted!",
-            description=(
-                f"{interaction.user.mention} successfully converted ⭐ **{points:,} CP** "
-                f"into 💵 **{data['cash_received']:,} Cash**!\n\n"
-                f"📊 **New Balances:**\n"
-                f"• 💵 Cash: `{data['user']['cash']:,}`\n"
-                f"• ⭐ CP: `{data['user']['points']:,}`\n\n"
-                f"🏦 *Transaction logged in BeastlyBank automated ledger.*"
-            ),
-            color=COLOR_SUCCESS,
-        )
-        await interaction.response.send_message(embed=embed)
-
-    @app_commands.command(
         name="summary",
         description="View a simple, clear summary of BeastlyBank commands and your account status.",
     )
@@ -403,28 +360,6 @@ class Economy(commands.Cog):
             return
         txs = await self.db.get_transactions(target.id, ctx.guild.id, limit=6, offset=0)
         embed = transaction_history_embed(target, txs, page=1, total_pages=math.ceil(total_txs / 6), total_count=total_txs)
-        await ctx.send(embed=embed)
-
-    @commands.command(name="redeemcp", aliases=["rcp"])
-    async def prefix_redeemcp(self, ctx: commands.Context, amount: str):
-        """bb!redeemcp <amount>"""
-        parsed = parse_amount(amount)
-        if parsed is None or parsed <= 0:
-            await ctx.send(embed=error_embed("Invalid Amount", f"Invalid amount: `{amount}`"))
-            return
-        success, msg, data = await self.db.redeem_cp(ctx.author.id, ctx.guild.id, parsed, rate=2)
-        if not success:
-            await ctx.send(embed=error_embed("Redemption Failed", msg))
-            return
-        embed = create_beastly_embed(
-            title="⭐ Community Points Converted!",
-            description=(
-                f"{ctx.author.mention} converted ⭐ **{parsed:,} CP** into 💵 **{data['cash_received']:,} Cash**!\n\n"
-                f"• 💵 Cash: `{data['user']['cash']:,}`\n"
-                f"• ⭐ CP: `{data['user']['points']:,}`"
-            ),
-            color=COLOR_SUCCESS,
-        )
         await ctx.send(embed=embed)
 
 

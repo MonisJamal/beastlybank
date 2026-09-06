@@ -249,7 +249,8 @@ def summary_overview_embed(
             "• `/balance` — View Cash, Community Points & Training Tokens.\n"
             "• `/pay <user> <currency> <amount>` — Send Cash or Tokens to another user.\n"
             "• `/transactions` — View your recent transaction history.\n"
-            "• `/redeemcp <amount>` — Convert Community Points to Cash (1 CP = 2 Cash).\n\n"
+            "• `/shop` & `/buy <id>` — Browse and purchase items from the BeastlyBank Store.\n"
+            "• `/inventory` — Inspect your items, perks, and roles.\n\n"
             "**🏟️ Club & Transfers**\n"
             "• `/transfer <player> <from> <to> <amount>` — Transfer player with fee disbursement (supports `26e6`, `30m`).\n"
             "• `/club create <name> <tag>` — Form your club and vault (100% Free!).\n"
@@ -269,6 +270,7 @@ def summary_overview_embed(
         value=(
             "• `/manage add/remove/set` — Credit, debit, or override a user's currency.\n"
             "• `/manage vault <club> <currency> <action> <amount>` — Add, remove, or set club vaults (`26e6`, `30m`, `500k`).\n"
+            "• `/shopadmin add/edit/list/toggle/remove` — Manage the store catalogue.\n"
             "• `/bank announce` & `/bank audit` — Server announcements & user audits."
         ),
         inline=False,
@@ -362,7 +364,9 @@ def summary_commands_embed() -> discord.Embed:
             "• `/pay <user> <currency> <amount>` — Send money to another player\n"
             "• `/transfer <player> <from> <to> <amount>` — Transfer custom player with fee\n"
             "• `/transactions [user]` — View transaction records\n"
-            "• `/redeemcp <amount>` — Convert Community Points to Cash (1:2)"
+            "• `/shop` — Browse official BeastlyBank Store\n"
+            "• `/buy <id> [qty]` — Purchase store items & perks\n"
+            "• `/inventory [user]` — Inspect personal item stash"
         ),
         inline=False,
     )

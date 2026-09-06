@@ -26,13 +26,6 @@
 | :--- | :--- | :--- |
 | `/redeemcp <points>` | `bb!redeemcp`, `bb!rcp` | Convert your Community Points into Cash (Exchange rate: 1 CP = 2 Cash). |
 
-#### 🛒 Shop & Stash
-| Command | Description |
-| :--- | :--- |
-| `/shop` | View available items, perks, and roles in the BeastlyBank Shop. |
-| `/buy <item_id> [quantity]` | Purchase an item with instant delivery (and automated role assignment). |
-| `/inventory [user]` | Inspect items, perks, and badges in your personal stash. |
-
 #### 🏟️ Club & Treasuries
 | Command | Description |
 | :--- | :--- |
@@ -57,22 +50,12 @@
 | `/manage add <user> <currency> <amount> [reason]` | Add Cash, CP or Training Tokens to a user. |
 | `/manage remove <user> <currency> <amount> [reason]` | Remove Cash, CP or Training Tokens from a user. |
 | `/manage set <user> <currency> <amount> [reason]` | Set a user's Cash, CP or Training Tokens to a specific amount. |
-
-#### 🛒 Manage Shop (`/shopadmin`)
-| Command | Description |
-| :--- | :--- |
-| `/shopadmin add <name> <desc> <price> <curr> [stock] [role]` | Add an item to the shop catalogue. |
-| `/shopadmin edit <item_id> [name] [desc] [price] [curr] [stock]` | Edit an existing shop item. |
-| `/shopadmin list` | View all shop items (including hidden/disabled items). |
-| `/shopadmin remove <item_id>` | Permanently remove a shop item from the catalogue. |
-| `/shopadmin toggle <item_id>` | Enable or disable a shop item from appearing in `/shop`. |
+| `/manage vault <club> <currency> <action> <amount>` | Add, remove, or set club vault treasury balances directly. |
 
 #### ⚙️ Server Settings (`/settings`)
 | Command | Description |
 | :--- | :--- |
 | `/settings economy <enabled: bool>` | Enable or disable the server economy. |
-| `/settings purchases <enabled: bool>` | Enable or disable shop purchases. |
-| `/settings shop <enabled: bool>` | Enable or disable the shop. |
 | `/settings view` | View current server settings. |
 
 #### 🏆 Other & Utility

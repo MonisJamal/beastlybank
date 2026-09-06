@@ -43,7 +43,7 @@ CURRENCIES = {
     "cash": {
         "name": "Cash",
         "emoji": "💵",
-        "description": "Your main server currency for transfers, shop, and club fees.",
+        "description": "Your main server currency for transfers, giveaways, and club fees.",
     },
     "points": {
         "name": "Community Points",

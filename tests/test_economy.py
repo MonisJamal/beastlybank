@@ -207,32 +207,7 @@ async def test_club_treasury_lifecycle(db: DatabaseManager):
     assert "Only Club Owners" in unauth_msg
 
 
-@pytest.mark.asyncio
-async def test_shop_and_inventory(db: DatabaseManager):
-    """Test purchasing items, stock deduction, and inventory tracking."""
-    user_id = 501
-    guild_id = 999999999
 
-    items = await db.get_shop_items(guild_id)
-    assert len(items) > 0
-
-    vip_item = next(i for i in items if "VIP" in i["name"])
-    # Give user enough cash
-    await db.update_balance(user_id, guild_id, "cash", 10000, "test_funds")
-
-    buy_success, buy_msg, item = await db.buy_item(
-        user_id=user_id,
-        guild_id=guild_id,
-        item_id=vip_item["id"],
-        quantity=1,
-    )
-    assert buy_success is True
-
-    # Check inventory
-    inv = await db.get_inventory(user_id, guild_id)
-    assert len(inv) == 1
-    assert inv[0]["name"] == vip_item["name"]
-    assert inv[0]["quantity"] == 1
 
 
 @pytest.mark.asyncio
@@ -346,8 +321,6 @@ async def test_server_settings(db: DatabaseManager):
 
     settings = await db.get_settings(guild_id)
     assert settings["economy_enabled"] == 1
-    assert settings["purchases_enabled"] == 1
-    assert settings["shop_enabled"] == 1
 
     # Disable economy
     await db.update_setting(guild_id, "economy", False)
@@ -397,34 +370,6 @@ async def test_club_managers_and_history(db: DatabaseManager):
     txs = await db.get_club_transactions(club["id"], guild_id)
     assert len(txs) >= 1
     assert any("Manager kit purchase" in str(t["reason"]) for t in txs)
-
-
-@pytest.mark.asyncio
-async def test_shop_admin_features(db: DatabaseManager):
-    """Test shop item editing, listing, and toggling."""
-    guild_id = 999999999
-
-    items = await db.get_shop_items(guild_id, include_inactive=True)
-    assert len(items) > 0
-    item = items[0]
-
-    # Edit item
-    success, msg = await db.edit_shop_item(
-        guild_id=guild_id,
-        item_id=item["id"],
-        name="Super Boost V2",
-        price=999,
-    )
-    assert success is True
-
-    # Toggle item off
-    t_success, t_msg, status = await db.toggle_shop_item(guild_id, item["id"])
-    assert t_success is True
-    assert status is False  # now disabled
-
-    # Verify not in normal shop items list
-    active_items = await db.get_shop_items(guild_id, include_inactive=False)
-    assert not any(i["id"] == item["id"] for i in active_items)
 
 
 @pytest.mark.asyncio

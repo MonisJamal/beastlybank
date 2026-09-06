@@ -257,10 +257,9 @@ def summary_overview_embed(
             "• `/club info` — View squad roster and treasury balances.\n"
             "• `/club deposit` & `/club withdraw` — Manage your team's treasury vault.\n"
             "• `/clubhistory` — View your club's ledger history.\n\n"
-            "**🛒 Shop & Leaderboards**\n"
-            "• `/shop` & `/buy <item_id>` — Browse items and buy server perks.\n"
-            "• `/inventory` — View your active perks & roles.\n"
-            "• `/leaderboard` — View the wealthiest players and clubs."
+            "**🏆 Competitions & Leaderboards**\n"
+            "• `/leaderboard` — View the wealthiest players and clubs.\n"
+            "• `/giveaway start/end` — Server giveaways with instant payouts."
         ),
         inline=False,
     )
@@ -271,7 +270,6 @@ def summary_overview_embed(
         value=(
             "• `/manage add/remove/set` — Credit, debit, or override a user's currency.\n"
             "• `/manage vault <club> <currency> <action> <amount>` — Add, remove, or set club vaults (`26e6`, `30m`, `500k`).\n"
-            "• `/shopadmin add/remove` — Manage items in the BeastlyBank Shop.\n"
             "• `/bank announce` & `/bank audit` — Server announcements & user audits."
         ),
         inline=False,
@@ -392,7 +390,6 @@ def summary_commands_embed() -> discord.Embed:
             "• `/manage remove <user> <currency> <amount>` — Deduct currency\n"
             "• `/manage set <user> <currency> <amount>` — Set exact balance\n"
             "• `/manage vault <club> <currency> <action> <amount>` — Operate club vault\n"
-            "• `/shopadmin add/remove` — Manage items in the shop\n"
             "• `/bank announce` — Send official announcement\n"
             "• `/bank audit <user>` — Full financial audit"
         ),

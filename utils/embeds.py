@@ -59,7 +59,6 @@ def bank_card_embed(
     cash = account.get("cash", 0)
     points = account.get("points", 0)
     tokens = account.get("tokens", 0)
-    streak = account.get("daily_streak", 0)
 
     embed = create_beastly_embed(
         title=f"🏦 BeastlyBank Account • {target_user.display_name}",
@@ -101,19 +100,6 @@ def bank_card_embed(
             value="*Free Agent (No Club)*",
             inline=True,
         )
-
-    # Daily streak & account tier
-    embed.add_field(
-        name="🔥 Daily Streak",
-        value=f"**{streak} Days**" if streak > 0 else "*No active streak*",
-        inline=True,
-    )
-    tier = "⭐ VIP Patron" if cash > 25000 else ("🏅 Premier League" if cash > 5000 else "⚽ Academy Member")
-    embed.add_field(
-        name="🎖️ Tier Status",
-        value=f"**{tier}**",
-        inline=True,
-    )
 
     embed.set_footer(
         text=f"Account ID: {target_user.id} • BeastlyBank Vault Protected 🔒"

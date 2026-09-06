@@ -172,9 +172,9 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
             description=(
                 f"Congratulations {interaction.user.mention}! **[{club['tag']}] {club['name']}** is now officially affiliated with BeastlyFC!\n\n"
                 f"🏦 **Club Treasury Vault Activated:**\n"
-                f"• 💵 **Cash:** `500`\n"
-                f"• ⭐ **Points:** `100`\n"
-                f"• 🎟️ **Tokens:** `2`\n\n"
+                f"• 💵 **Cash:** `0`\n"
+                f"• ⭐ **Points:** `0`\n"
+                f"• 🎟️ **Tokens:** `0`\n\n"
                 f"Use `/club deposit` to fund your treasury or `/club info` to view your squad!"
             ),
             color=COLOR_SUCCESS,

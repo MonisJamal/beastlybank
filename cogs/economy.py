@@ -141,7 +141,7 @@ class Economy(commands.Cog):
 
     @app_commands.command(
         name="daily",
-        description="Claim your daily BeastlyBank salary and build your streak.",
+        description="Claim your daily BeastlyBank salary.",
     )
     @require_beastlyfc()
     async def daily(self, interaction: discord.Interaction):
@@ -158,16 +158,14 @@ class Economy(commands.Cog):
 
         cash_earned = data["cash_earned"]
         points_earned = data["points_earned"]
-        streak = data["streak"]
 
         embed = create_beastly_embed(
             title="📅 Daily Salary Deposited!",
             description=(
                 f"Welcome back to **{SERVER_NAME}**, {interaction.user.mention}!\n\n"
                 f"💵 **Cash Credited:** `+{cash_earned:,}`\n"
-                f"⭐ **Community Points:** `+{points_earned:,}`\n"
-                f"🔥 **Daily Streak:** `{streak} Days`\n\n"
-                f"*Keep your streak alive to maximize daily payouts!*"
+                f"⭐ **Community Points:** `+{points_earned:,}`\n\n"
+                f"🏦 *Funds deposited into your BeastlyBank account.*"
             ),
             color=COLOR_BEASTLY_GOLD,
         )

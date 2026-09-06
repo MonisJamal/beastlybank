@@ -11,10 +11,11 @@
 #### 💰 Balance & Payments
 | Command | Description |
 | :--- | :--- |
-| `/balance [user]` | View your Cash, Community Points & Training Tokens, club affiliation, and streak. |
+| `/balance [user]` | View your Cash, Community Points & Training Tokens, and club affiliation. |
 | `/pay <user> <currency: cash\|tokens> <amount> [reason]` | Send Cash or Training Tokens directly to another BeastlyFC user. |
+| `/transfer <player> <from_club> <to_club> <amount> [recipient]` | Official player transfer with automatic fee disbursement (supports `26e6`, `3e7`, `26m`, `500k`, `0`). |
 | `/transactions [user]` | View your recent transaction history with page navigation. |
-| `/daily` | Claim your daily BeastlyBank salary and build your consecutive streak. |
+| `/daily` | Claim your daily BeastlyBank salary. |
 | `/work` | Complete a football training drill (Scouting, Finishing, Box Office) for cash & token rewards. |
 
 #### ⭐ Community Points
@@ -32,10 +33,11 @@
 #### 🏟️ Club & Treasuries
 | Command | Description |
 | :--- | :--- |
-| `/club create <name> <tag>` | Create your own football club and activate its treasury (2,000 Cash fee). |
+| `/club create <name> <tag>` | Create your own football club and activate its treasury (100% Free). |
 | `/club info [club]` | View club treasury balance, founder, and squad roster. |
 | `/club deposit <currency> <amount>` | Deposit personal Cash, Points, or Tokens into your club treasury. |
 | `/club withdraw <currency> <amount> <reason>` | Withdraw cash from your club treasury (Club Owners & Managers only). |
+| `/club transfer <player> <from_club> <to_club> <amount> [recipient]` | Execute official player transfer under club group. |
 | `/club history` | View recent transactions for your club treasury. |
 | `/clubhistory [club]` | View recent club treasury transactions. |
 | `/club addmanager <user>` | Promote a squad member to Club Manager (Owner only). |

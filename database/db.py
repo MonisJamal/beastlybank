@@ -244,6 +244,16 @@ class DatabaseManager:
                     default_items,
                 )
 
+            # Reset any users that had the legacy starter pack to 0
+            await cur.execute(
+                """
+                UPDATE users
+                SET cash = 0, points = 0, tokens = 0
+                WHERE cash = 1000 AND points = 250 AND tokens = 5;
+                """
+            )
+            await cur.execute("DELETE FROM transactions WHERE tx_type = 'starter_bonus';")
+
         await conn.commit()
         logger.info("Database schema initialized successfully.")
 
@@ -261,21 +271,13 @@ class DatabaseManager:
             if row:
                 return dict(row)
 
-            # Create new account with starter pack (1000 Cash, 250 Points, 5 Tokens)
+            # Create new account with 0 default balances
             await cur.execute(
                 """
                 INSERT INTO users (user_id, guild_id, cash, points, tokens, daily_streak)
-                VALUES (?, ?, 1000, 250, 5, 0);
+                VALUES (?, ?, 0, 0, 0, 0);
                 """,
                 (user_id, guild_id),
-            )
-            # Record starter transaction
-            await cur.execute(
-                """
-                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
-                VALUES (?, NULL, ?, 'cash', 1000, 'starter_bonus', 'Welcome to BeastlyFC BeastlyBank Starter Kit');
-                """,
-                (guild_id, user_id),
             )
             await conn.commit()
 
@@ -428,23 +430,11 @@ class DatabaseManager:
                 minutes, _ = divmod(remainder, 60)
                 return False, f"Daily reward already claimed! Come back in **{hours}h {minutes}m**.", user
 
-            # Check if streak broken (> 48 hours)
-            if elapsed > timedelta(hours=48):
-                streak = 1
-            else:
-                streak = min(streak + 1, 7)
-        else:
-            streak = 1
+        # Calculate flat daily reward (no streak multiplier)
+        from config import DAILY_REWARD_CASH, DAILY_REWARD_POINTS
 
-        # Calculate reward
-        from config import (
-            DAILY_REWARD_CASH,
-            DAILY_REWARD_POINTS,
-            DAILY_STREAK_BONUS_CASH,
-        )
-
-        cash_payout = DAILY_REWARD_CASH + (streak * DAILY_STREAK_BONUS_CASH)
-        points_payout = DAILY_REWARD_POINTS + (streak * 20)
+        cash_payout = DAILY_REWARD_CASH
+        points_payout = DAILY_REWARD_POINTS
 
         async with conn.cursor() as cur:
             await cur.execute(
@@ -452,11 +442,11 @@ class DatabaseManager:
                 UPDATE users
                 SET cash = cash + ?,
                     points = points + ?,
-                    daily_streak = ?,
+                    daily_streak = 0,
                     last_daily = ?
                 WHERE user_id = ? AND guild_id = ?;
                 """,
-                (cash_payout, points_payout, streak, now.isoformat(), user_id, guild_id),
+                (cash_payout, points_payout, now.isoformat(), user_id, guild_id),
             )
             # Record in transactions
             await cur.execute(
@@ -464,14 +454,14 @@ class DatabaseManager:
                 INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
                 VALUES (?, NULL, ?, 'cash', ?, 'daily_reward', ?);
                 """,
-                (guild_id, user_id, cash_payout, f"Day {streak} BeastlyBank Daily Salary"),
+                (guild_id, user_id, cash_payout, "BeastlyBank Daily Salary"),
             )
             await cur.execute(
                 """
                 INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
                 VALUES (?, NULL, ?, 'points', ?, 'daily_reward', ?);
                 """,
-                (guild_id, user_id, points_payout, f"Day {streak} BeastlyBank Daily Community Activity"),
+                (guild_id, user_id, points_payout, "BeastlyBank Daily Community Activity"),
             )
             await conn.commit()
 
@@ -479,7 +469,7 @@ class DatabaseManager:
         result_info = {
             "cash_earned": cash_payout,
             "points_earned": points_payout,
-            "streak": streak,
+            "streak": 0,
             "user": updated_user,
         }
         return True, "Daily claimed successfully!", result_info
@@ -691,11 +681,11 @@ class DatabaseManager:
                 return False, "A club with this name or tag already exists in BeastlyFC!", None
 
             # Creation fee: 100% Free!
-            # Insert Club with starter treasury gift
+            # Insert Club with 0 starter treasury
             await cur.execute(
                 """
                 INSERT INTO clubs (guild_id, name, tag, owner_id, treasury_cash, treasury_points, treasury_tokens)
-                VALUES (?, ?, ?, ?, 500, 100, 2);
+                VALUES (?, ?, ?, ?, 0, 0, 0);
                 """,
                 (guild_id, name, tag, owner_id),
             )

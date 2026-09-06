@@ -29,22 +29,20 @@ async def db():
 
 
 @pytest.mark.asyncio
-async def test_user_starter_pack(db: DatabaseManager):
-    """Verify new users receive starter kit (1,000 Cash, 250 Points, 5 Tokens)."""
+async def test_user_default_zero_balances(db: DatabaseManager):
+    """Verify new users start with 0 Cash, 0 Points, 0 Tokens by default."""
     user_id = 111111111
     guild_id = 999999999
 
     user = await db.get_or_create_user(user_id, guild_id)
-    assert user["cash"] == 1000
-    assert user["points"] == 250
-    assert user["tokens"] == 5
+    assert user["cash"] == 0
+    assert user["points"] == 0
+    assert user["tokens"] == 0
     assert user["daily_streak"] == 0
 
-    # Verify starter bonus was logged in transaction ledger
+    # No starter bonus transaction
     txs = await db.get_transactions(user_id, guild_id)
-    assert len(txs) == 1
-    assert txs[0]["tx_type"] == "starter_bonus"
-    assert txs[0]["amount"] == 1000
+    assert len(txs) == 0
 
 
 @pytest.mark.asyncio
@@ -53,6 +51,10 @@ async def test_player_to_player_transfer(db: DatabaseManager):
     alice_id = 101
     bob_id = 102
     guild_id = 999999999
+
+    # Fund Alice with test currency
+    await db.update_balance(alice_id, guild_id, "cash", 1000, "test_grant")
+    await db.update_balance(alice_id, guild_id, "tokens", 5, "test_grant")
 
     # Transfer Cash
     success, msg = await db.transfer(
@@ -68,7 +70,7 @@ async def test_player_to_player_transfer(db: DatabaseManager):
     alice = await db.get_or_create_user(alice_id, guild_id)
     bob = await db.get_or_create_user(bob_id, guild_id)
     assert alice["cash"] == 700
-    assert bob["cash"] == 1300
+    assert bob["cash"] == 300
 
     # Transfer Training Tokens
     tok_success, _ = await db.transfer(
@@ -83,7 +85,7 @@ async def test_player_to_player_transfer(db: DatabaseManager):
     alice = await db.get_or_create_user(alice_id, guild_id)
     bob = await db.get_or_create_user(bob_id, guild_id)
     assert alice["tokens"] == 3
-    assert bob["tokens"] == 7
+    assert bob["tokens"] == 2
 
     # Verify Insufficient Funds Protection
     fail_success, fail_msg = await db.transfer(
@@ -108,7 +110,7 @@ async def test_player_to_player_transfer(db: DatabaseManager):
 
 
 @pytest.mark.asyncio
-async def test_daily_streak_and_cooldown(db: DatabaseManager):
+async def test_daily_and_cooldown(db: DatabaseManager):
     """Test daily salary claim and 24h cooldown enforcement."""
     user_id = 201
     guild_id = 999999999
@@ -116,7 +118,6 @@ async def test_daily_streak_and_cooldown(db: DatabaseManager):
     # First claim
     success, msg, data = await db.claim_daily(user_id, guild_id)
     assert success is True
-    assert data["streak"] == 1
     assert data["cash_earned"] > 0
     assert data["points_earned"] > 0
 
@@ -163,7 +164,7 @@ async def test_club_treasury_lifecycle(db: DatabaseManager):
     assert success is True
     assert club is not None
     assert club["name"] == "Beastly Strikers"
-    assert club["treasury_cash"] == 500  # starter club treasury
+    assert club["treasury_cash"] == 0  # 0 default club treasury
 
     # Deposit into club treasury
     dep_success, dep_msg = await db.club_deposit(
@@ -176,7 +177,7 @@ async def test_club_treasury_lifecycle(db: DatabaseManager):
     assert dep_success is True
 
     updated_club = await db.get_club_by_name(guild_id, "BST")
-    assert updated_club["treasury_cash"] == 1500
+    assert updated_club["treasury_cash"] == 1000
 
     # Withdraw from club treasury
     w_success, w_msg = await db.club_withdraw(
@@ -190,7 +191,7 @@ async def test_club_treasury_lifecycle(db: DatabaseManager):
     assert w_success is True
 
     final_club = await db.get_club_by_name(guild_id, "BST")
-    assert final_club["treasury_cash"] == 1100
+    assert final_club["treasury_cash"] == 600
 
     # Unauthorized withdrawal attempt
     fake_user = 999
@@ -265,9 +266,9 @@ async def test_giveaways_and_payouts(db: DatabaseManager):
     assert len(winners) == 1
     assert winners[0] in (entrant1, entrant2)
 
-    # Verify winner was credited with 2500 Cash prize
+    # Verify winner was credited with 2500 Cash prize (default 0 + 2500)
     winner_acc = await db.get_or_create_user(winners[0], guild_id)
-    assert winner_acc["cash"] == 1000 + 2500  # Starter 1000 + 2500 prize
+    assert winner_acc["cash"] == 2500
 
 
 @pytest.mark.asyncio
@@ -321,7 +322,10 @@ async def test_redeem_cp(db: DatabaseManager):
     user_id = 801
     guild_id = 999999999
 
-    # User starts with 1,000 Cash and 250 Points
+    # Grant user test balance of 1,000 Cash and 250 Points
+    await db.update_balance(user_id, guild_id, "cash", 1000, "test_grant")
+    await db.update_balance(user_id, guild_id, "points", 250, "test_grant")
+
     # Redeem 100 Points at 1:2 rate -> 200 Cash
     success, msg, data = await db.redeem_cp(user_id, guild_id, points_amount=100, rate=2)
     assert success is True
@@ -380,6 +384,9 @@ async def test_club_managers_and_history(db: DatabaseManager):
     assert success is True
     assert "promoted" in msg
 
+    # Fund club treasury with 500 cash for withdrawal test
+    await db.club_deposit(club["id"], owner_id, guild_id, "cash", 500)
+
     # Manager can withdraw from treasury
     w_success, w_msg = await db.club_withdraw(
         club["id"], member_id, guild_id, "cash", 100, "Manager kit purchase"
@@ -426,18 +433,17 @@ async def test_free_club_creation(db: DatabaseManager):
     user_id = 999111
     guild_id = 999999999
 
-    # Set user cash to 0
-    await db.update_balance(user_id, guild_id, "cash", -1000, "debit")
+    # User starts with 0 cash by default
     user = await db.get_or_create_user(user_id, guild_id)
     assert user["cash"] == 0
 
-    # User creates club without paying 2,000 cash fee
+    # User creates club without paying fee
     success, msg, club = await db.create_club(guild_id, "Free Kings FC", "FKF", user_id)
     assert success is True
     assert club is not None
     assert club["name"] == "Free Kings FC"
     assert club["tag"] == "FKF"
-    assert club["treasury_cash"] == 500  # starter bonus given to treasury
+    assert club["treasury_cash"] == 0  # 0 default club treasury
 
     # User still has 0 cash (no deduction)
     user_after = await db.get_or_create_user(user_id, guild_id)
@@ -500,15 +506,13 @@ async def test_transfer_player_flow(db: DatabaseManager):
     assert success is True
     assert data["amount"] == 26_000_000
 
-    # Verify recipient received 26M cash
+    # Verify recipient received 26M cash (started from 0)
     recipient_user = await db.get_or_create_user(recipient_agent, guild_id)
-    # Default 1000 starter + 26M = 26001000
-    assert recipient_user["cash"] == 26_001_000
+    assert recipient_user["cash"] == 26_000_000
 
-    # Verify buyer club treasury debited by 26M
+    # Verify buyer club treasury debited by 26M (started from 0 + 30M - 26M = 4M)
     buyer_after = await db.get_club_by_name(guild_id, "BHW")
-    # Starter 500 + 30M deposited - 26M = 4,000,500
-    assert buyer_after["treasury_cash"] == 4_000_500
+    assert buyer_after["treasury_cash"] == 4_000_000
 
     # Verify player moved from seller roster to buyer roster
     seller_members = await db.get_club_members(seller_club["id"])

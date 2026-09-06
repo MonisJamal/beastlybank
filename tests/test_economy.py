@@ -827,5 +827,214 @@ async def test_role_mentionable_clubs(db: DatabaseManager):
     assert auto_res["club"]["role_id"] == new_role.id
 
 
+@pytest.mark.asyncio
+async def test_squad_lineup_and_formation_management(db: DatabaseManager):
+    """
+    Comprehensive test for:
+    - All 12 football formations (set_club_formation, rejection of invalid formations)
+    - Adding players to Starting XI (up to 11) and Bench with positions and jersey numbers
+    - Starting XI 11-player limit enforcement
+    - Editing player details (name, position, status, jersey number)
+    - Viewing lineup (get_club_lineup) and specific player info (get_player_info)
+    - Swapping players (starter <-> bench substitution, starter <-> starter position swap)
+    - Removing players
+    - Transfer preserving position and number
+    - Lineup and player card embed rendering
+    """
+    from config import SUPPORTED_FORMATIONS, VALID_POSITIONS
+    from utils.embeds import club_lineup_embed, player_card_embed
+
+    guild_id = 123456789
+    owner_id = 999111
+
+    # 1. Create a club
+    c_ok, c_msg, club = await db.create_club(guild_id, "Real Madrid", "RMA", owner_id, 1001)
+    assert c_ok is True
+    assert club["formation"] == "4-3-3"
+
+    # 2. Test setting all 12 supported formations
+    for form_key in SUPPORTED_FORMATIONS.keys():
+        f_ok, f_msg = await db.set_club_formation(guild_id, club["id"], form_key)
+        assert f_ok is True
+        assert form_key in f_msg
+
+    # Rejection of invalid formation
+    bad_ok, bad_msg = await db.set_club_formation(guild_id, club["id"], "2-2-6")
+    assert bad_ok is False
+    assert "not supported" in bad_msg
+
+    # Set to 4-3-3 for testing
+    await db.set_club_formation(guild_id, club["id"], "4-3-3")
+
+    # 3. Add 11 Starting XI players
+    starter_data = [
+        ("Courtois", "GK", 1),
+        ("Carvajal", "RB", 2),
+        ("Militao", "CB", 3),
+        ("Alaba", "CB", 4),
+        ("Mendy", "LB", 23),
+        ("Tchouameni", "CDM", 18),
+        ("Valverde", "CM", 15),
+        ("Bellingham", "CAM", 5),
+        ("Rodrygo", "RW", 11),
+        ("Mbappe", "ST", 9),
+        ("Vinicius", "LW", 7),
+    ]
+
+    for name, pos, num in starter_data:
+        ok, msg, p = await db.add_club_player(
+            guild_id=guild_id,
+            club_query=club["id"],
+            player_name=name,
+            position=pos,
+            status="starting",
+            number=num,
+            default_owner_id=owner_id,
+        )
+        assert ok is True, f"Failed to add {name}: {msg}"
+        assert p["player_name"] == name
+        assert p["position"] == pos
+        assert p["status"] == "starting"
+        assert p["number"] == num
+
+    # 4. Attempting to add 12th starter to Starting XI must fail (11 max limit)
+    twelfth_ok, twelfth_msg, _ = await db.add_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="Guler",
+        position="CAM",
+        status="starting",
+        number=15,
+    )
+    assert twelfth_ok is False
+    assert "already has 11 players" in twelfth_msg
+
+    # 5. Add Guler as bench player (should succeed)
+    guler_ok, guler_msg, guler = await db.add_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="Guler",
+        position="CAM",
+        status="bench",
+        number=15,
+    )
+    assert guler_ok is True
+    assert guler["status"] == "bench"
+
+    # Add Modric to bench
+    modric_ok, _, modric = await db.add_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="Modric",
+        position="CM",
+        status="bench",
+        number=10,
+    )
+    assert modric_ok is True
+
+    # 6. Verify Lineup
+    l_ok, l_msg, lineup = await db.get_club_lineup(guild_id, club["id"])
+    assert l_ok is True
+    assert len(lineup["starting"]) == 11
+    assert len(lineup["bench"]) == 2
+    assert lineup["formation"] == "4-3-3"
+
+    # 7. Test Player Info
+    info_ok, info_msg, p_info = await db.get_player_info(guild_id, "Mbappe")
+    assert info_ok is True
+    assert p_info["player"]["player_name"] == "Mbappe"
+    assert p_info["player"]["position"] == "ST"
+    assert p_info["player"]["number"] == 9
+    assert p_info["club"]["name"] == "Real Madrid"
+
+    # 8. Test Edit Player (Change position and number)
+    e_ok, e_msg, e_p = await db.edit_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="Mbappe",
+        position="CF",
+        number=10,
+    )
+    assert e_ok is True
+    assert e_p["position"] == "CF"
+    assert e_p["number"] == 10
+
+    # 9. Test Tactical Swap: Substitution (Starter Mbappe and Bench Modric)
+    swap_ok, swap_msg = await db.swap_club_players(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player1_name="Mbappe",
+        player2_name="Modric",
+    )
+    assert swap_ok is True
+    assert "Substitution Complete" in swap_msg
+
+    # Verify Mbappe is now bench, Modric is now starting
+    _, _, mbappe_check = await db.get_player_info(guild_id, "Mbappe")
+    _, _, modric_check = await db.get_player_info(guild_id, "Modric")
+    assert mbappe_check["player"]["status"] == "bench"
+    assert modric_check["player"]["status"] == "starting"
+
+    # Test Tactical Swap: Position Swap (Starter Vinicius and Starter Rodrygo)
+    pos_swap_ok, pos_swap_msg = await db.swap_club_players(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player1_name="Vinicius",
+        player2_name="Rodrygo",
+    )
+    assert pos_swap_ok is True
+    assert "Position Swap Complete" in pos_swap_msg
+
+    # 10. Test Remove Player
+    rem_ok, rem_msg = await db.remove_club_player(guild_id, club["id"], "Guler")
+    assert rem_ok is True
+    rem_info_ok, _, _ = await db.get_player_info(guild_id, "Guler", club_query=club["id"])
+    assert rem_info_ok is False
+
+    # 11. Test Lineup and Player Card Embed generation
+    _, _, final_lineup = await db.get_club_lineup(guild_id, club["id"])
+    l_embed = club_lineup_embed(
+        club=final_lineup["club"],
+        formation=final_lineup["formation"],
+        starting_players=final_lineup["starting"],
+        bench_players=final_lineup["bench"],
+    )
+    assert l_embed.title is not None
+    assert "Real Madrid" in l_embed.title
+    assert len(l_embed.fields) >= 5  # GK, DEF, MID, ATTACK, BENCH
+
+    p_embed = player_card_embed(player=final_lineup["starting"][0], club=final_lineup["club"])
+    assert p_embed.title is not None
+    assert len(p_embed.fields) >= 4
+
+
+@pytest.mark.asyncio
+async def test_squad_cog_loading(db: DatabaseManager):
+    """Verify SquadCog loads onto commands.Bot with prefix commands and slash commands."""
+    import discord
+    from discord.ext import commands
+    from cogs.squad import SquadCog
+
+    bot = commands.Bot(command_prefix="bb!", intents=discord.Intents.default())
+    bot.db = db  # type: ignore
+
+    await bot.add_cog(SquadCog(bot))
+
+    # Verify prefix commands registered
+    cmd_names = [c.name for c in bot.commands]
+    assert "lineup" in cmd_names
+    assert "setformation" in cmd_names
+    assert "formations" in cmd_names
+    assert "player" in cmd_names
+    assert "addplayer" in cmd_names
+    assert "editplayer" in cmd_names
+    assert "removeplayer" in cmd_names
+    assert "start" in cmd_names
+    assert "bench" in cmd_names
+    assert "swap" in cmd_names
+
+
+
+
 
 

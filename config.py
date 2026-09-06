@@ -98,3 +98,40 @@ def parse_amount(val_str: str):
         return val if val >= 0 else None
     except ValueError:
         return None
+
+
+# Football Formations Configuration
+SUPPORTED_FORMATIONS = {
+    "4-3-3": {"def": 4, "mid": 3, "fwd": 3, "name": "4-3-3 Attack", "desc": "Balanced Wing Attack (4 DEF, 3 MID, 3 FWD)"},
+    "4-4-2": {"def": 4, "mid": 4, "fwd": 2, "name": "4-4-2 Classic", "desc": "Traditional Flat (4 DEF, 4 MID, 2 ST)"},
+    "4-2-3-1": {"def": 4, "mid": 5, "fwd": 1, "name": "4-2-3-1 Wide", "desc": "Double Pivot Control (4 DEF, 2 CDM, 3 CAM, 1 ST)"},
+    "3-5-2": {"def": 3, "mid": 5, "fwd": 2, "name": "3-5-2 Wingback", "desc": "Midfield Dominance (3 CB, 5 MID, 2 ST)"},
+    "3-4-3": {"def": 3, "mid": 4, "fwd": 3, "name": "3-4-3 All-Out Attack", "desc": "High Press Attack (3 CB, 4 MID, 3 FWD)"},
+    "5-3-2": {"def": 5, "mid": 3, "fwd": 2, "name": "5-3-2 Solid Wall", "desc": "Defensive Fortress (5 DEF, 3 MID, 2 ST)"},
+    "4-1-2-1-2": {"def": 4, "mid": 4, "fwd": 2, "name": "4-1-2-1-2 Diamond", "desc": "Central Diamond (4 DEF, 1 CDM, 2 CM, 1 CAM, 2 ST)"},
+    "4-5-1": {"def": 4, "mid": 5, "fwd": 1, "name": "4-5-1 Overload", "desc": "Packed Midfield (4 DEF, 5 MID, 1 ST)"},
+    "5-2-3": {"def": 5, "mid": 2, "fwd": 3, "name": "5-2-3 Counter", "desc": "Counter-Attack (5 DEF, 2 MID, 3 FWD)"},
+    "3-4-1-2": {"def": 3, "mid": 5, "fwd": 2, "name": "3-4-1-2 Playmaker", "desc": "CAM Playmaker (3 CB, 4 MID, 1 CAM, 2 ST)"},
+    "4-3-2-1": {"def": 4, "mid": 3, "fwd": 3, "name": "4-3-2-1 Christmas Tree", "desc": "Dual Number 10s (4 DEF, 3 MID, 2 CAM, 1 ST)"},
+    "4-2-2-2": {"def": 4, "mid": 4, "fwd": 2, "name": "4-2-2-2 Box", "desc": "Dual CDMs & CAMs (4 DEF, 2 CDM, 2 CAM, 2 ST)"},
+}
+
+# Position Categories
+POSITION_CATEGORIES = {
+    "GK": "Goalkeeper",
+    "CB": "Defense",
+    "LB": "Defense",
+    "RB": "Defense",
+    "LWB": "Defense",
+    "RWB": "Defense",
+    "CDM": "Midfield",
+    "CM": "Midfield",
+    "CAM": "Midfield",
+    "LM": "Midfield",
+    "RM": "Midfield",
+    "LW": "Attack",
+    "RW": "Attack",
+    "ST": "Attack",
+    "CF": "Attack",
+}
+VALID_POSITIONS = list(POSITION_CATEGORIES.keys())

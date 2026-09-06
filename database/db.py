@@ -8,6 +8,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 import aiosqlite
 
+from config import SUPPORTED_FORMATIONS, VALID_POSITIONS
+
 logger = logging.getLogger("BeastlyBank.DB")
 
 
@@ -79,6 +81,7 @@ class DatabaseManager:
                     tag TEXT NOT NULL,
                     owner_id INTEGER NOT NULL,
                     role_id INTEGER,
+                    formation TEXT NOT NULL DEFAULT '4-3-3',
                     treasury_cash INTEGER NOT NULL DEFAULT 0,
                     treasury_points INTEGER NOT NULL DEFAULT 0,
                     treasury_tokens INTEGER NOT NULL DEFAULT 0,
@@ -104,7 +107,7 @@ class DatabaseManager:
                 """
             )
 
-            # Club Custom Players Table (for custom written player transfers)
+            # Club Custom Players Table (for custom written player transfers and squad lineups)
             await cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS club_players (
@@ -113,6 +116,10 @@ class DatabaseManager:
                     guild_id INTEGER NOT NULL,
                     player_name TEXT NOT NULL,
                     role TEXT NOT NULL DEFAULT 'Player',
+                    position TEXT NOT NULL DEFAULT 'ST',
+                    status TEXT NOT NULL DEFAULT 'starting',
+                    number INTEGER DEFAULT NULL,
+                    user_id INTEGER DEFAULT NULL,
                     transferred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE
                 );
@@ -282,11 +289,19 @@ class DatabaseManager:
                 """
             )
 
-            # Ensure role_id column exists on clubs
-            try:
-                await cur.execute("ALTER TABLE clubs ADD COLUMN role_id INTEGER;")
-            except Exception:
-                pass
+            # Ensure role_id, formation, and squad player columns exist
+            for col_stmt in [
+                "ALTER TABLE clubs ADD COLUMN role_id INTEGER;",
+                "ALTER TABLE clubs ADD COLUMN formation TEXT NOT NULL DEFAULT '4-3-3';",
+                "ALTER TABLE club_players ADD COLUMN position TEXT NOT NULL DEFAULT 'ST';",
+                "ALTER TABLE club_players ADD COLUMN status TEXT NOT NULL DEFAULT 'starting';",
+                "ALTER TABLE club_players ADD COLUMN number INTEGER DEFAULT NULL;",
+                "ALTER TABLE club_players ADD COLUMN user_id INTEGER DEFAULT NULL;",
+            ]:
+                try:
+                    await cur.execute(col_stmt)
+                except Exception:
+                    pass
 
         await conn.commit()
         logger.info("Database schema initialized successfully.")
@@ -680,6 +695,15 @@ class DatabaseManager:
             else:
                 payee_desc = "Free Transfer"
 
+            # Fetch existing custom player details to preserve position & number
+            await cur.execute(
+                "SELECT position, number FROM club_players WHERE guild_id = ? AND LOWER(player_name) = LOWER(?);",
+                (guild_id, p_name),
+            )
+            old_p = await cur.fetchone()
+            p_pos = old_p["position"] if old_p and old_p["position"] else "ST"
+            p_num = old_p["number"] if old_p and old_p["number"] else None
+
             # Update custom players roster
             await cur.execute(
                 "DELETE FROM club_players WHERE guild_id = ? AND LOWER(player_name) = LOWER(?);",
@@ -687,10 +711,10 @@ class DatabaseManager:
             )
             await cur.execute(
                 """
-                INSERT INTO club_players (club_id, guild_id, player_name, role)
-                VALUES (?, ?, ?, 'Player');
+                INSERT INTO club_players (club_id, guild_id, player_name, role, position, status, number)
+                VALUES (?, ?, ?, 'Player', ?, 'starting', ?);
                 """,
-                (to_club["id"], guild_id, p_name),
+                (to_club["id"], guild_id, p_name, p_pos, p_num),
             )
 
             # If p_name happens to be a mention or numeric user id, also move in club_members
@@ -964,9 +988,13 @@ class DatabaseManager:
                 """
                 SELECT cm.club_id, cm.user_id, cm.guild_id, cm.role, cm.joined_at,
                        COALESCE(u.cash, 0) as cash, COALESCE(u.points, 0) as points, COALESCE(u.tokens, 0) as tokens,
-                       NULL as player_name
+                       NULL as player_name,
+                       COALESCE(cp.position, 'CM') as position,
+                       COALESCE(cp.status, 'starting') as status,
+                       cp.number as number
                 FROM club_members cm
                 LEFT JOIN users u ON cm.user_id = u.user_id AND cm.guild_id = u.guild_id
+                LEFT JOIN club_players cp ON cp.club_id = cm.club_id AND cp.user_id = cm.user_id
                 WHERE cm.club_id = ?
                 ORDER BY CASE cm.role
                     WHEN 'Owner' THEN 1
@@ -983,14 +1011,14 @@ class DatabaseManager:
             # Also fetch custom players registered to this club
             await cur.execute(
                 """
-                SELECT club_id, NULL as user_id, guild_id, role, transferred_at as joined_at,
+                SELECT club_id, user_id, guild_id, role, transferred_at as joined_at,
                        0 as cash, 0 as points, 0 as tokens,
-                       player_name
+                       player_name, position, status, number
                 FROM club_players
-                WHERE club_id = ?
+                WHERE club_id = ? AND (user_id IS NULL OR user_id NOT IN (SELECT user_id FROM club_members WHERE club_id = ?))
                 ORDER BY id ASC;
                 """,
-                (club_id,),
+                (club_id, club_id),
             )
             custom_players = [dict(r) for r in await cur.fetchall()]
 
@@ -1687,3 +1715,549 @@ class DatabaseManager:
                 "total_txs": tx_row["total_txs"] if tx_row else 0,
                 "total_players": p_row["total_players"] if p_row else 0,
             }
+
+    # ==========================================
+    # SQUAD & LINEUP MANAGEMENT
+    # ==========================================
+
+    async def add_club_player(
+        self,
+        guild_id: int,
+        club_query: Any,
+        player_name: str,
+        position: str = "ST",
+        status: str = "starting",
+        number: Optional[int] = None,
+        user_id: Optional[int] = None,
+        default_owner_id: int = 0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Add a player to a club squad (Starting XI or Bench).
+        Accepts custom player name or Discord user mention/ID.
+        """
+        p_name = str(player_name).strip()
+        if not p_name:
+            return False, "Player name cannot be empty.", {}
+
+        uid = user_id
+        if not uid:
+            if p_name.startswith("<@") and p_name.endswith(">"):
+                raw_id = p_name.strip("<@!>")
+                if raw_id.isdigit():
+                    uid = int(raw_id)
+            elif p_name.isdigit() and len(p_name) >= 15:
+                uid = int(p_name)
+
+        pos = position.upper().strip()
+        if pos not in VALID_POSITIONS:
+            return False, f"Invalid position '{position}'. Valid positions are: {', '.join(VALID_POSITIONS)}.", {}
+
+        st = status.lower().strip()
+        if st not in ("starting", "bench"):
+            return False, "Invalid status. Must be either 'starting' (Starting XI) or 'bench' (Substitutes).", {}
+
+        if number is not None and (number < 0 or number > 99):
+            return False, "Jersey number must be between 0 and 99.", {}
+
+        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=default_owner_id)
+        if not club:
+            club_label = club_query.mention if hasattr(club_query, "mention") else str(club_query)
+            return False, f"Club {club_label} not found.", {}
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            if st == "starting":
+                await cur.execute(
+                    "SELECT COUNT(*) as cnt FROM club_players WHERE club_id = ? AND status = 'starting';",
+                    (club["id"],),
+                )
+                start_cnt = (await cur.fetchone())["cnt"]
+                if start_cnt >= 11:
+                    return False, f"Starting XI for **[{club['tag']}] {club['name']}** already has 11 players! Add as `bench` or move a player to the bench first.", {}
+
+            if uid:
+                await cur.execute(
+                    "SELECT * FROM club_players WHERE club_id = ? AND (user_id = ? OR LOWER(player_name) = LOWER(?));",
+                    (club["id"], uid, p_name),
+                )
+            else:
+                await cur.execute(
+                    "SELECT * FROM club_players WHERE club_id = ? AND LOWER(player_name) = LOWER(?);",
+                    (club["id"], p_name),
+                )
+            existing = await cur.fetchone()
+            if existing:
+                return False, f"Player **{p_name}** is already in **[{club['tag']}] {club['name']}** squad! Use `/player edit` to change their position or lineup status.", {}
+
+            if uid:
+                await cur.execute(
+                    """
+                    SELECT cp.*, c.name as club_name, c.tag as club_tag
+                    FROM club_players cp
+                    JOIN clubs c ON cp.club_id = c.id
+                    WHERE cp.guild_id = ? AND (cp.user_id = ? OR LOWER(cp.player_name) = LOWER(?));
+                    """,
+                    (guild_id, uid, p_name),
+                )
+            else:
+                await cur.execute(
+                    """
+                    SELECT cp.*, c.name as club_name, c.tag as club_tag
+                    FROM club_players cp
+                    JOIN clubs c ON cp.club_id = c.id
+                    WHERE cp.guild_id = ? AND LOWER(cp.player_name) = LOWER(?);
+                    """,
+                    (guild_id, p_name),
+                )
+            other_club = await cur.fetchone()
+            if other_club:
+                return False, f"Player **{p_name}** is currently registered with **[{other_club['club_tag']}] {other_club['club_name']}**! Transfer them using `/transfer` or remove them first.", {}
+
+            await cur.execute(
+                """
+                INSERT INTO club_players (club_id, guild_id, player_name, role, position, status, number, user_id)
+                VALUES (?, ?, ?, 'Player', ?, ?, ?, ?);
+                """,
+                (club["id"], guild_id, p_name, pos, st, number, uid),
+            )
+            player_id = cur.lastrowid
+
+            if uid:
+                await cur.execute(
+                    """
+                    INSERT OR IGNORE INTO club_members (club_id, user_id, guild_id, role)
+                    VALUES (?, ?, ?, 'Member');
+                    """,
+                    (club["id"], uid, guild_id),
+                )
+
+            await conn.commit()
+
+            await cur.execute("SELECT * FROM club_players WHERE id = ?;", (player_id,))
+            new_p = await cur.fetchone()
+            num_str = f" #{number}" if number is not None else ""
+            status_desc = "Starting XI 🟢" if st == "starting" else "Bench 🟡"
+            return True, f"Added **{p_name}**{num_str} as **{pos}** ({status_desc}) to **[{club['tag']}] {club['name']}**!", dict(new_p)
+
+    async def edit_club_player(
+        self,
+        guild_id: int,
+        club_query: Any,
+        player_name: str,
+        new_name: Optional[str] = None,
+        position: Optional[str] = None,
+        status: Optional[str] = None,
+        number: Optional[int] = None,
+        default_owner_id: int = 0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Edit an existing player's details (name, position, lineup status, jersey number).
+        """
+        p_name = str(player_name).strip()
+        if not p_name:
+            return False, "Player name cannot be empty.", {}
+
+        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=default_owner_id)
+        if not club:
+            club_label = club_query.mention if hasattr(club_query, "mention") else str(club_query)
+            return False, f"Club {club_label} not found.", {}
+
+        uid = None
+        if p_name.startswith("<@") and p_name.endswith(">"):
+            raw_id = p_name.strip("<@!>")
+            if raw_id.isdigit():
+                uid = int(raw_id)
+        elif p_name.isdigit() and len(p_name) >= 15:
+            uid = int(p_name)
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            if uid:
+                await cur.execute(
+                    "SELECT * FROM club_players WHERE club_id = ? AND (user_id = ? OR LOWER(player_name) = LOWER(?));",
+                    (club["id"], uid, p_name),
+                )
+            else:
+                await cur.execute(
+                    "SELECT * FROM club_players WHERE club_id = ? AND LOWER(player_name) = LOWER(?);",
+                    (club["id"], p_name),
+                )
+            player = await cur.fetchone()
+            if not player:
+                return False, f"Player **{p_name}** was not found in **[{club['tag']}] {club['name']}** squad.", {}
+
+            updates = []
+            params = []
+            changes = []
+
+            if new_name is not None and new_name.strip():
+                clean_new_name = new_name.strip()
+                updates.append("player_name = ?")
+                params.append(clean_new_name)
+                changes.append(f"Name: **{clean_new_name}**")
+
+            if position is not None and position.strip():
+                pos = position.upper().strip()
+                if pos not in VALID_POSITIONS:
+                    return False, f"Invalid position '{position}'. Valid positions: {', '.join(VALID_POSITIONS)}.", {}
+                updates.append("position = ?")
+                params.append(pos)
+                changes.append(f"Position: **{pos}**")
+
+            if status is not None and status.strip():
+                st = status.lower().strip()
+                if st not in ("starting", "bench"):
+                    return False, "Invalid status. Must be either 'starting' (Starting XI) or 'bench' (Substitutes).", {}
+                if st == "starting" and player["status"] != "starting":
+                    await cur.execute(
+                        "SELECT COUNT(*) as cnt FROM club_players WHERE club_id = ? AND status = 'starting';",
+                        (club["id"],),
+                    )
+                    start_cnt = (await cur.fetchone())["cnt"]
+                    if start_cnt >= 11:
+                        return False, f"Starting XI for **[{club['tag']}] {club['name']}** already has 11 players! Bench another player before moving this player to starting.", {}
+                updates.append("status = ?")
+                params.append(st)
+                changes.append(f"Status: **{'Starting XI 🟢' if st == 'starting' else 'Bench 🟡'}**")
+
+            if number is not None:
+                if number < 0 or number > 99:
+                    return False, "Jersey number must be between 0 and 99.", {}
+                updates.append("number = ?")
+                params.append(number)
+                changes.append(f"Jersey: **#{number}**")
+
+            if not updates:
+                return False, "No modifications provided. Specify at least one attribute to edit.", {}
+
+            params.append(player["id"])
+            await cur.execute(
+                f"UPDATE club_players SET {', '.join(updates)} WHERE id = ?;",
+                params,
+            )
+            await conn.commit()
+
+            await cur.execute("SELECT * FROM club_players WHERE id = ?;", (player["id"],))
+            updated = await cur.fetchone()
+            return True, f"Updated **{player['player_name']}** ({', '.join(changes)}) in **[{club['tag']}] {club['name']}**!", dict(updated)
+
+    async def remove_club_player(
+        self,
+        guild_id: int,
+        club_query: Any,
+        player_name: str,
+        default_owner_id: int = 0,
+    ) -> Tuple[bool, str]:
+        """Remove a player from a club squad."""
+        p_name = str(player_name).strip()
+        if not p_name:
+            return False, "Player name cannot be empty."
+
+        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=default_owner_id)
+        if not club:
+            club_label = club_query.mention if hasattr(club_query, "mention") else str(club_query)
+            return False, f"Club {club_label} not found."
+
+        uid = None
+        if p_name.startswith("<@") and p_name.endswith(">"):
+            raw_id = p_name.strip("<@!>")
+            if raw_id.isdigit():
+                uid = int(raw_id)
+        elif p_name.isdigit() and len(p_name) >= 15:
+            uid = int(p_name)
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            if uid:
+                await cur.execute(
+                    "SELECT * FROM club_players WHERE club_id = ? AND (user_id = ? OR LOWER(player_name) = LOWER(?));",
+                    (club["id"], uid, p_name),
+                )
+            else:
+                await cur.execute(
+                    "SELECT * FROM club_players WHERE club_id = ? AND LOWER(player_name) = LOWER(?);",
+                    (club["id"], p_name),
+                )
+            player = await cur.fetchone()
+            if not player:
+                return False, f"Player **{p_name}** not found in **[{club['tag']}] {club['name']}** squad."
+
+            await cur.execute("DELETE FROM club_players WHERE id = ?;", (player["id"],))
+            await conn.commit()
+            return True, f"Player **{player['player_name']}** has been removed from **[{club['tag']}] {club['name']}** squad."
+
+    async def set_club_formation(
+        self,
+        guild_id: int,
+        club_query: Any,
+        formation: str,
+        default_owner_id: int = 0,
+    ) -> Tuple[bool, str]:
+        """Set tactical formation for a club."""
+        form = formation.strip().lower()
+        matched = None
+        for k in SUPPORTED_FORMATIONS:
+            if k.lower() == form:
+                matched = k
+                break
+
+        if not matched:
+            return False, f"Formation '{formation}' is not supported. Supported formations: {', '.join(SUPPORTED_FORMATIONS.keys())}."
+
+        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=default_owner_id)
+        if not club:
+            club_label = club_query.mention if hasattr(club_query, "mention") else str(club_query)
+            return False, f"Club {club_label} not found."
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE clubs SET formation = ? WHERE id = ?;",
+                (matched, club["id"]),
+            )
+            await conn.commit()
+
+        form_meta = SUPPORTED_FORMATIONS[matched]
+        return True, f"Formation for **[{club['tag']}] {club['name']}** set to **{matched}** ({form_meta['name']} - {form_meta['desc']})."
+
+    async def get_club_lineup(
+        self,
+        guild_id: int,
+        club_query: Any,
+        default_owner_id: int = 0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """Fetch current starting XI and bench for a club."""
+        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=default_owner_id)
+        if not club:
+            club_label = club_query.mention if hasattr(club_query, "mention") else str(club_query)
+            return False, f"Club {club_label} not found.", {}
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT * FROM clubs WHERE id = ?;", (club["id"],))
+            c_row = await cur.fetchone()
+            if c_row:
+                club = dict(c_row)
+
+            await cur.execute(
+                """
+                SELECT * FROM club_players
+                WHERE club_id = ?
+                ORDER BY
+                    CASE status WHEN 'starting' THEN 1 ELSE 2 END,
+                    CASE position
+                        WHEN 'GK' THEN 1
+                        WHEN 'CB' THEN 2
+                        WHEN 'LB' THEN 3
+                        WHEN 'RB' THEN 4
+                        WHEN 'LWB' THEN 5
+                        WHEN 'RWB' THEN 6
+                        WHEN 'CDM' THEN 7
+                        WHEN 'CM' THEN 8
+                        WHEN 'CAM' THEN 9
+                        WHEN 'LM' THEN 10
+                        WHEN 'RM' THEN 11
+                        WHEN 'LW' THEN 12
+                        WHEN 'RW' THEN 13
+                        WHEN 'CF' THEN 14
+                        WHEN 'ST' THEN 15
+                        ELSE 16
+                    END,
+                    id ASC;
+                """,
+                (club["id"],),
+            )
+            rows = await cur.fetchall()
+            starting = [dict(r) for r in rows if r["status"] == "starting"]
+            bench = [dict(r) for r in rows if r["status"] == "bench"]
+
+            return True, "", {
+                "club": club,
+                "formation": club.get("formation", "4-3-3"),
+                "starting": starting,
+                "bench": bench,
+            }
+
+    async def get_player_info(
+        self,
+        guild_id: int,
+        player_name: str,
+        club_query: Optional[Any] = None,
+        default_owner_id: int = 0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """Fetch full details and club affiliation for a specific player."""
+        p_name = str(player_name).strip()
+        if not p_name:
+            return False, "Player name cannot be empty.", {}
+
+        uid = None
+        if p_name.startswith("<@") and p_name.endswith(">"):
+            raw_id = p_name.strip("<@!>")
+            if raw_id.isdigit():
+                uid = int(raw_id)
+        elif p_name.isdigit() and len(p_name) >= 15:
+            uid = int(p_name)
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            if club_query:
+                club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=default_owner_id)
+                if not club:
+                    return False, "Specified club not found.", {}
+                if uid:
+                    await cur.execute(
+                        """
+                        SELECT cp.*, c.name as club_name, c.tag as club_tag, c.role_id as club_role_id, c.formation
+                        FROM club_players cp
+                        JOIN clubs c ON cp.club_id = c.id
+                        WHERE cp.club_id = ? AND (cp.user_id = ? OR LOWER(cp.player_name) = LOWER(?));
+                        """,
+                        (club["id"], uid, p_name),
+                    )
+                else:
+                    await cur.execute(
+                        """
+                        SELECT cp.*, c.name as club_name, c.tag as club_tag, c.role_id as club_role_id, c.formation
+                        FROM club_players cp
+                        JOIN clubs c ON cp.club_id = c.id
+                        WHERE cp.club_id = ? AND LOWER(cp.player_name) = LOWER(?);
+                        """,
+                        (club["id"], p_name),
+                    )
+            else:
+                if uid:
+                    await cur.execute(
+                        """
+                        SELECT cp.*, c.name as club_name, c.tag as club_tag, c.role_id as club_role_id, c.formation
+                        FROM club_players cp
+                        JOIN clubs c ON cp.club_id = c.id
+                        WHERE cp.guild_id = ? AND (cp.user_id = ? OR LOWER(cp.player_name) = LOWER(?));
+                        """,
+                        (guild_id, uid, p_name),
+                    )
+                else:
+                    await cur.execute(
+                        """
+                        SELECT cp.*, c.name as club_name, c.tag as club_tag, c.role_id as club_role_id, c.formation
+                        FROM club_players cp
+                        JOIN clubs c ON cp.club_id = c.id
+                        WHERE cp.guild_id = ? AND LOWER(cp.player_name) = LOWER(?);
+                        """,
+                        (guild_id, p_name),
+                    )
+
+            row = await cur.fetchone()
+            if not row:
+                return False, f"Player **{p_name}** was not found in any registered club squad.", {}
+
+            data = dict(row)
+            return True, "", {
+                "player": data,
+                "club": {
+                    "id": data["club_id"],
+                    "name": data["club_name"],
+                    "tag": data["club_tag"],
+                    "role_id": data["club_role_id"],
+                    "formation": data["formation"],
+                },
+            }
+
+    async def swap_club_players(
+        self,
+        guild_id: int,
+        club_query: Any,
+        player1_name: str,
+        player2_name: str,
+        default_owner_id: int = 0,
+    ) -> Tuple[bool, str]:
+        """
+        Swap two players in a club squad.
+        - If one is Starting and one is Bench: swaps status & position (Tactical Substitution).
+        - If both are Starting or both are Bench: swaps positions (Tactical Realignment).
+        """
+        p1_name = str(player1_name).strip()
+        p2_name = str(player2_name).strip()
+        if not p1_name or not p2_name:
+            return False, "Both player names must be specified."
+
+        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=default_owner_id)
+        if not club:
+            club_label = club_query.mention if hasattr(club_query, "mention") else str(club_query)
+            return False, f"Club {club_label} not found."
+
+        def parse_uid(s):
+            if s.startswith("<@") and s.endswith(">"):
+                r = s.strip("<@!>")
+                return int(r) if r.isdigit() else None
+            return int(s) if s.isdigit() and len(s) >= 15 else None
+
+        u1 = parse_uid(p1_name)
+        u2 = parse_uid(p2_name)
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            if u1:
+                await cur.execute(
+                    "SELECT * FROM club_players WHERE club_id = ? AND (user_id = ? OR LOWER(player_name) = LOWER(?));",
+                    (club["id"], u1, p1_name),
+                )
+            else:
+                await cur.execute(
+                    "SELECT * FROM club_players WHERE club_id = ? AND LOWER(player_name) = LOWER(?);",
+                    (club["id"], p1_name),
+                )
+            p1 = await cur.fetchone()
+            if not p1:
+                return False, f"Player **{p1_name}** was not found in **[{club['tag']}] {club['name']}** squad."
+
+            if u2:
+                await cur.execute(
+                    "SELECT * FROM club_players WHERE club_id = ? AND (user_id = ? OR LOWER(player_name) = LOWER(?));",
+                    (club["id"], u2, p2_name),
+                )
+            else:
+                await cur.execute(
+                    "SELECT * FROM club_players WHERE club_id = ? AND LOWER(player_name) = LOWER(?);",
+                    (club["id"], p2_name),
+                )
+            p2 = await cur.fetchone()
+            if not p2:
+                return False, f"Player **{p2_name}** was not found in **[{club['tag']}] {club['name']}** squad."
+
+            if p1["id"] == p2["id"]:
+                return False, "Cannot swap a player with themselves."
+
+            if p1["status"] != p2["status"]:
+                # Tactical substitution: swap both status and position
+                await cur.execute(
+                    "UPDATE club_players SET status = ?, position = ? WHERE id = ?;",
+                    (p2["status"], p2["position"], p1["id"]),
+                )
+                await cur.execute(
+                    "UPDATE club_players SET status = ?, position = ? WHERE id = ?;",
+                    (p1["status"], p1["position"], p2["id"]),
+                )
+                await conn.commit()
+                return True, (
+                    f"🔁 **Substitution Complete!**\n"
+                    f"• **{p1['player_name']}**: Now **{p2['status'].capitalize()}** ({p2['position']})\n"
+                    f"• **{p2['player_name']}**: Now **{p1['status'].capitalize()}** ({p1['position']})\n"
+                    f"Club: **[{club['tag']}] {club['name']}**"
+                )
+            else:
+                # Both same status: swap positions
+                await cur.execute(
+                    "UPDATE club_players SET position = ? WHERE id = ?;",
+                    (p2["position"], p1["id"]),
+                )
+                await cur.execute(
+                    "UPDATE club_players SET position = ? WHERE id = ?;",
+                    (p1["position"], p2["id"]),
+                )
+                await conn.commit()
+                return True, (
+                    f"🔁 **Position Swap Complete!**\n"
+                    f"• **{p1['player_name']}**: Now **{p2['position']}**\n"
+                    f"• **{p2['player_name']}**: Now **{p1['position']}**\n"
+                    f"Club: **[{club['tag']}] {club['name']}**"
+                )

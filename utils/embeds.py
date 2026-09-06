@@ -13,6 +13,8 @@ from config import (
     COLOR_INFO,
     SERVER_NAME,
     CURRENCIES,
+    SUPPORTED_FORMATIONS,
+    POSITION_CATEGORIES,
 )
 
 
@@ -454,3 +456,130 @@ def summary_economy_embed(stats: Dict[str, Any]) -> discord.Embed:
     )
 
     return embed
+
+
+def club_lineup_embed(
+    club: Dict[str, Any],
+    formation: str,
+    starting_players: List[Dict[str, Any]],
+    bench_players: List[Dict[str, Any]],
+) -> discord.Embed:
+    """Renders the official tactical pitch lineup and substitutes bench for a club."""
+    form_meta = SUPPORTED_FORMATIONS.get(formation, {"name": formation, "desc": "Custom"})
+    role_str = f"<@&{club['role_id']}>" if club.get("role_id") else f"**[{club['tag']}] {club['name']}**"
+
+    embed = create_beastly_embed(
+        title=f"📋 Squad Lineup • [{club['tag']}] {club['name']}",
+        description=(
+            f"Club: {role_str}\n"
+            f"Tactical Formation: **{formation}** ({form_meta.get('name', formation)})\n"
+            f"*{form_meta.get('desc', '')}*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=COLOR_PITCH_GREEN,
+    )
+
+    # Group starting players by pitch line
+    gks = []
+    defs = []
+    mids = []
+    fwds = []
+
+    for p in starting_players:
+        num = f"#{p['number']} " if p.get("number") is not None else ""
+        name = p.get("player_name") or (f"<@{p['user_id']}>" if p.get("user_id") else "Player")
+        line_item = f"`{num}{p.get('position', '??')}` **{name}**"
+
+        pos = (p.get("position") or "").upper()
+        cat = POSITION_CATEGORIES.get(pos, "Midfield")
+        if pos == "GK":
+            gks.append(line_item)
+        elif cat == "Defense":
+            defs.append(line_item)
+        elif cat == "Midfield":
+            mids.append(line_item)
+        elif cat == "Attack":
+            fwds.append(line_item)
+        else:
+            mids.append(line_item)
+
+    # Pitch Lines
+    embed.add_field(
+        name=f"🧤 Goalkeeper ({len(gks)}/1)",
+        value="\n".join(f"• {x}" for x in gks) if gks else "*Vacant*",
+        inline=False,
+    )
+    def_target = form_meta.get("def", 4)
+    embed.add_field(
+        name=f"🛡️ Defense ({len(defs)}/{def_target})",
+        value="\n".join(f"• {x}" for x in defs) if defs else "*Vacant*",
+        inline=False,
+    )
+    mid_target = form_meta.get("mid", 3)
+    embed.add_field(
+        name=f"⚙️ Midfield ({len(mids)}/{mid_target})",
+        value="\n".join(f"• {x}" for x in mids) if mids else "*Vacant*",
+        inline=False,
+    )
+    fwd_target = form_meta.get("fwd", 3)
+    embed.add_field(
+        name=f"⚡ Attack ({len(fwds)}/{fwd_target})",
+        value="\n".join(f"• {x}" for x in fwds) if fwds else "*Vacant*",
+        inline=False,
+    )
+
+    # Substitutes Bench
+    bench_items = []
+    for p in bench_players:
+        num = f"#{p['number']} " if p.get("number") is not None else ""
+        name = p.get("player_name") or (f"<@{p['user_id']}>" if p.get("user_id") else "Player")
+        bench_items.append(f"`{num}{p.get('position', '??')}` **{name}**")
+
+    bench_text = "\n".join(f"• {x}" for x in bench_items) if bench_items else "*No bench players registered*"
+    embed.add_field(
+        name=f"💺 Substitutes Bench ({len(bench_players)})",
+        value=bench_text,
+        inline=False,
+    )
+
+    embed.set_footer(
+        text=f"Total Squad: {len(starting_players) + len(bench_players)} players • Starters: {len(starting_players)}/11"
+    )
+    return embed
+
+
+def player_card_embed(player: Dict[str, Any], club: Optional[Dict[str, Any]] = None) -> discord.Embed:
+    """Generates a player information profile card."""
+    pos = (player.get("position") or "ST").upper()
+    cat = POSITION_CATEGORIES.get(pos, "Player")
+    status = player.get("status", "starting")
+    status_str = "Starting XI 🟢" if status == "starting" else "Substitutes Bench 🟡"
+    num = f"#{player['number']}" if player.get("number") is not None else "Unassigned"
+
+    club_str = "Free Agent"
+    if club:
+        if club.get("role_id"):
+            club_str = f"<@&{club['role_id']}>"
+        else:
+            club_str = f"**[{club.get('tag', 'FC')}] {club.get('name', 'Club')}**"
+
+    embed = create_beastly_embed(
+        title=f"🏃 Player Profile • {player.get('player_name', 'Player')}",
+        description=f"Official BeastlyFC registered player profile.\n━━━━━━━━━━━━━━━━━━━━━━",
+        color=COLOR_BEASTLY_GOLD,
+    )
+
+    embed.add_field(name="🛡️ Club Affiliation", value=club_str, inline=True)
+    embed.add_field(name="📍 Position", value=f"**{pos}** ({cat})", inline=True)
+    embed.add_field(name="🔢 Jersey Number", value=f"**{num}**", inline=True)
+    embed.add_field(name="📊 Lineup Status", value=f"**{status_str}**", inline=True)
+
+    if player.get("user_id"):
+        embed.add_field(name="👤 Discord Member", value=f"<@{player['user_id']}>", inline=True)
+
+    joined = player.get("transferred_at") or player.get("joined_at")
+    if joined:
+        embed.add_field(name="📅 Registered / Transferred", value=f"`{joined[:10]}`", inline=True)
+
+    return embed
+

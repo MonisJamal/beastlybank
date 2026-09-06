@@ -40,6 +40,20 @@
 | `/club removemanager <user>` | — | Demote a Club Manager back to squad member (Owner only). |
 | `/club list` | `bb!club list` | View the richest BeastlyFC clubs leaderboard. |
 
+#### ⚽ Squad, Lineups & Formations (`/lineup`, `/formation`, `/player`)
+| Command | Prefix (`bb!`) | Description |
+| :--- | :--- | :--- |
+| `/lineup [club: @role]` | `bb!lineup [@role]` | View tactical pitch lineup (GK, DEF, MID, FWD) and substitutes bench. |
+| `/formation set <formation> [club: @role]` | `bb!setformation <form> [@role]` | Set club tactical formation (all 12 formations supported). |
+| `/formation list` | `bb!formations` | Browse all 12 supported football formations with shapes and descriptions. |
+| `/player info <player> [club: @role]` | `bb!player <player> [@role]` | Inspect player profile card with position, number, status, and club role. |
+| `/player add <player> <pos> [status] [num] [club: @role]` | `bb!addplayer <player> <pos> [status] [num] [@role]` | Register a custom or Discord player to Starting XI or Bench. |
+| `/player edit <player> [name] [pos] [status] [num] [club: @role]` | `bb!editplayer <player> <field> <val> [@role]` | Edit player position, status, jersey number, or name. |
+| `/player remove <player> [club: @role]` | `bb!removeplayer <player> [@role]` | Remove a player from the club squad. |
+| `/player start <player> [pos] [club: @role]` | `bb!start <player> [pos] [@role]` | Promote a player to Starting XI (enforces max 11 starters). |
+| `/player bench <player> [club: @role]` | `bb!bench <player> [@role]` | Move a player to the Substitutes Bench. |
+| `/player swap <player1> <player2> [club: @role]` | `bb!swap <p1> <p2> [@role]` | Tactical substitution (starter ⇄ bench) or position switch (starter ⇄ starter). |
+
 ---
 
 ### 👑 ADMINS & STAFF

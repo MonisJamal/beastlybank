@@ -33,6 +33,7 @@ logger = logging.getLogger("BeastlyBank")
 COGS = [
     "cogs.economy",
     "cogs.clubs",
+    "cogs.squad",
     "cogs.shop",
     "cogs.giveaways",
     "cogs.leaderboard",

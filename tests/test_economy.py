@@ -9,7 +9,7 @@ import pytest
 import pytest_asyncio
 
 from database.db import DatabaseManager
-from config import FOOTBALL_JOBS
+from config import FOOTBALL_JOBS, parse_amount
 from utils.checks import is_beastlyfc_guild_check
 
 
@@ -418,4 +418,106 @@ async def test_shop_admin_features(db: DatabaseManager):
     # Verify not in normal shop items list
     active_items = await db.get_shop_items(guild_id, include_inactive=False)
     assert not any(i["id"] == item["id"] for i in active_items)
+
+
+@pytest.mark.asyncio
+async def test_free_club_creation(db: DatabaseManager):
+    """Verify club registration is 100% free (no fee deducted, works with 0 cash)."""
+    user_id = 999111
+    guild_id = 999999999
+
+    # Set user cash to 0
+    await db.update_balance(user_id, guild_id, "cash", -1000, "debit")
+    user = await db.get_or_create_user(user_id, guild_id)
+    assert user["cash"] == 0
+
+    # User creates club without paying 2,000 cash fee
+    success, msg, club = await db.create_club(guild_id, "Free Kings FC", "FKF", user_id)
+    assert success is True
+    assert club is not None
+    assert club["name"] == "Free Kings FC"
+    assert club["tag"] == "FKF"
+    assert club["treasury_cash"] == 500  # starter bonus given to treasury
+
+    # User still has 0 cash (no deduction)
+    user_after = await db.get_or_create_user(user_id, guild_id)
+    assert user_after["cash"] == 0
+
+
+@pytest.mark.asyncio
+async def test_parse_amount_scientific_and_human():
+    """Verify scientific notation and human suffix parsing."""
+    assert parse_amount("26e6") == 26_000_000
+    assert parse_amount("3e7") == 30_000_000
+    assert parse_amount("1.5e6") == 1_500_000
+    assert parse_amount("26m") == 26_000_000
+    assert parse_amount("500k") == 500_000
+    assert parse_amount("1b") == 1_000_000_000
+    assert parse_amount("10,000,000") == 10_000_000
+    assert parse_amount("0") == 0
+    assert parse_amount("-100") is None
+    assert parse_amount("xyz") is None
+
+
+@pytest.mark.asyncio
+async def test_transfer_player_flow(db: DatabaseManager):
+    """Test full player transfer flow: scientific amount, recipient payment, roster relocation."""
+    guild_id = 999999999
+    seller_owner = 1001
+    buyer_owner = 1002
+    player_id = 1003
+    recipient_agent = 1004
+
+    # Create selling club and buying club
+    _, _, seller_club = await db.create_club(guild_id, "Real Stars", "RST", seller_owner)
+    _, _, buyer_club = await db.create_club(guild_id, "Blue Hawks", "BHW", buyer_owner)
+
+    # Put player in selling club
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO club_members (club_id, user_id, guild_id, role) VALUES (?, ?, ?, 'Member');",
+            (seller_club["id"], player_id, guild_id),
+        )
+        await conn.commit()
+
+    # Grant cash to buyer owner and fund buying club treasury with 30M cash
+    transfer_fee = parse_amount("26e6")  # 26,000,000
+    assert transfer_fee == 26_000_000
+    await db.update_balance(buyer_owner, guild_id, "cash", 30_000_000, "admin_grant")
+    await db.club_deposit(buyer_club["id"], buyer_owner, guild_id, "cash", 30_000_000)
+
+    # Execute transfer with recipient
+    success, msg, data = await db.transfer_player(
+        guild_id=guild_id,
+        player_id=player_id,
+        from_club_query="RST",
+        to_club_query="BHW",
+        amount=transfer_fee,
+        payer_id=buyer_owner,
+        recipient_id=recipient_agent,
+    )
+    assert success is True
+    assert data["amount"] == 26_000_000
+
+    # Verify recipient received 26M cash
+    recipient_user = await db.get_or_create_user(recipient_agent, guild_id)
+    # Default 1000 starter + 26M = 26001000
+    assert recipient_user["cash"] == 26_001_000
+
+    # Verify buyer club treasury debited by 26M
+    buyer_after = await db.get_club_by_name(guild_id, "BHW")
+    # Starter 500 + 30M deposited - 26M = 4,000,500
+    assert buyer_after["treasury_cash"] == 4_000_500
+
+    # Verify player moved from seller roster to buyer roster
+    seller_members = await db.get_club_members(seller_club["id"])
+    buyer_members = await db.get_club_members(buyer_club["id"])
+    assert not any(m["user_id"] == player_id for m in seller_members)
+    assert any(m["user_id"] == player_id for m in buyer_members)
+
+    # Verify transaction ledger has record
+    txs = await db.get_transactions(recipient_agent, guild_id)
+    assert any(t["tx_type"] == "transfer_market" and t["amount"] == 26_000_000 for t in txs)
+
 

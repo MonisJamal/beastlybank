@@ -690,19 +690,8 @@ class DatabaseManager:
             if await cur.fetchone():
                 return False, "A club with this name or tag already exists in BeastlyFC!", None
 
-            # Creation fee: 2,000 Cash
-            fee = 2000
-            user = await self.get_or_create_user(owner_id, guild_id)
-            if user["cash"] < fee:
-                return False, f"Creating a club requires a 💵 {fee:,} Cash registration fee. You have 💵 {user['cash']:,}.", None
-
-            # Deduct fee
-            await cur.execute(
-                "UPDATE users SET cash = cash - ? WHERE user_id = ? AND guild_id = ?;",
-                (fee, owner_id, guild_id),
-            )
-
-            # Insert Club
+            # Creation fee: 100% Free!
+            # Insert Club with starter treasury gift
             await cur.execute(
                 """
                 INSERT INTO clubs (guild_id, name, tag, owner_id, treasury_cash, treasury_points, treasury_tokens)
@@ -721,20 +710,118 @@ class DatabaseManager:
                 (club_id, owner_id, guild_id),
             )
 
-            # Record transactions
-            await cur.execute(
-                """
-                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
-                VALUES (?, ?, NULL, 'cash', ?, 'club_creation_fee', ?);
-                """,
-                (guild_id, owner_id, fee, f"Club Registration: [{tag}] {name}"),
-            )
-
             await conn.commit()
 
             await cur.execute("SELECT * FROM clubs WHERE id = ?;", (club_id,))
             club = await cur.fetchone()
             return True, f"Club **[{tag}] {name}** has been officially registered with BeastlyBank!", dict(club)
+
+    async def transfer_player(
+        self,
+        guild_id: int,
+        player_id: int,
+        from_club_query: str,
+        to_club_query: str,
+        amount: int,
+        payer_id: int,
+        recipient_id: Optional[int] = None,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Execute official transfer of a player between clubs with transfer fee disbursement.
+        """
+        if amount < 0:
+            return False, "Transfer fee cannot be negative.", {}
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            from_club = await self.get_club_by_name(guild_id, from_club_query)
+            to_club = await self.get_club_by_name(guild_id, to_club_query)
+
+            if not from_club:
+                return False, f"Selling club '{from_club_query}' not found.", {}
+            if not to_club:
+                return False, f"Buying club '{to_club_query}' not found.", {}
+            if from_club["id"] == to_club["id"]:
+                return False, "Selling club and buying club cannot be the same.", {}
+
+            buying_treasury = to_club.get("treasury_cash", 0)
+            paid_from_treasury = False
+
+            if amount > 0:
+                if buying_treasury >= amount:
+                    paid_from_treasury = True
+                    await cur.execute(
+                        "UPDATE clubs SET treasury_cash = treasury_cash - ? WHERE id = ?;",
+                        (amount, to_club["id"]),
+                    )
+                else:
+                    payer = await self.get_or_create_user(payer_id, guild_id)
+                    if payer["cash"] < amount:
+                        return False, (
+                            f"Insufficient funds for transfer fee of 💵 {amount:,} Cash! "
+                            f"**[{to_club['tag']}]** treasury has {buying_treasury:,}, and you have {payer['cash']:,}."
+                        ), {}
+                    await cur.execute(
+                        "UPDATE users SET cash = cash - ? WHERE user_id = ? AND guild_id = ?;",
+                        (amount, payer_id, guild_id),
+                    )
+
+                if recipient_id:
+                    await self.get_or_create_user(recipient_id, guild_id)
+                    await cur.execute(
+                        "UPDATE users SET cash = cash + ? WHERE user_id = ? AND guild_id = ?;",
+                        (amount, recipient_id, guild_id),
+                    )
+                    payee_desc = f"<@{recipient_id}>"
+                else:
+                    await cur.execute(
+                        "UPDATE clubs SET treasury_cash = treasury_cash + ? WHERE id = ?;",
+                        (amount, from_club["id"]),
+                    )
+                    payee_desc = f"**[{from_club['tag']}]** Treasury"
+
+                sender_tx_id = None if paid_from_treasury else payer_id
+                receiver_tx_id = recipient_id if recipient_id else None
+                await cur.execute(
+                    """
+                    INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                    VALUES (?, ?, ?, 'cash', ?, 'transfer_market', ?);
+                    """,
+                    (
+                        guild_id,
+                        sender_tx_id,
+                        receiver_tx_id,
+                        amount,
+                        f"Transfer Fee: <@{player_id}> from [{from_club['tag']}] to [{to_club['tag']}] (Paid to {payee_desc})",
+                    ),
+                )
+            else:
+                payee_desc = "Free Transfer"
+
+            await cur.execute(
+                "DELETE FROM club_members WHERE guild_id = ? AND user_id = ?;",
+                (guild_id, player_id),
+            )
+            await self.get_or_create_user(player_id, guild_id)
+            await cur.execute(
+                """
+                INSERT INTO club_members (club_id, user_id, guild_id, role)
+                VALUES (?, ?, ?, 'Member')
+                ON CONFLICT(club_id, user_id) DO UPDATE SET role = 'Member';
+                """,
+                (to_club["id"], player_id, guild_id),
+            )
+
+            await conn.commit()
+
+            return True, "Player transfer completed successfully!", {
+                "player_id": player_id,
+                "from_club": from_club,
+                "to_club": to_club,
+                "amount": amount,
+                "payee_desc": payee_desc,
+                "recipient_id": recipient_id,
+            }
 
     async def get_club_by_user(self, guild_id: int, user_id: int) -> Optional[Dict[str, Any]]:
         """Get the club that a user belongs to."""
@@ -753,15 +840,30 @@ class DatabaseManager:
             return dict(row) if row else None
 
     async def get_club_by_name(self, guild_id: int, query: str) -> Optional[Dict[str, Any]]:
-        """Search club by name or tag."""
+        """Search club by exact name/tag or case-insensitive partial match."""
+        q = query.strip()
         conn = await self.connect()
         async with conn.cursor() as cur:
+            # 1. Exact match by name or tag (case-insensitive)
             await cur.execute(
                 """
                 SELECT * FROM clubs
                 WHERE guild_id = ? AND (LOWER(name) = LOWER(?) OR UPPER(tag) = UPPER(?));
                 """,
-                (guild_id, query, query),
+                (guild_id, q, q),
+            )
+            row = await cur.fetchone()
+            if row:
+                return dict(row)
+
+            # 2. Fuzzy / partial match
+            await cur.execute(
+                """
+                SELECT * FROM clubs
+                WHERE guild_id = ? AND (LOWER(name) LIKE LOWER(?) OR UPPER(tag) LIKE UPPER(?))
+                LIMIT 1;
+                """,
+                (guild_id, f"%{q}%", f"%{q}%"),
             )
             row = await cur.fetchone()
             return dict(row) if row else None
@@ -772,15 +874,16 @@ class DatabaseManager:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT cm.*, u.cash, u.points, u.tokens
+                SELECT cm.*, COALESCE(u.cash, 0) as cash, COALESCE(u.points, 0) as points, COALESCE(u.tokens, 0) as tokens
                 FROM club_members cm
-                JOIN users u ON cm.user_id = u.user_id AND cm.guild_id = u.guild_id
+                LEFT JOIN users u ON cm.user_id = u.user_id AND cm.guild_id = u.guild_id
                 WHERE cm.club_id = ?
                 ORDER BY CASE cm.role
                     WHEN 'Owner' THEN 1
                     WHEN 'Captain' THEN 2
                     WHEN 'Vice-Captain' THEN 3
-                    ELSE 4
+                    WHEN 'Manager' THEN 4
+                    ELSE 5
                 END;
                 """,
                 (club_id,),

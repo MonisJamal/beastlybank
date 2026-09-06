@@ -6,7 +6,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from config import CURRENCIES, COLOR_BEASTLY_GOLD, COLOR_PITCH_GREEN, COLOR_SUCCESS
+from config import CURRENCIES, COLOR_BEASTLY_GOLD, COLOR_PITCH_GREEN, COLOR_SUCCESS, parse_amount
 from utils.checks import require_beastlyfc
 from utils.embeds import (
     club_info_embed,
@@ -14,6 +14,121 @@ from utils.embeds import (
     error_embed,
     success_embed,
 )
+
+
+
+async def club_name_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete club names and tags for transfer commands."""
+    try:
+        db = interaction.client.db  # type: ignore
+        clubs = await db.get_club_leaderboard(interaction.guild_id, limit=25)
+        choices = []
+        cur_low = current.lower()
+        for c in clubs:
+            display_name = f"[{c['tag']}] {c['name']}"
+            if not current or cur_low in display_name.lower():
+                choices.append(app_commands.Choice(name=display_name[:100], value=c["name"]))
+        return choices[:25]
+    except Exception:
+        return []
+
+
+async def execute_transfer(
+    db,
+    interaction: discord.Interaction,
+    player: discord.Member,
+    from_club: str,
+    to_club: str,
+    amount: str,
+    recipient: Optional[discord.Member] = None,
+):
+    """Shared execution logic for /transfer and /club transfer."""
+    parsed_fee = parse_amount(amount)
+    if parsed_fee is None or parsed_fee < 0:
+        await interaction.response.send_message(
+            embed=error_embed(
+                "Invalid Transfer Fee",
+                (
+                    f"Invalid transfer amount: `{amount}`.\n\n"
+                    f"**Supported Formats:**\n"
+                    f"• Scientific notation: `26e6` (26,000,000), `3e7` (30,000,000)\n"
+                    f"• Suffix multipliers: `26m`, `500k`, `1b`\n"
+                    f"• Exact numbers: `26000000`, `26,000,000`, or `0` for free transfer."
+                ),
+            ),
+            ephemeral=True,
+        )
+        return
+
+    recipient_id = recipient.id if recipient else None
+
+    success, msg, data = await db.transfer_player(
+        guild_id=interaction.guild_id,
+        player_id=player.id,
+        from_club_query=from_club,
+        to_club_query=to_club,
+        amount=parsed_fee,
+        payer_id=interaction.user.id,
+        recipient_id=recipient_id,
+    )
+
+    if not success:
+        await interaction.response.send_message(
+            embed=error_embed("Transfer Failed", msg),
+            ephemeral=True,
+        )
+        return
+
+    f_club = data["from_club"]
+    t_club = data["to_club"]
+    embed = create_beastly_embed(
+        title="🚨 OFFICIAL TRANSFER CONFIRMED • HERE WE GO! 🚨",
+        description=(
+            f"Official agreement finalized! **{player.mention}** has completed the transfer to **[{t_club['tag']}] {t_club['name']}**!\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=COLOR_BEASTLY_GOLD,
+    )
+
+    embed.add_field(
+        name="🏃 Player",
+        value=f"{player.mention} (`{player.display_name}`)",
+        inline=True,
+    )
+    embed.add_field(
+        name="💰 Transfer Fee",
+        value=f"💵 **{parsed_fee:,} Cash** (`{amount}`)",
+        inline=True,
+    )
+    embed.add_field(
+        name="💳 Payment Disbursed To",
+        value=data["payee_desc"],
+        inline=True,
+    )
+    embed.add_field(
+        name="📤 Departing Club",
+        value=f"**[{f_club['tag']}] {f_club['name']}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="📥 Destination Club",
+        value=f"**[{t_club['tag']}] {t_club['name']}**",
+        inline=True,
+    )
+    embed.add_field(
+        name="📋 Authorized By",
+        value=interaction.user.mention,
+        inline=True,
+    )
+
+    if player.display_avatar:
+        embed.set_thumbnail(url=player.display_avatar.url)
+
+    embed.set_footer(text="BeastlyFC Official Transfer Market • BeastlyBank")
+    await interaction.response.send_message(embed=embed)
 
 
 class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club Treasuries and Squads"):
@@ -25,7 +140,7 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
 
     @app_commands.command(
         name="create",
-        description="Register a new BeastlyFC football club with its own official BeastlyBank Treasury.",
+        description="Register a new BeastlyFC football club with its own official BeastlyBank Treasury (100% Free!).",
     )
     @app_commands.describe(
         name="Full name of your club (e.g. Red Dragons FC)",
@@ -342,6 +457,62 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
 
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(
+        name="transfer",
+        description="Transfer a player between clubs with official transfer fee disbursement.",
+    )
+    @app_commands.describe(
+        player="The BeastlyFC player being transferred",
+        from_club="Selling club name or tag",
+        to_club="Destination/Buying club name or tag",
+        amount="Transfer fee in Cash (e.g. 26e6 for 26M, 3e7 for 30M, 500k, 0)",
+        recipient="Discord member who receives the transfer fee payment (defaults to selling club treasury)",
+    )
+    @app_commands.autocomplete(from_club=club_name_autocomplete, to_club=club_name_autocomplete)
+    @require_beastlyfc()
+    async def club_transfer(
+        self,
+        interaction: discord.Interaction,
+        player: discord.Member,
+        from_club: str,
+        to_club: str,
+        amount: str,
+        recipient: Optional[discord.Member] = None,
+    ):
+        await execute_transfer(self.db, interaction, player, from_club, to_club, amount, recipient)
+
+
+class TransferMarket(commands.Cog):
+    """Top-level /transfer command for BeastlyFC transfer market."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db = bot.db  # type: ignore
+
+    @app_commands.command(
+        name="transfer",
+        description="Transfer a player between clubs with official transfer fee disbursement.",
+    )
+    @app_commands.describe(
+        player="The BeastlyFC player being transferred",
+        from_club="Selling club name or tag",
+        to_club="Destination/Buying club name or tag",
+        amount="Transfer fee in Cash (e.g. 26e6 for 26M, 3e7 for 30M, 500k, 0)",
+        recipient="Discord member who receives the transfer fee payment (defaults to selling club treasury)",
+    )
+    @app_commands.autocomplete(from_club=club_name_autocomplete, to_club=club_name_autocomplete)
+    @require_beastlyfc()
+    async def transfer(
+        self,
+        interaction: discord.Interaction,
+        player: discord.Member,
+        from_club: str,
+        to_club: str,
+        amount: str,
+        recipient: Optional[discord.Member] = None,
+    ):
+        await execute_transfer(self.db, interaction, player, from_club, to_club, amount, recipient)
+
 
 class ClubHistoryTop(commands.Cog):
     """Top-level /clubhistory command."""
@@ -403,4 +574,5 @@ class ClubHistoryTop(commands.Cog):
 async def setup(bot: commands.Bot):
     await bot.add_cog(Clubs(bot))
     await bot.add_cog(ClubHistoryTop(bot))
+    await bot.add_cog(TransferMarket(bot))
 

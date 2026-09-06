@@ -57,6 +57,49 @@ CURRENCIES = {
     },
 }
 
+
+def parse_amount(val_str: str):
+    """
+    Parses human currency strings including:
+    - Scientific notation: 26e6 (26M), 3e7 (30M)
+    - Suffix multipliers: 26m, 500k, 1b
+    - Plain numbers: 1000000, 26,000,000, 0
+    Returns integer amount if >= 0, or None if invalid.
+    """
+    s = str(val_str).strip().replace(",", "").lower()
+    if not s:
+        return None
+    if "e" in s:
+        try:
+            num = float(s)
+            return int(num) if num >= 0 else None
+        except ValueError:
+            pass
+    if s.endswith("k"):
+        try:
+            num = float(s[:-1]) * 1_000
+            return int(num) if num >= 0 else None
+        except ValueError:
+            pass
+    elif s.endswith("m"):
+        try:
+            num = float(s[:-1]) * 1_000_000
+            return int(num) if num >= 0 else None
+        except ValueError:
+            pass
+    elif s.endswith("b"):
+        try:
+            num = float(s[:-1]) * 1_000_000_000
+            return int(num) if num >= 0 else None
+        except ValueError:
+            pass
+    try:
+        val = int(float(s))
+        return val if val >= 0 else None
+    except ValueError:
+        return None
+
+
 # Daily Economy Settings
 DAILY_REWARD_CASH = 500
 DAILY_REWARD_POINTS = 200

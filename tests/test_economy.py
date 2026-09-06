@@ -608,3 +608,55 @@ async def test_banker_vault_operations(db: DatabaseManager):
     assert "Only Club Owners" in unauth_msg
 
 
+@pytest.mark.asyncio
+async def test_summary_system(db: DatabaseManager):
+    """Test economy stats aggregation and summary embed generation."""
+    from utils.embeds import (
+        summary_overview_embed,
+        summary_finance_embed,
+        summary_commands_embed,
+        summary_economy_embed,
+    )
+
+    guild_id = 999999999
+    user_id = 12345
+
+    # 1. Setup user and club
+    await db.get_or_create_user(user_id, guild_id)
+    await db.update_balance(user_id, guild_id, "cash", 50000, "test_salary")
+    await db.update_balance(user_id, guild_id, "points", 1200, "test_points")
+    await db.create_club(guild_id, "Titans FC", "TTN", user_id)
+
+    # 2. Economy stats check
+    stats = await db.get_economy_stats(guild_id)
+    assert stats["total_users"] >= 1
+    assert stats["total_clubs"] >= 1
+    assert stats["total_cash"] >= 50000
+
+    # 3. Create mock discord member
+    mock_member = MagicMock()
+    mock_member.display_name = "TestCaptain"
+    mock_member.mention = "<@12345>"
+    mock_member.display_avatar.url = "https://example.com/avatar.png"
+
+    user_data = await db.get_or_create_user(user_id, guild_id)
+    club = await db.get_club_by_user(guild_id, user_id)
+    txs = await db.get_transactions(user_id, guild_id, limit=4)
+
+    # 4. Generate all summary embeds
+    embed_overview = summary_overview_embed(mock_member, user_data, club)
+    assert "BeastlyBank" in embed_overview.title
+    assert any("Normal User Commands" in f.name for f in embed_overview.fields)
+
+    embed_finance = summary_finance_embed(mock_member, user_data, club, txs)
+    assert "Financial Summary" in embed_finance.title
+    assert any("Estimated Net Worth" in f.name for f in embed_finance.fields)
+
+    embed_commands = summary_commands_embed()
+    assert "Command Cheatsheet" in embed_commands.title
+
+    embed_econ = summary_economy_embed(stats)
+    assert "Economy Summary" in embed_econ.title
+    assert any("Circulating Cash" in f.name for f in embed_econ.fields)
+
+

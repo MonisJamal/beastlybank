@@ -23,8 +23,12 @@ from utils.embeds import (
     error_embed,
     success_embed,
     transaction_history_embed,
+    summary_overview_embed,
+    summary_finance_embed,
+    summary_commands_embed,
+    summary_economy_embed,
 )
-from utils.views import PaginationView
+from utils.views import PaginationView, SummaryView
 
 
 class Economy(commands.Cog):
@@ -299,6 +303,58 @@ class Economy(commands.Cog):
             color=COLOR_SUCCESS,
         )
         await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="summary",
+        description="View a simple, clear summary of BeastlyBank commands and your account status.",
+    )
+    @app_commands.describe(
+        user="Optional member to view their financial summary (defaults to yourself)",
+    )
+    @require_beastlyfc()
+    async def summary(
+        self,
+        interaction: discord.Interaction,
+        user: Optional[discord.Member] = None,
+    ):
+        target = user or interaction.user
+        if target.bot:
+            await interaction.response.send_message(
+                embed=error_embed("Invalid Account", "Automated Discord bots do not hold BeastlyBank accounts."),
+                ephemeral=True,
+            )
+            return
+
+        user_data = await self.db.get_or_create_user(target.id, interaction.guild_id)
+        club = await self.db.get_club_by_user(interaction.guild_id, target.id)
+
+        # If inspecting someone else, show their financial statement
+        if user and user.id != interaction.user.id:
+            txs = await self.db.get_transactions(target.id, interaction.guild_id, limit=4)
+            embed = summary_finance_embed(target, user_data, club, txs)
+            await interaction.response.send_message(embed=embed)
+            return
+
+        # Main overview summary with interactive buttons
+        embed = summary_overview_embed(target, user_data, club)
+        view = SummaryView(self.db, target, user_data, club)
+        await interaction.response.send_message(embed=embed, view=view)
+
+    @app_commands.command(
+        name="help",
+        description="View a simple guide and summary of all BeastlyBank commands.",
+    )
+    @require_beastlyfc()
+    async def help_command(
+        self,
+        interaction: discord.Interaction,
+    ):
+        """Simple command guide and cheatsheet."""
+        user_data = await self.db.get_or_create_user(interaction.user.id, interaction.guild_id)
+        club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+        embed = summary_overview_embed(interaction.user, user_data, club)
+        view = SummaryView(self.db, interaction.user, user_data, club)
+        await interaction.response.send_message(embed=embed, view=view)
 
 
 async def setup(bot: commands.Bot):

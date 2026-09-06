@@ -1585,3 +1585,60 @@ class DatabaseManager:
             label = actual_col.replace("_enabled", "").title()
             state = "ENABLED ✅" if enabled else "DISABLED ❌"
             return True, f"**{label}** is now **{state}** in BeastlyFC."
+
+    async def get_economy_stats(self, guild_id: int) -> Dict[str, Any]:
+        """Fetch overall server economy metrics for BeastlyFC."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            # Total users & circulating cash
+            await cur.execute(
+                """
+                SELECT COUNT(*) as total_users,
+                       COALESCE(SUM(cash), 0) as total_cash,
+                       COALESCE(SUM(points), 0) as total_points,
+                       COALESCE(SUM(tokens), 0) as total_tokens
+                FROM users WHERE guild_id = ?;
+                """,
+                (guild_id,),
+            )
+            u_row = await cur.fetchone()
+
+            # Total clubs & vault cash
+            await cur.execute(
+                """
+                SELECT COUNT(*) as total_clubs,
+                       COALESCE(SUM(treasury_cash), 0) as total_vault_cash
+                FROM clubs WHERE guild_id = ?;
+                """,
+                (guild_id,),
+            )
+            c_row = await cur.fetchone()
+
+            # Total transactions
+            await cur.execute(
+                "SELECT COUNT(*) as total_txs FROM transactions WHERE guild_id = ?;",
+                (guild_id,),
+            )
+            tx_row = await cur.fetchone()
+
+            # Total custom players registered
+            await cur.execute(
+                "SELECT COUNT(*) as total_players FROM club_players WHERE guild_id = ?;",
+                (guild_id,),
+            )
+            p_row = await cur.fetchone()
+
+            user_cash = u_row["total_cash"] if u_row else 0
+            vault_cash = c_row["total_vault_cash"] if c_row else 0
+
+            return {
+                "total_users": u_row["total_users"] if u_row else 0,
+                "total_cash": user_cash + vault_cash,
+                "user_cash": user_cash,
+                "vault_cash": vault_cash,
+                "total_points": u_row["total_points"] if u_row else 0,
+                "total_tokens": u_row["total_tokens"] if u_row else 0,
+                "total_clubs": c_row["total_clubs"] if c_row else 0,
+                "total_txs": tx_row["total_txs"] if tx_row else 0,
+                "total_players": p_row["total_players"] if p_row else 0,
+            }

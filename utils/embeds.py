@@ -18,6 +18,33 @@ from config import (
 )
 
 
+def formations_list_embed() -> discord.Embed:
+    """Build a single embed listing all supported formations (description-based for Discord limits)."""
+    groups: Dict[str, List[str]] = {"3-Back": [], "4-Back": [], "5-Back": []}
+    for code, meta in SUPPORTED_FORMATIONS.items():
+        group = f"{meta['def']}-Back"
+        groups.setdefault(group, []).append(
+            f"• `{code}` — `{meta['def']} DEF` | `{meta['mid']} MID` | `{meta['fwd']} FWD`"
+        )
+
+    sections = [
+        f"All **{len(SUPPORTED_FORMATIONS)}** available tactical formations for club lineups:",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    for label in ("3-Back", "4-Back", "5-Back"):
+        items = groups.get(label) or []
+        if not items:
+            continue
+        sections.append(f"\n**{label}**")
+        sections.extend(items)
+
+    return create_beastly_embed(
+        title="⚽ Supported Formations • BeastlyFC",
+        description="\n".join(sections),
+        color=COLOR_PITCH_GREEN,
+    )
+
+
 def create_beastly_embed(
     title: str,
     description: Optional[str] = None,
@@ -269,8 +296,8 @@ def summary_overview_embed(
             "• `/clubhistory [@role]` — View your club's ledger history.\n\n"
             "**⚽ Squad, Formations & Lineups**\n"
             "• `/lineup [@role]` | `bb!lineup` — View tactical pitch layout (GK, DEF, MID, FWD) with OVR ratings & bench.\n"
-            "• `/formation set <form>` | `bb!setformation` — Set tactical formation (all 18 formations supported).\n"
-            "• `/formation list` | `bb!formations` — Browse all 12 football formations.\n"
+            "• `/formation set <form>` — Set tactical formation (all formations supported).\n"
+            "• `/formation list` — Browse all football formations.\n"
             "• `/player info <player>` | `bb!player` — View player card with OVR, POT, and alt positions.\n"
             "• `/player add <player> <pos>` | `bb!addplayer` — Register player (rating, potential, alt positions `\"pos1, pos2, ...\"`).\n"
             "• `/player edit <player> [field] [val]` | `bb!editplayer` — Edit player rating, potential, alts, jersey, position.\n"
@@ -307,13 +334,13 @@ def summary_squad_embed() -> discord.Embed:
     )
 
     embed.add_field(
-        name="📐 Tactical Formations (18 Supported)",
+        name=f"📐 Tactical Formations ({len(SUPPORTED_FORMATIONS)} Supported)",
         value=(
-            "• `/formation set <formation> [club: @role]` | `bb!setformation <form> [@role]`\n"
-            "  *Set your squad's active formation. Browse all with* `/formation list`.\n"
-            "  **4-Back:** `4-3-3`, `4-4-2`, `4-2-3-1`, `4-1-4-1`, `4-5-1`, `4-1-3-2`, `4-3-2-1`, `4-2-2-2`, `4-1-2-1-2`\n"
-            "  **3-Back:** `3-5-2`, `3-4-3`, `3-4-1-2`, `3-4-2-1`, `3-6-1`\n"
-            "  **5-Back:** `5-3-2`, `5-4-1`, `5-2-1-2`, `5-2-3`"
+            "• `/formation set <formation> [club: @role]` — set your squad's active formation\n"
+            "• `/formation list` — browse every supported shape\n"
+            "  **3-Back:** `3-1-4-2`, `3-2-4-1`, `3-4-1-2`, `3-4-2-1`, `3-4-3 Diamond`, `3-4-3 Flat`, `3-5-1-1`, `3-5-2`\n"
+            "  **4-Back:** `4-1-2-1-2 Narrow/Wide`, `4-1-3-2`, `4-1-3-2 Attacking`, `4-1-4-1`, `4-2-2-2`, `4-2-3-1 Attack/Narrow/Wide`, `4-2-4`, `4-3-1-2`, `4-3-2-1`, `4-3-3 Attack/Balanced/Defend/False 9/Flat/Holding`, `4-4-1-1 Attack/Midfield`, `4-4-2 Flat/Holding`, `4-5-1 Attack/Flat`\n"
+            "  **5-Back:** `5-2-1-2`, `5-2-3`, `5-3-2`, `5-4-1 Diamond`, `5-4-1 Flat`"
         ),
         inline=False,
     )
@@ -483,8 +510,8 @@ def summary_commands_embed() -> discord.Embed:
         name="⚽ Squad & Lineup Management",
         value=(
             "• `/lineup [@role]` | `bb!lineup` — View tactical pitch layout & bench\n"
-            "• `/formation set <form>` | `bb!setformation` — Set tactical formation (18 supported)\n"
-            "• `/formation list` | `bb!formations` — Browse all 18 formations\n"
+            "• `/formation set <form>` — Set tactical formation (all formations supported)\n"
+            "• `/formation list` — Browse all formations\n"
             "• `/player info <player>` | `bb!player` — Player profile with OVR, POT, alt positions\n"
             "• `/player add <player> <pos>` | `bb!addplayer` — Register player to XI or bench\n"
             "• `/player edit <player> [field] [val]` | `bb!editplayer` — Edit player rating, potential, alts\n"
@@ -574,7 +601,7 @@ def club_lineup_embed(
         title=f"📋 Squad Lineup • [{club['tag']}] {club['name']}",
         description=(
             f"Club: {role_str}\n"
-            f"Tactical Formation: **{formation}** ({form_meta.get('name', formation)})\n"
+            f"Tactical Formation: **{formation}**\n"
             f"*{form_meta.get('desc', '')}*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━"
         ),
@@ -752,11 +779,11 @@ def beastlybank_announcement_embed() -> discord.Embed:
     embed.add_field(
         name="⚽ Squad Lineups, Formations & Player Management",
         value=(
-            "• **Tactical Pitch Lineup:** `/lineup [club: @role]` | `bb!lineup [@role]` displays tactical pitch layout (🧤 GK, 🛡️ DEF, ⚙️ MID, ⚡ ATT) with `[OVR]` rating tags + Substitutes Bench!\n"
-            "• **18 Supported Formations:** `/formation set <form>` | `bb!setformation`. Browse with `/formation list`.\n"
-            "  **4-Back:** `4-3-3`, `4-4-2`, `4-2-3-1`, `4-1-4-1`, `4-5-1`, `4-1-3-2`, `4-3-2-1`, `4-2-2-2`, `4-1-2-1-2`\n"
-            "  **3-Back:** `3-5-2`, `3-4-3`, `3-4-1-2`, `3-4-2-1`, `3-6-1`\n"
-            "  **5-Back:** `5-3-2`, `5-4-1`, `5-2-1-2`, `5-2-3`\n"
+            "• **Tactical Pitch Lineup:** `/lineup [club: @role]` displays tactical pitch layout (🧤 GK, 🛡️ DEF, ⚙️ MID, ⚡ ATT) with `[OVR]` rating tags + Substitutes Bench!\n"
+            f"• **{len(SUPPORTED_FORMATIONS)} Supported Formations:** `/formation set <form>`. Browse with `/formation list`.\n"
+            "  **3-Back:** `3-1-4-2`, `3-2-4-1`, `3-4-1-2`, `3-4-2-1`, `3-4-3 Diamond/Flat`, `3-5-1-1`, `3-5-2`\n"
+            "  **4-Back:** `4-1-2-1-2 Narrow/Wide`, `4-1-3-2`, `4-1-3-2 Attacking`, `4-1-4-1`, `4-2-2-2`, `4-2-3-1 Attack/Narrow/Wide`, `4-2-4`, `4-3-1-2`, `4-3-2-1`, `4-3-3 Attack/Balanced/Defend/False 9/Flat/Holding`, `4-4-1-1 Attack/Midfield`, `4-4-2 Flat/Holding`, `4-5-1 Attack/Flat`\n"
+            "  **5-Back:** `5-2-1-2`, `5-2-3`, `5-3-2`, `5-4-1 Diamond/Flat`\n"
             "• **Player Creation:** `/player add` | `bb!addplayer` registers custom or Discord players with:\n"
             "  - Primary Position (`GK`, `CB`, `LB`, `RB`, `CDM`, `CM`, `CAM`, `LW`, `RW`, `ST`, etc.)\n"
             "  - Overall Rating (`1–99 OVR`, default 75)\n"

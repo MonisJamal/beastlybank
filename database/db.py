@@ -8,7 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 import aiosqlite
 
-from config import SUPPORTED_FORMATIONS, VALID_POSITIONS
+from config import DEFAULT_FORMATION, SUPPORTED_FORMATIONS, VALID_POSITIONS
 
 logger = logging.getLogger("BeastlyBank.DB")
 
@@ -118,7 +118,7 @@ class DatabaseManager:
                     tag TEXT NOT NULL,
                     owner_id INTEGER NOT NULL,
                     role_id INTEGER,
-                    formation TEXT NOT NULL DEFAULT '4-3-3',
+                    formation TEXT NOT NULL DEFAULT '4-3-3 Balanced',
                     treasury_cash INTEGER NOT NULL DEFAULT 0,
                     treasury_points INTEGER NOT NULL DEFAULT 0,
                     treasury_tokens INTEGER NOT NULL DEFAULT 0,
@@ -332,7 +332,7 @@ class DatabaseManager:
             # Ensure role_id, formation, and squad player columns exist
             for col_stmt in [
                 "ALTER TABLE clubs ADD COLUMN role_id INTEGER;",
-                "ALTER TABLE clubs ADD COLUMN formation TEXT NOT NULL DEFAULT '4-3-3';",
+                "ALTER TABLE clubs ADD COLUMN formation TEXT NOT NULL DEFAULT '4-3-3 Balanced';",
                 "ALTER TABLE club_players ADD COLUMN position TEXT NOT NULL DEFAULT 'ST';",
                 "ALTER TABLE club_players ADD COLUMN status TEXT NOT NULL DEFAULT 'starting';",
                 "ALTER TABLE club_players ADD COLUMN number INTEGER DEFAULT NULL;",
@@ -2120,7 +2120,7 @@ class DatabaseManager:
             await conn.commit()
 
         form_meta = SUPPORTED_FORMATIONS[matched]
-        return True, f"Formation for **[{club['tag']}] {club['name']}** set to **{matched}** ({form_meta['name']} - {form_meta['desc']})."
+        return True, f"Formation for **[{club['tag']}] {club['name']}** set to **{matched}** — {form_meta['desc']}."
 
     async def get_club_lineup(
         self,
@@ -2175,7 +2175,7 @@ class DatabaseManager:
 
             return True, "", {
                 "club": club,
-                "formation": club.get("formation", "4-3-3"),
+                "formation": club.get("formation", DEFAULT_FORMATION),
                 "starting": starting,
                 "bench": bench,
             }

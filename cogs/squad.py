@@ -1,6 +1,6 @@
 """
 Squad & Lineup Cog: Football formations, Starting XI, Substitutes Bench, and Player Management.
-Supports all 18 formations, visual tactical embeds, custom/Discord players, and Discord role mentions.
+Supports all formations, visual tactical embeds, custom/Discord players, and Discord role mentions.
 """
 import logging
 from typing import Any, Dict, List, Literal, Optional, Tuple
@@ -11,7 +11,6 @@ from discord.ext import commands
 from config import (
     BOT_NAME,
     COLOR_BEASTLY_GOLD,
-    COLOR_PITCH_GREEN,
     COLOR_SUCCESS,
     COLOR_ERROR,
     COLOR_INFO,
@@ -24,9 +23,9 @@ from utils.checks import require_beastlyfc, is_banker_or_admin
 from utils.embeds import (
     club_lineup_embed,
     player_card_embed,
-    create_beastly_embed,
     error_embed,
     success_embed,
+    formations_list_embed,
 )
 
 logger = logging.getLogger("BeastlyBank.Squad")
@@ -39,10 +38,9 @@ async def formation_autocomplete(
     """Autocomplete for supported football formations."""
     cur = current.strip().lower()
     choices = []
-    for k, v in SUPPORTED_FORMATIONS.items():
-        name = f"{k} ({v['name']})"
-        if not cur or cur in k.lower() or cur in v["name"].lower():
-            choices.append(app_commands.Choice(name=name[:100], value=k))
+    for k in SUPPORTED_FORMATIONS:
+        if not cur or cur in k.lower():
+            choices.append(app_commands.Choice(name=k[:100], value=k))
     return choices[:25]
 
 
@@ -128,7 +126,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
 
     @formation_group.command(name="set", description="Set tactical formation for your club.")
     @app_commands.describe(
-        formation="Formation to set (e.g. 4-3-3, 4-4-2, 4-2-3-1)",
+        formation="Formation to set (e.g. 4-3-3 Balanced, 4-2-3-1 Wide)",
         club="Target club role (Bankers or if managing a specific club)",
     )
     @app_commands.autocomplete(formation=formation_autocomplete)
@@ -181,18 +179,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
 
     @formation_group.command(name="list", description="List all supported football formations.")
     async def slash_formation_list(self, interaction: discord.Interaction):
-        embed = create_beastly_embed(
-            title="⚽ Supported Formations • BeastlyFC",
-            description="All available tactical formations for club lineups:\n━━━━━━━━━━━━━━━━━━━━━━",
-            color=COLOR_PITCH_GREEN,
-        )
-        for code, meta in SUPPORTED_FORMATIONS.items():
-            embed.add_field(
-                name=f"`{code}` — {meta['name']}",
-                value=f"• Breakdown: `{meta['def']} DEF` | `{meta['mid']} MID` | `{meta['fwd']} FWD`\n• *{meta['desc']}*",
-                inline=False,
-            )
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=formations_list_embed())
 
     # ==========================================
     # SLASH COMMAND: LINEUP
@@ -719,18 +706,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
     @commands.command(name="formations")
     async def prefix_formations(self, ctx: commands.Context):
         """List all supported football formations."""
-        embed = create_beastly_embed(
-            title="⚽ Supported Formations • BeastlyFC",
-            description="All available tactical formations for club lineups:\n━━━━━━━━━━━━━━━━━━━━━━",
-            color=COLOR_PITCH_GREEN,
-        )
-        for code, meta in SUPPORTED_FORMATIONS.items():
-            embed.add_field(
-                name=f"`{code}` — {meta['name']}",
-                value=f"• Breakdown: `{meta['def']} DEF` | `{meta['mid']} MID` | `{meta['fwd']} FWD`\n• *{meta['desc']}*",
-                inline=False,
-            )
-        await ctx.send(embed=embed)
+        await ctx.send(embed=formations_list_embed())
 
     @commands.command(name="player", aliases=["playerinfo"])
     async def prefix_player_info(self, ctx: commands.Context, *args):

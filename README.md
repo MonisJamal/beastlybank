@@ -45,8 +45,8 @@
 | Command | Prefix (`bb!`) | Description |
 | :--- | :--- | :--- |
 | `/lineup [club: @role]` | `bb!lineup [@role]` | View tactical pitch lineup (GK, DEF, MID, FWD) with OVR ratings and substitutes bench. |
-| `/formation set <formation> [club: @role]` | `bb!setformation <form> [@role]` | Set club tactical formation (all 12 formations supported). |
-| `/formation list` | `bb!formations` | Browse all 12 supported football formations with shapes and descriptions. |
+| `/formation set <formation> [club: @role]` | `bb!setformation <form> [@role]` | Set club tactical formation (all 37 formations supported). |
+| `/formation list` | `bb!formations` | Browse all 37 supported football formations with shapes and descriptions. |
 | `/player info <player> [club: @role]` | `bb!player <player> [@role]` | Inspect player profile card with position, alternate positions, rating (OVR), potential (POT), jersey number, and club. |
 | `/player add <player> <pos> [status] [num] [rating] [potential] [alt_pos] [club: @role]` | `bb!addplayer <player> <pos> [status] [num] [rating] [pot] [alt_pos] [@role]` | Register a player with primary position, overall rating (1-99), potential (1-99), and alternate positions (e.g. `LW, RW`). |
 | `/player edit <player> [name] [pos] [status] [num] [rating] [potential] [alt_pos] [club: @role]` | `bb!editplayer <player> <field> <val> [@role]` | Edit player position, status, jersey number, name, rating (`ovr`), potential (`pot`), or alternate positions (`alt`). |

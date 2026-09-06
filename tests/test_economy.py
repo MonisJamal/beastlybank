@@ -868,7 +868,7 @@ async def test_role_mentionable_clubs(db: DatabaseManager):
 async def test_squad_lineup_and_formation_management(db: DatabaseManager):
     """
     Comprehensive test for:
-    - All 12 football formations (set_club_formation, rejection of invalid formations)
+    - All supported football formations (set_club_formation, rejection of invalid formations)
     - Adding players to Starting XI (up to 11) and Bench with positions and jersey numbers
     - Starting XI 11-player limit enforcement
     - Editing player details (name, position, status, jersey number)
@@ -878,7 +878,7 @@ async def test_squad_lineup_and_formation_management(db: DatabaseManager):
     - Transfer preserving position and number
     - Lineup and player card embed rendering
     """
-    from config import SUPPORTED_FORMATIONS, VALID_POSITIONS
+    from config import DEFAULT_FORMATION, SUPPORTED_FORMATIONS, VALID_POSITIONS
     from utils.embeds import club_lineup_embed, player_card_embed
 
     guild_id = 123456789
@@ -887,9 +887,9 @@ async def test_squad_lineup_and_formation_management(db: DatabaseManager):
     # 1. Create a club
     c_ok, c_msg, club = await db.create_club(guild_id, "Real Madrid", "RMA", owner_id, 1001)
     assert c_ok is True
-    assert club["formation"] == "4-3-3"
+    assert club["formation"] == DEFAULT_FORMATION
 
-    # 2. Test setting all 12 supported formations
+    # 2. Test setting all supported formations
     for form_key in SUPPORTED_FORMATIONS.keys():
         f_ok, f_msg = await db.set_club_formation(guild_id, club["id"], form_key)
         assert f_ok is True
@@ -900,8 +900,8 @@ async def test_squad_lineup_and_formation_management(db: DatabaseManager):
     assert bad_ok is False
     assert "not supported" in bad_msg
 
-    # Set to 4-3-3 for testing
-    await db.set_club_formation(guild_id, club["id"], "4-3-3")
+    # Set default formation for testing
+    await db.set_club_formation(guild_id, club["id"], DEFAULT_FORMATION)
 
     # 3. Add 11 Starting XI players
     starter_data = [
@@ -974,7 +974,7 @@ async def test_squad_lineup_and_formation_management(db: DatabaseManager):
     assert l_ok is True
     assert len(lineup["starting"]) == 11
     assert len(lineup["bench"]) == 2
-    assert lineup["formation"] == "4-3-3"
+    assert lineup["formation"] == DEFAULT_FORMATION
 
     # 7. Test Player Info
     info_ok, info_msg, p_info = await db.get_player_info(guild_id, "Mbappe")
@@ -1238,7 +1238,7 @@ async def test_player_ratings_potential_and_alt_positions(db: DatabaseManager):
     # Lineup embed has [88] tag
     lineup_emb = club_lineup_embed(
         club=club,
-        formation="4-3-3",
+        formation="4-3-3 Balanced",
         starting_players=[e_p],
         bench_players=[],
     )

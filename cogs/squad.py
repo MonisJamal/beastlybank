@@ -280,7 +280,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         number="Jersey number (0-99)",
         rating="Overall player rating (1-99, default 75)",
         potential="Player potential rating (1-99, default 80)",
-        alt_positions="Alternative positions separated by commas (e.g. 'LW, RW')",
+        alt_positions="Alternative positions separated by commas (e.g. 'pos1, pos2, pos3, .....')",
         club="Target club role (defaults to your club)",
     )
     @app_commands.autocomplete(position=position_autocomplete)
@@ -350,7 +350,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         number="New jersey number (0-99)",
         rating="New overall rating (1-99)",
         potential="New potential rating (1-99)",
-        alt_positions="New alternative positions (e.g. 'LW, RW')",
+        alt_positions="New alternative positions separated by commas (e.g. 'pos1, pos2, pos3, .....')",
         club="Target club role (defaults to your club)",
     )
     @app_commands.autocomplete(position=position_autocomplete)
@@ -764,8 +764,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
     async def prefix_addplayer(self, ctx: commands.Context, *args):
         """
         Add a player to a club squad (Starting XI or Bench).
-        Usage: bb!addplayer <player> <position> [status] [number] [rating] [potential] [alt_pos] [@club_role]
-        Example: bb!addplayer Mbappe ST starting 9 91 95 "LW, RW" @RealMadrid
+        Usage: bb!addplayer <player> <position> [status] [number] [rating] [potential] ["pos1, pos2, pos3, ....."] [@club_role]
+        Example: bb!addplayer Mbappe ST starting 9 91 95 "LW, RW, CAM" @RealMadrid
         """
         target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
         clean_args = [a for a in args if not (a.startswith("<@&") and a.endswith(">"))]
@@ -774,7 +774,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             await ctx.send(
                 embed=error_embed(
                     "Missing Parameters",
-                    "Usage: `bb!addplayer <player> <position> [status] [number] [rating] [potential] [alt_pos] [@club_role]`\n"
+                    "Usage: `bb!addplayer <player> <position> [status] [number] [rating] [potential] [\"pos1, pos2, pos3, .....\"] [@club_role]`\n"
                     f"Valid Positions: {', '.join(VALID_POSITIONS)}",
                 )
             )
@@ -796,17 +796,47 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             al = arg.lower().strip()
             if al in ("starting", "bench"):
                 status = al
+            elif al.startswith(("num:", "number:", "jersey:")):
+                v = al.split(":", 1)[1]
+                if v.isdigit():
+                    number = int(v)
+            elif al.startswith(("rating:", "rate:", "ovr:")):
+                v = al.split(":", 1)[1]
+                if v.isdigit():
+                    rating = int(v)
+            elif al.startswith(("pot:", "potential:")):
+                v = al.split(":", 1)[1]
+                if v.isdigit():
+                    potential = int(v)
+            elif al.startswith(("alt:", "alts:", "alt_pos:", "alt_positions:")):
+                v = arg.split(":", 1)[1]
+                if v:
+                    text_alts.append(v)
             elif al.isdigit():
                 nums.append(int(al))
             else:
                 text_alts.append(arg)
 
-        if len(nums) >= 1:
-            number = nums[0]
-        if len(nums) >= 2:
-            rating = nums[1]
-        if len(nums) >= 3:
-            potential = nums[2]
+        if len(nums) == 1:
+            if number is None:
+                number = nums[0]
+            elif rating == 75:
+                rating = nums[0]
+        elif len(nums) == 2:
+            if number is None:
+                number = nums[0]
+                rating = nums[1]
+            else:
+                rating = nums[0]
+                potential = nums[1]
+        elif len(nums) >= 3:
+            if number is None:
+                number = nums[0]
+                rating = nums[1]
+                potential = nums[2]
+            else:
+                rating = nums[0]
+                potential = nums[1]
 
         if text_alts:
             alt_positions = " ".join(text_alts)
@@ -858,9 +888,10 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         """
         Edit an existing player's details.
         Usage: bb!editplayer <player> <field> <value> [@club_role]
-        Fields: name, position (or pos), status, number, rating, potential, alt
+        Fields: name, position (or pos), status, number, rating, potential, alt (or altpos)
         Example: bb!editplayer Messi pos RW @Barca
         Example: bb!editplayer Mbappe rating 91 @RealMadrid
+        Example: bb!editplayer Mbappe alt "LW, RW, CAM, RM" @RealMadrid
         """
         target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
         clean_args = [a for a in args if not (a.startswith("<@&") and a.endswith(">"))]
@@ -870,7 +901,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 embed=error_embed(
                     "Missing Parameters",
                     "Usage: `bb!editplayer <player> <field> <value> [@club_role]`\n"
-                    "Fields: `name`, `pos`, `status`, `number`, `rating`, `potential`, `alt`",
+                    "Fields: `name`, `pos`, `status`, `number`, `rating`, `potential`, `alt`\n"
+                    "Alt Positions Format: `\"pos1, pos2, pos3, .....\"` (e.g. `\"LW, RW, CAM\"`)",
                 )
             )
             return

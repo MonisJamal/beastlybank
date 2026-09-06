@@ -13,6 +13,43 @@ from config import SUPPORTED_FORMATIONS, VALID_POSITIONS
 logger = logging.getLogger("BeastlyBank.DB")
 
 
+def normalize_alt_positions(alt_positions: Optional[str], primary_pos: Optional[str] = None) -> Optional[str]:
+    """
+    Normalizes alternate positions separated by commas, spaces, slashes, or semicolons
+    (e.g. 'pos1, pos2, pos3, .....') into a clean, uppercase, deduplicated, comma-separated string
+    excluding the primary position and any invalid positions.
+    Returns format: 'POS1, POS2, POS3, ...' or None if empty.
+    """
+    if not alt_positions:
+        return None
+    raw = str(alt_positions).strip()
+    if raw.lower() in ("none", "clear", "remove", "null", "no", "empty", "-"):
+        return None
+
+    # Replace common delimiters with commas
+    standardized = raw.replace("/", ",").replace(";", ",").replace("|", ",")
+
+    if "," in standardized:
+        tokens = standardized.split(",")
+    else:
+        tokens = standardized.split()
+
+    prim = primary_pos.upper().strip() if primary_pos else None
+    seen = set()
+    deduped = []
+
+    for tok in tokens:
+        sub_tokens = tok.split() if tok.strip().upper() not in VALID_POSITIONS else [tok]
+        for sub in sub_tokens:
+            cleaned = sub.strip(" \t\n\r\"'[](),.").upper()
+            if cleaned in VALID_POSITIONS and cleaned != prim:
+                if cleaned not in seen:
+                    seen.add(cleaned)
+                    deduped.append(cleaned)
+
+    return ", ".join(deduped) if deduped else None
+
+
 class DatabaseManager:
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -721,7 +758,7 @@ class DatabaseManager:
             p_num = old_p["number"] if old_p and old_p["number"] else None
             p_rating = old_p["rating"] if old_p and old_p["rating"] is not None else 75
             p_pot = old_p["potential"] if old_p and old_p["potential"] is not None else 80
-            p_alt = old_p["alt_positions"] if old_p and old_p["alt_positions"] else None
+            p_alt = normalize_alt_positions(old_p["alt_positions"], primary_pos=p_pos) if old_p and old_p["alt_positions"] else None
 
             # Update custom players roster
             await cur.execute(
@@ -1790,20 +1827,8 @@ class DatabaseManager:
         if pot_val < 1 or pot_val > 99:
             return False, "Player potential must be between 1 and 99.", {}
 
-        # Clean alternate positions
-        clean_alt = None
-        if alt_positions:
-            cleaned = str(alt_positions).replace("/", ",").replace(";", ",")
-            parts = [p.strip().upper() for p in cleaned.split(",") if p.strip()]
-            valid_alts = [p for p in parts if p in VALID_POSITIONS and p != pos]
-            seen = set()
-            deduped = []
-            for p in valid_alts:
-                if p not in seen:
-                    seen.add(p)
-                    deduped.append(p)
-            if deduped:
-                clean_alt = ", ".join(deduped)
+        # Clean alternate positions (e.g. 'pos1, pos2, pos3, .....')
+        clean_alt = normalize_alt_positions(alt_positions, primary_pos=pos)
 
         club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=default_owner_id)
         if not club:
@@ -1994,19 +2019,15 @@ class DatabaseManager:
                 changes.append(f"Potential: **{potential} POT**")
 
             if alt_positions is not None:
-                cleaned = str(alt_positions).replace("/", ",").replace(";", ",")
-                parts = [p.strip().upper() for p in cleaned.split(",") if p.strip()]
-                valid_alts = [p for p in parts if p in VALID_POSITIONS and p != curr_pos]
-                seen = set()
-                deduped = []
-                for p in valid_alts:
-                    if p not in seen:
-                        seen.add(p)
-                        deduped.append(p)
-                clean_alt = ", ".join(deduped) if deduped else None
+                clean_alt = normalize_alt_positions(alt_positions, primary_pos=curr_pos)
                 updates.append("alt_positions = ?")
                 params.append(clean_alt)
                 changes.append(f"Alt Positions: **{clean_alt or 'None'}**")
+            elif position is not None and ("alt_positions" in player.keys() and player["alt_positions"]):
+                cleaned_existing = normalize_alt_positions(player["alt_positions"], primary_pos=curr_pos)
+                if cleaned_existing != player["alt_positions"]:
+                    updates.append("alt_positions = ?")
+                    params.append(cleaned_existing)
 
             if not updates:
                 return False, "No modifications provided. Specify at least one attribute to edit.", {}

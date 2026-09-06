@@ -1283,6 +1283,77 @@ async def test_player_ratings_potential_and_alt_positions(db: DatabaseManager):
     _, _, saka_edited = await db.get_player_info(guild_id, "Saka", club_query=dest_club["id"])
     assert saka_edited["player"]["rating"] == 89
 
+    # 9. Test normalize_alt_positions helper with "pos1, pos2, pos3, ....."
+    from database.db import normalize_alt_positions
+    # Standard comma-separated with multiple positions
+    assert normalize_alt_positions("LW, RW, CAM, CF, RM", "ST") == "LW, RW, CAM, CF, RM"
+    # Space separated without commas
+    assert normalize_alt_positions("LW RW CAM", "ST") == "LW, RW, CAM"
+    # Trailing dots and quotes
+    assert normalize_alt_positions('"LW, RW, CAM, RM....."', "ST") == "LW, RW, CAM, RM"
+    # Primary position excluded
+    assert normalize_alt_positions("ST, LW, RW, CAM", "ST") == "LW, RW, CAM"
+    # Deduplication and whitespace cleanup
+    assert normalize_alt_positions("LW,   rw  , LW, CAM, CF", "ST") == "LW, RW, CAM, CF"
+    # Clearing / none
+    assert normalize_alt_positions("none", "ST") is None
+    assert normalize_alt_positions("clear", "ST") is None
+    assert normalize_alt_positions("", "ST") is None
+
+    # 10. Test bb!addplayer with named tags (num:, rating:, pot:, alt:)
+    ctx.send.reset_mock()
+    await squad_cog.prefix_addplayer.callback(
+        squad_cog,
+        ctx,
+        "Odegaard",
+        "CAM",
+        "starting",
+        "num:8",
+        "rating:89",
+        "pot:92",
+        "alt:CM,",
+        "RM,",
+        "RW",
+        mock_dest_role.mention,
+    )
+    ctx.send.assert_called_once()
+    _, _, ode_info = await db.get_player_info(guild_id, "Odegaard", club_query=dest_club["id"])
+    assert ode_info["player"]["rating"] == 89
+    assert ode_info["player"]["potential"] == 92
+    assert ode_info["player"]["number"] == 8
+    assert ode_info["player"]["alt_positions"] == "CM, RM, RW"
+
+    # 11. Test bb!editplayer editing multiple alt positions separated with "pos1, pos2, pos3, ....."
+    ctx.send.reset_mock()
+    await squad_cog.prefix_editplayer.callback(
+        squad_cog,
+        ctx,
+        "Odegaard",
+        "alt",
+        "CM,",
+        "RW,",
+        "LW,",
+        "CF",
+        mock_dest_role.mention,
+    )
+    ctx.send.assert_called_once()
+    _, _, ode_edited = await db.get_player_info(guild_id, "Odegaard", club_query=dest_club["id"])
+    assert ode_edited["player"]["alt_positions"] == "CM, RW, LW, CF"
+
+    # 12. Test changing primary position automatically cleans it out of alt_positions
+    # Odegaard has alt_positions "CM, RW, LW, CF". If we change primary pos to CM:
+    await db.edit_club_player(
+        guild_id=guild_id,
+        club_query=dest_club["id"],
+        player_name="Odegaard",
+        position="CM",
+    )
+    _, _, ode_new_pos = await db.get_player_info(guild_id, "Odegaard", club_query=dest_club["id"])
+    assert ode_new_pos["player"]["position"] == "CM"
+    # CM must now be excluded from alt_positions
+    assert ode_new_pos["player"]["alt_positions"] == "RW, LW, CF"
+
+
 
 
 

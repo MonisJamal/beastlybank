@@ -269,7 +269,7 @@ def summary_overview_embed(
             "• `/clubhistory [@role]` — View your club's ledger history.\n\n"
             "**⚽ Squad, Formations & Lineups**\n"
             "• `/lineup [@role]` | `bb!lineup` — View tactical pitch layout (GK, DEF, MID, FWD) with OVR ratings & bench.\n"
-            "• `/formation set <form>` | `bb!setformation` — Set tactical formation (all 12 formations supported).\n"
+            "• `/formation set <form>` | `bb!setformation` — Set tactical formation (all 18 formations supported).\n"
             "• `/formation list` | `bb!formations` — Browse all 12 football formations.\n"
             "• `/player info <player>` | `bb!player` — View player card with OVR, POT, and alt positions.\n"
             "• `/player add <player> <pos>` | `bb!addplayer` — Register player (rating, potential, alt positions `\"pos1, pos2, ...\"`).\n"
@@ -307,12 +307,13 @@ def summary_squad_embed() -> discord.Embed:
     )
 
     embed.add_field(
-        name="📐 Tactical Formations (12 Supported)",
+        name="📐 Tactical Formations (18 Supported)",
         value=(
             "• `/formation set <formation> [club: @role]` | `bb!setformation <form> [@role]`\n"
-            "  *Set your squad's active formation. Supported:* `4-3-3`, `4-4-2`, `4-2-3-1`, `3-5-2`, `3-4-3`, `5-3-2`, `4-1-2-1-2`, `4-5-1`, `5-2-3`, `3-4-1-2`, `4-3-2-1`, `4-2-2-2`.\n"
-            "• `/formation list` | `bb!formations`\n"
-            "  *Browse all 12 supported formations with shapes and tactical descriptions.*"
+            "  *Set your squad's active formation. Browse all with* `/formation list`.\n"
+            "  **4-Back:** `4-3-3`, `4-4-2`, `4-2-3-1`, `4-1-4-1`, `4-5-1`, `4-1-3-2`, `4-3-2-1`, `4-2-2-2`, `4-1-2-1-2`\n"
+            "  **3-Back:** `3-5-2`, `3-4-3`, `3-4-1-2`, `3-4-2-1`, `3-6-1`\n"
+            "  **5-Back:** `5-3-2`, `5-4-1`, `5-2-1-2`, `5-2-3`"
         ),
         inline=False,
     )
@@ -482,8 +483,8 @@ def summary_commands_embed() -> discord.Embed:
         name="⚽ Squad & Lineup Management",
         value=(
             "• `/lineup [@role]` | `bb!lineup` — View tactical pitch layout & bench\n"
-            "• `/formation set <form>` | `bb!setformation` — Set tactical formation (12 supported)\n"
-            "• `/formation list` | `bb!formations` — Browse all 12 formations\n"
+            "• `/formation set <form>` | `bb!setformation` — Set tactical formation (18 supported)\n"
+            "• `/formation list` | `bb!formations` — Browse all 18 formations\n"
             "• `/player info <player>` | `bb!player` — Player profile with OVR, POT, alt positions\n"
             "• `/player add <player> <pos>` | `bb!addplayer` — Register player to XI or bench\n"
             "• `/player edit <player> [field] [val]` | `bb!editplayer` — Edit player rating, potential, alts\n"
@@ -752,7 +753,10 @@ def beastlybank_announcement_embed() -> discord.Embed:
         name="⚽ Squad Lineups, Formations & Player Management",
         value=(
             "• **Tactical Pitch Lineup:** `/lineup [club: @role]` | `bb!lineup [@role]` displays tactical pitch layout (🧤 GK, 🛡️ DEF, ⚙️ MID, ⚡ ATT) with `[OVR]` rating tags + Substitutes Bench!\n"
-            "• **12 Supported Formations:** `/formation set <form>` | `bb!setformation` (`4-3-3`, `4-4-2`, `4-2-3-1`, `3-5-2`, `3-4-3`, `5-3-2`, `4-1-2-1-2`, `4-5-1`, `5-2-3`, `3-4-1-2`, `4-3-2-1`, `4-2-2-2`). Browse with `/formation list`.\n"
+            "• **18 Supported Formations:** `/formation set <form>` | `bb!setformation`. Browse with `/formation list`.\n"
+            "  **4-Back:** `4-3-3`, `4-4-2`, `4-2-3-1`, `4-1-4-1`, `4-5-1`, `4-1-3-2`, `4-3-2-1`, `4-2-2-2`, `4-1-2-1-2`\n"
+            "  **3-Back:** `3-5-2`, `3-4-3`, `3-4-1-2`, `3-4-2-1`, `3-6-1`\n"
+            "  **5-Back:** `5-3-2`, `5-4-1`, `5-2-1-2`, `5-2-3`\n"
             "• **Player Creation:** `/player add` | `bb!addplayer` registers custom or Discord players with:\n"
             "  - Primary Position (`GK`, `CB`, `LB`, `RB`, `CDM`, `CM`, `CAM`, `LW`, `RW`, `ST`, etc.)\n"
             "  - Overall Rating (`1–99 OVR`, default 75)\n"

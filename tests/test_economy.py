@@ -1414,7 +1414,7 @@ async def test_announcement_embed(db: DatabaseManager):
     assert "bb!" in combined_text
     assert "Message Content Intent" in combined_text
     assert "26e6" in combined_text
-    assert "12 Supported Formations" in combined_text
+    assert "18 Supported Formations" in combined_text
     assert "pos1, pos2, pos3, ....." in combined_text
     assert "1–99 OVR" in combined_text
     assert "1–99 POT" in combined_text

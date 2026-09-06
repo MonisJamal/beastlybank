@@ -1,6 +1,6 @@
 """
 Squad & Lineup Cog: Football formations, Starting XI, Substitutes Bench, and Player Management.
-Supports all 12 formations, visual tactical embeds, custom/Discord players, and Discord role mentions.
+Supports all 18 formations, visual tactical embeds, custom/Discord players, and Discord role mentions.
 """
 import logging
 from typing import Any, Dict, List, Literal, Optional, Tuple

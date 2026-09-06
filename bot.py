@@ -1,0 +1,192 @@
+"""
+BeastlyBank Discord Bot - Main Entrypoint.
+Built exclusively for the BeastlyFC Discord Server.
+"""
+import asyncio
+import logging
+import sys
+from pathlib import Path
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+from config import (
+    DISCORD_TOKEN,
+    BEASTLYFC_GUILD_ID,
+    DATABASE_PATH,
+    BOT_NAME,
+    SERVER_NAME,
+)
+from database.db import DatabaseManager
+from utils.checks import NotBankerError, NotInBeastlyFCError
+from utils.embeds import error_embed
+from utils.views import GiveawayView
+
+# Configure Logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+logger = logging.getLogger("BeastlyBank")
+
+COGS = [
+    "cogs.economy",
+    "cogs.clubs",
+    "cogs.shop",
+    "cogs.giveaways",
+    "cogs.leaderboard",
+    "cogs.admin",
+]
+
+
+class BeastlyCommandTree(app_commands.CommandTree):
+    """Custom CommandTree with BeastlyFC guild-locking and error handling."""
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        """Enforce that BeastlyBank only operates within the BeastlyFC Guild."""
+        if not interaction.guild:
+            await interaction.response.send_message(
+                embed=error_embed("Access Denied", f"{BOT_NAME} commands can only be used inside the **{SERVER_NAME}** server!"),
+                ephemeral=True,
+            )
+            return False
+
+        if BEASTLYFC_GUILD_ID != 0 and interaction.guild.id != BEASTLYFC_GUILD_ID:
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Server Locked",
+                    f"{BOT_NAME} is strictly exclusive to the **{SERVER_NAME}** server!\n"
+                    f"Commands cannot be used in this guild.",
+                ),
+                ephemeral=True,
+            )
+            return False
+
+        return True
+
+    async def on_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
+        """Global Slash Command Error Handler."""
+        if isinstance(error, NotInBeastlyFCError):
+            await interaction.response.send_message(
+                embed=error_embed("Server Lock Violation", str(error)),
+                ephemeral=True,
+            )
+        elif isinstance(error, NotBankerError):
+            await interaction.response.send_message(
+                embed=error_embed("Staff Authorization Required", str(error)),
+                ephemeral=True,
+            )
+        elif isinstance(error, app_commands.CommandOnCooldown):
+            await interaction.response.send_message(
+                embed=error_embed("Cooldown Active", f"Please wait **{error.retry_after:.1f} seconds** before using this again."),
+                ephemeral=True,
+            )
+        else:
+            logger.error("Unhandled Slash Command Error: %s", error, exc_info=error)
+            msg = f"An unexpected error occurred: {str(error)}"
+            if interaction.response.is_done():
+                await interaction.followup.send(embed=error_embed("System Error", msg), ephemeral=True)
+            else:
+                await interaction.response.send_message(embed=error_embed("System Error", msg), ephemeral=True)
+
+
+class BeastlyBankBot(commands.Bot):
+    def __init__(self):
+        intents = discord.Intents.default()
+        intents.members = True
+        intents.message_content = False  # Pure modern slash commands
+
+        super().__init__(
+            command_prefix="!",  # Slash commands primary
+            intents=intents,
+            help_command=None,
+            tree_cls=BeastlyCommandTree,
+        )
+        self.db = DatabaseManager(DATABASE_PATH)
+
+    async def setup_hook(self) -> None:
+        """Initialize database, persistent views, and load cogs."""
+        logger.info("Initializing BeastlyBank database...")
+        await self.db.init_db()
+
+        # Register persistent views
+        self.add_view(GiveawayView(self.db))
+
+        # Start lightweight health-check server for cloud hosts (Render, Koyeb, etc.)
+        port_str = os.getenv("PORT")
+        if port_str and port_str.isdigit():
+            try:
+                from aiohttp import web
+                app = web.Application()
+                app.router.add_get("/", lambda r: web.Response(text="BeastlyBank is online ⚽"))
+                runner = web.AppRunner(app)
+                await runner.setup()
+                site = web.TCPSite(runner, "0.0.0.0", int(port_str))
+                await site.start()
+                logger.info("Cloud health check server listening on port %s", port_str)
+            except Exception as e:
+                logger.warning("Could not start cloud health server: %s", e)
+
+        # Load extension cogs
+        for cog in COGS:
+            try:
+                await self.load_extension(cog)
+                logger.info("Loaded extension: %s", cog)
+            except Exception as e:
+                logger.error("Failed to load extension %s: %s", cog, e, exc_info=True)
+
+        # Sync Slash Commands
+        if BEASTLYFC_GUILD_ID != 0:
+            guild_obj = discord.Object(id=BEASTLYFC_GUILD_ID)
+            self.tree.copy_global_to(guild=guild_obj)
+            synced = await self.tree.sync(guild=guild_obj)
+            logger.info(
+                "⚡ Instantly synced %d commands exclusively to BeastlyFC (Guild ID: %d)",
+                len(synced),
+                BEASTLYFC_GUILD_ID,
+            )
+        else:
+            synced = await self.tree.sync()
+            logger.info("Synced %d commands globally (No BEASTLYFC_GUILD_ID set).", len(synced))
+
+    async def on_ready(self):
+        logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        logger.info("🏦 %s is online and guarding %s finances!", BOT_NAME, SERVER_NAME)
+        logger.info("Logged in as: %s (ID: %d)", self.user.name, self.user.id)
+        if BEASTLYFC_GUILD_ID != 0:
+            logger.info("🔒 SERVER LOCK: ACTIVE (Locked to Guild: %d)", BEASTLYFC_GUILD_ID)
+        else:
+            logger.warning("⚠️ SERVER LOCK: INACTIVE (Set BEASTLYFC_GUILD_ID in .env)")
+        logger.info("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        # Set football economy presence
+        activity = discord.Activity(
+            type=discord.ActivityType.watching,
+            name=f"{SERVER_NAME} Finances ⚽ | /balance",
+        )
+        await self.change_presence(status=discord.Status.online, activity=activity)
+
+    async def close(self):
+        logger.info("Shutting down BeastlyBank and closing database connections...")
+        await self.db.close()
+        await super().close()
+
+
+bot = BeastlyBankBot()
+
+
+
+def main():
+    if not DISCORD_TOKEN or DISCORD_TOKEN == "your_bot_token_here":
+        print("\n" + "=" * 60)
+        print("❌ ERROR: DISCORD_TOKEN is not set in .env!")
+        print("Please copy .env.example to .env and configure your Discord Bot Token.")
+        print("=" * 60 + "\n")
+        sys.exit(1)
+
+    bot.run(DISCORD_TOKEN)
+
+
+if __name__ == "__main__":
+    main()

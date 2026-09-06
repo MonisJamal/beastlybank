@@ -1,0 +1,24 @@
+# Virtual Environment
+.venv/
+env/
+venv/
+
+# Environment Variables & Secrets (CRITICAL: Never share your token on GitHub!)
+.env
+
+# Database
+*.db
+*.sqlite3
+*.db-wal
+*.db-shm
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# Archives & Temp
+*.zip
+.DS_Store

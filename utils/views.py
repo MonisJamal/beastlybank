@@ -110,13 +110,25 @@ class SummaryView(discord.ui.View):
             return False
         return True
 
-    @discord.ui.button(label="📋 Overview & Commands", style=discord.ButtonStyle.primary, emoji="📋")
+    @discord.ui.button(label="Overview", style=discord.ButtonStyle.primary, emoji="📋")
     async def overview_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         from utils.embeds import summary_overview_embed
         embed = summary_overview_embed(self.author, self.user_data, self.club)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="💰 My Finances", style=discord.ButtonStyle.secondary, emoji="💰")
+    @discord.ui.button(label="Squad & Lineup", style=discord.ButtonStyle.success, emoji="⚽")
+    async def squad_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from utils.embeds import summary_squad_embed
+        embed = summary_squad_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Cheatsheet", style=discord.ButtonStyle.secondary, emoji="📖")
+    async def cheatsheet_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from utils.embeds import summary_commands_embed
+        embed = summary_commands_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Finances", style=discord.ButtonStyle.secondary, emoji="💰")
     async def finances_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         from utils.embeds import summary_finance_embed
         latest_user = await self.db.get_or_create_user(self.author.id, interaction.guild_id)
@@ -125,13 +137,7 @@ class SummaryView(discord.ui.View):
         embed = summary_finance_embed(self.author, latest_user, latest_club, txs)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="📖 Cheatsheet", style=discord.ButtonStyle.secondary, emoji="📖")
-    async def cheatsheet_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from utils.embeds import summary_commands_embed
-        embed = summary_commands_embed()
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="🌐 Economy Stats", style=discord.ButtonStyle.secondary, emoji="🌐")
+    @discord.ui.button(label="Stats", style=discord.ButtonStyle.secondary, emoji="🌐")
     async def economy_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         from utils.embeds import summary_economy_embed
         stats = await self.db.get_economy_stats(interaction.guild_id)

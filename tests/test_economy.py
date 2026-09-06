@@ -622,6 +622,7 @@ async def test_summary_system(db: DatabaseManager):
 
     # 3. Create mock discord member
     mock_member = MagicMock()
+    mock_member.id = user_id
     mock_member.display_name = "TestCaptain"
     mock_member.mention = "<@12345>"
     mock_member.display_avatar.url = "https://example.com/avatar.png"
@@ -645,6 +646,42 @@ async def test_summary_system(db: DatabaseManager):
     embed_econ = summary_economy_embed(stats)
     assert "Economy Summary" in embed_econ.title
     assert any("Circulating Cash" in f.name for f in embed_econ.fields)
+
+    # 5. Generate squad guide embed
+    from utils.embeds import summary_squad_embed
+    embed_squad = summary_squad_embed()
+    assert "Squad, Formations & Lineup Guide" in embed_squad.title
+    assert any("Tactical Formations" in f.name for f in embed_squad.fields)
+    assert any("Registering & Adding Players" in f.name for f in embed_squad.fields)
+
+    # 6. Test prefix_help command routing
+    from unittest.mock import AsyncMock
+    from cogs.economy import Economy
+    bot = MagicMock()
+    bot.db = db
+    econ_cog = Economy(bot)
+
+    ctx = MagicMock()
+    ctx.author = mock_member
+    ctx.guild.id = guild_id
+    ctx.send = AsyncMock()
+
+    # Default help
+    await econ_cog.prefix_help.callback(econ_cog, ctx)
+    ctx.send.assert_called_once()
+    assert "BeastlyBank" in ctx.send.call_args[1]["embed"].title
+
+    # Squad help
+    ctx.send.reset_mock()
+    await econ_cog.prefix_help.callback(econ_cog, ctx, "squad")
+    ctx.send.assert_called_once()
+    assert "Squad, Formations & Lineup Guide" in ctx.send.call_args[1]["embed"].title
+
+    # Cheatsheet help
+    ctx.send.reset_mock()
+    await econ_cog.prefix_help.callback(econ_cog, ctx, "cheatsheet")
+    ctx.send.assert_called_once()
+    assert "Command Cheatsheet" in ctx.send.call_args[1]["embed"].title
 
 
 @pytest.mark.asyncio

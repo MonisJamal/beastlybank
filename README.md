@@ -15,6 +15,7 @@
 | :--- | :--- | :--- |
 | `/balance [user]` | `bb!balance`, `bb!bal` | View your Cash, Community Points & Training Tokens, and club affiliation. |
 | `/summary [user]` | `bb!summary`, `bb!profile` | Interactive financial profile and command cheatsheet with dropdown selector. |
+| `/help [category]` | `bb!help [category]`, `bb!guide` | Interactive command guide and reference with buttons (overview, squad, cheatsheet, finances, stats). |
 | `/pay <user> <curr> <amt>` | `bb!pay <@user> <curr> <amt>` | Send Cash or Training Tokens directly to another BeastlyFC user. |
 | `/transfer <player> <@from_role> <@to_role> <amt>` | `bb!transfer <player> <@from_role> <@to_role> <amt>` | Official player transfer! Debits buying club vault and deposits directly into selling club vault (supports `26e6`, `3e7`, `26m`, `500k`, `0`). |
 | `/transactions [user]` | `bb!transactions`, `bb!txs` | View your recent transaction history with page navigation. |

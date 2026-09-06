@@ -230,8 +230,8 @@ def summary_overview_embed(
     embed = create_beastly_embed(
         title="🏦 BeastlyBank • Simple System & Command Summary",
         description=(
-            f"Welcome to **BeastlyBank**, the automated central bank and transfer market for **BeastlyFC**!\n"
-            f"Here is your simple summary of how everything works and available commands.\n"
+            f"Welcome to **BeastlyBank**, the automated central bank, store, and transfer market for **BeastlyFC**!\n"
+            f"💡 *All commands support both Slash (`/command`) and Prefix (`bb!command`) formats!*\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=COLOR_BEASTLY_GOLD,
@@ -255,38 +255,121 @@ def summary_overview_embed(
     embed.add_field(
         name="👤 Normal User Commands",
         value=(
-            "**💰 Balance & Payments**\n"
-            "• `/balance` — View Cash, Community Points & Training Tokens.\n"
-            "• `/pay <user> <currency> <amount>` — Send Cash or Tokens to another user.\n"
-            "• `/transactions` — View your recent transaction history.\n"
-            "• `/shop` & `/buy <id>` — Browse and purchase items from the BeastlyBank Store.\n"
+            "**💰 Economy & Store**\n"
+            "• `/balance` | `bb!bal` — Check Cash, Community Points & Training Tokens.\n"
+            "• `/pay <user> <currency> <amount>` | `bb!pay` — Send money directly to another user.\n"
+            "• `/transactions` | `bb!txs` — View your recent transactions ledger.\n"
+            "• `/shop` & `/buy <id>` — Browse and buy store items & roles.\n"
             "• `/inventory` — Inspect your items, perks, and roles.\n\n"
-            "**🏟️ Club & Transfers**\n"
-            "• `/transfer <player> <@from_role> <@to_role> <amount>` — Transfer player with fee disbursement (supports `26e6`, `30m`).\n"
-            "• `/club create <name> <tag> <@role>` — Form your club and vault (100% Free!).\n"
-            "• `/club info [@role]` — View squad roster and treasury balances.\n"
-            "• `/club deposit <currency> <amount> [@role]` & `/club withdraw` — Manage your team's treasury vault.\n"
+            "**🏟️ Football Clubs & Transfers**\n"
+            "• `/transfer <player> <@from> <@to> <amt>` | `bb!transfer` — Official player transfer with vault disbursement (`26e6`, `30m`).\n"
+            "• `/club create <name> <tag> <@role>` | `bb!club create` — Register your club and link role (100% Free!).\n"
+            "• `/club info [@role]` | `bb!club info` — View club profile, role mention, and vault balances.\n"
+            "• `/club deposit` & `/club withdraw` — Deposit or withdraw funds from club vault.\n"
             "• `/clubhistory [@role]` — View your club's ledger history.\n\n"
-            "**🏆 Competitions & Leaderboards**\n"
-            "• `/leaderboard` — View the wealthiest players and clubs.\n"
-            "• `/giveaway start/end` — Server giveaways with instant payouts."
+            "**⚽ Squad, Formations & Lineups**\n"
+            "• `/lineup [@role]` | `bb!lineup` — View tactical pitch layout (GK, DEF, MID, FWD) with OVR ratings & bench.\n"
+            "• `/formation set <form>` | `bb!setformation` — Set tactical formation (all 12 formations supported).\n"
+            "• `/formation list` | `bb!formations` — Browse all 12 football formations.\n"
+            "• `/player info <player>` | `bb!player` — View player card with OVR, POT, and alt positions.\n"
+            "• `/player add <player> <pos>` | `bb!addplayer` — Register player (rating, potential, alt positions `\"pos1, pos2, ...\"`).\n"
+            "• `/player edit <player> [field] [val]` | `bb!editplayer` — Edit player rating, potential, alts, jersey, position.\n"
+            "• `/player swap <p1> <p2>` | `bb!swap` — Tactical substitution (starter ⇄ bench) or position switch."
         ),
         inline=False,
     )
 
-    # Banker & Admin Commands field
     embed.add_field(
-        name="👑 BeastlyBank Banker & Admin Commands",
+        name="👑 Banker & Administrator Commands",
         value=(
             "• `/manage add/remove/set` — Credit, debit, or override a user's currency.\n"
-            "• `/manage vault <@club_role> <currency> <action> <amount>` — Add, remove, or set club vaults (`26e6`, `30m`, `500k`).\n"
-            "• `/shopadmin add/edit/list/toggle/remove` — Manage the store catalogue.\n"
-            "• `/bank announce` & `/bank audit` — Server announcements & user audits."
+            "• `/manage vault <@club_role> <currency> <action> <amount>` | `bb!vault` — Operate club vaults (`26e6`, `30m`, `500k`).\n"
+            "• `/shopadmin add/edit/list/toggle/remove` — Manage store items & roles.\n"
+            "• `/bank announce` & `/bank audit <user>` — Server announcements & user audits."
         ),
         inline=False,
     )
 
-    embed.set_footer(text="Click the buttons below to switch views • BeastlyFC Bank")
+    embed.set_footer(text="Click the interactive buttons below to switch sections • BeastlyFC Bank")
+    return embed
+
+
+def summary_squad_embed() -> discord.Embed:
+    """Detailed guide and reference for Squad, Lineups, Formations, and Player Management."""
+    embed = create_beastly_embed(
+        title="⚽ Squad, Formations & Lineup Guide",
+        description=(
+            "Complete tactical reference for managing your football squad in **BeastlyFC**.\n"
+            "Supports both Discord Slash commands (`/`) and traditional Prefix commands (`bb!`).\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=COLOR_PITCH_GREEN,
+    )
+
+    embed.add_field(
+        name="📐 Tactical Formations (12 Supported)",
+        value=(
+            "• `/formation set <formation> [club: @role]` | `bb!setformation <form> [@role]`\n"
+            "  *Set your squad's active formation. Supported:* `4-3-3`, `4-4-2`, `4-2-3-1`, `3-5-2`, `3-4-3`, `5-3-2`, `4-1-2-1-2`, `4-5-1`, `5-2-3`, `3-4-1-2`, `4-3-2-1`, `4-2-2-2`.\n"
+            "• `/formation list` | `bb!formations`\n"
+            "  *Browse all 12 supported formations with shapes and tactical descriptions.*"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="📋 Tactical Pitch Lineup",
+        value=(
+            "• `/lineup [club: @role]` | `bb!lineup [@role]`\n"
+            "  *Displays the full visual pitch lineup (🧤 GK, 🛡️ Defense, ⚙️ Midfield, ⚡ Attack) with `[OVR]` rating tags, plus the Substitutes Bench.*"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🏃 Registering & Adding Players",
+        value=(
+            "• `/player add <player> <pos> [status] [number] [rating] [potential] [alt_positions] [club: @role]`\n"
+            "• `bb!addplayer <player> <pos> [status] [number] [rating] [potential] [\"pos1, pos2, pos3, .....\"] [@role]`\n"
+            "  *Register a custom player or Discord user. Attributes:*:\n"
+            "  - **Primary Position:** `GK`, `CB`, `LB`, `RB`, `LWB`, `RWB`, `CDM`, `CM`, `CAM`, `LM`, `RM`, `LW`, `RW`, `ST`, `CF`\n"
+            "  - **Overall Rating (OVR):** `1` to `99` (defaults to `75`)\n"
+            "  - **Growth Potential (POT):** `1` to `99` (defaults to `80`)\n"
+            "  - **Alternate Positions:** Comma-separated list `\"pos1, pos2, pos3, .....\"` (e.g. `\"LW, RW, CAM\"`)\n"
+            "  - **Lineup Status:** `starting` (max 11 starters) or `bench`\n"
+            "  - *Example:* `bb!addplayer Mbappe ST starting 9 91 95 \"LW, RW, CAM\" @RealMadrid`"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="✏️ Editing Player Details",
+        value=(
+            "• `/player edit <player> [name] [pos] [status] [number] [rating] [potential] [alt_positions] [club: @role]`\n"
+            "• `bb!editplayer <player> <field> <value> [@role]`\n"
+            "  *Fields:* `rating` (or `ovr`), `potential` (or `pot`), `alt` (or `altpos`), `pos`, `status`, `number`, `name`\n"
+            "  - *Example:* `bb!editplayer Mbappe rating 92 @RealMadrid`\n"
+            "  - *Example:* `bb!editplayer Mbappe alt \"LW, RW, CAM, RM\" @RealMadrid`\n"
+            "  *(Changing primary position automatically cleans that position from alternate positions)*"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
+        name="🔄 Tactical Substitutions & Transfers",
+        value=(
+            "• `/player swap <p1> <p2> [club: @role]` | `bb!swap <p1> <p2> [@role]`\n"
+            "  *Tactical substitution (starter ⇄ bench swaps lineup status) or position swap (starter ⇄ starter swaps pitch positions).*\n"
+            "• `/player start <player>` | `bb!start <player>` — Promote a bench player into the Starting XI.\n"
+            "• `/player bench <player>` | `bb!bench <player>` — Move a player to the Substitutes Bench.\n"
+            "• `/player remove <player>` | `bb!removeplayer <player>` — Remove a player from the squad.\n"
+            "• `/transfer <player> <@from_role> <@to_role> <amt>` | `bb!transfer`\n"
+            "  *Official club transfer — debits buying club vault, deposits into selling club vault, and preserves all player attributes (rating, potential, alt positions, number)!*"
+        ),
+        inline=False,
+    )
+
+    embed.set_footer(text="Click the interactive buttons below to switch sections • BeastlyFC Bank")
     return embed
 
 
@@ -373,7 +456,7 @@ def summary_commands_embed() -> discord.Embed:
         value=(
             "• `/balance [user]` | `bb!bal` — Check bank cards and balances\n"
             "• `/pay <user> <currency> <amount>` | `bb!pay` — Send money to another player\n"
-            "• `/transfer <player> <@from> <@to> <amount>` | `bb!transfer` — Transfer custom player with fee\n"
+            "• `/transfer <player> <@from> <@to> <amount>` | `bb!transfer` — Official player transfer\n"
             "• `/transactions [user]` | `bb!txs` — View transaction records\n"
             "• `/shop` | `bb!shop` — Browse official BeastlyBank Store\n"
             "• `/buy <id> [qty]` | `bb!buy` — Purchase store items & perks\n"
@@ -396,18 +479,36 @@ def summary_commands_embed() -> discord.Embed:
     )
 
     embed.add_field(
+        name="⚽ Squad & Lineup Management",
+        value=(
+            "• `/lineup [@role]` | `bb!lineup` — View tactical pitch layout & bench\n"
+            "• `/formation set <form>` | `bb!setformation` — Set tactical formation (12 supported)\n"
+            "• `/formation list` | `bb!formations` — Browse all 12 formations\n"
+            "• `/player info <player>` | `bb!player` — Player profile with OVR, POT, alt positions\n"
+            "• `/player add <player> <pos>` | `bb!addplayer` — Register player to XI or bench\n"
+            "• `/player edit <player> [field] [val]` | `bb!editplayer` — Edit player rating, potential, alts\n"
+            "• `/player swap <p1> <p2>` | `bb!swap` — Substitution or position switch\n"
+            "• `/player start` / `/player bench` | `bb!start` / `bb!bench` — Promote to XI or bench\n"
+            "• `/player remove <player>` | `bb!removeplayer` — Remove player from squad"
+        ),
+        inline=False,
+    )
+
+    embed.add_field(
         name="👑 BeastlyBank Bankers & Admins",
         value=(
             "• `/manage add <user> <currency> <amount>` — Grant currency\n"
             "• `/manage remove <user> <currency> <amount>` — Deduct currency\n"
             "• `/manage set <user> <currency> <amount>` — Set exact balance\n"
             "• `/manage vault <@club_role> <currency> <action> <amount>` | `bb!vault` — Operate club vault\n"
+            "• `/shopadmin add/edit/list/toggle/remove` — Manage store catalogue\n"
             "• `/bank announce` — Send official announcement\n"
             "• `/bank audit <user>` — Full financial audit"
         ),
         inline=False,
     )
 
+    embed.set_footer(text="Click the interactive buttons below to switch sections • BeastlyFC Bank")
     return embed
 
 

@@ -78,6 +78,7 @@ class DatabaseManager:
                     name TEXT NOT NULL,
                     tag TEXT NOT NULL,
                     owner_id INTEGER NOT NULL,
+                    role_id INTEGER,
                     treasury_cash INTEGER NOT NULL DEFAULT 0,
                     treasury_points INTEGER NOT NULL DEFAULT 0,
                     treasury_tokens INTEGER NOT NULL DEFAULT 0,
@@ -280,6 +281,12 @@ class DatabaseManager:
                 WHERE treasury_cash != 0 OR treasury_points != 0 OR treasury_tokens != 0;
                 """
             )
+
+            # Ensure role_id column exists on clubs
+            try:
+                await cur.execute("ALTER TABLE clubs ADD COLUMN role_id INTEGER;")
+            except Exception:
+                pass
 
         await conn.commit()
         logger.info("Database schema initialized successfully.")
@@ -758,10 +765,13 @@ class DatabaseManager:
             from_club = await self.get_club_by_name(guild_id, from_club_query)
             to_club = await self.get_club_by_name(guild_id, to_club_query)
 
+            from_label = from_club_query.mention if hasattr(from_club_query, "mention") else f"'{from_club_query}'"
+            to_label = to_club_query.mention if hasattr(to_club_query, "mention") else f"'{to_club_query}'"
+
             if not from_club:
-                return False, f"Selling club '{from_club_query}' not found.", {}
+                return False, f"Selling club {from_label} not found in BeastlyBank.", {}
             if not to_club:
-                return False, f"Buying club '{to_club_query}' not found.", {}
+                return False, f"Buying club {to_label} not found in BeastlyBank.", {}
             if from_club["id"] == to_club["id"]:
                 return False, "Selling club and buying club cannot be the same.", {}
 
@@ -799,7 +809,8 @@ class DatabaseManager:
                         "UPDATE clubs SET treasury_cash = treasury_cash + ? WHERE id = ?;",
                         (amount, from_club["id"]),
                     )
-                    payee_desc = f"**[{from_club['tag']}]** Treasury"
+                    role_tag = f"<@&{from_club['role_id']}>" if from_club.get("role_id") else f"**[{from_club['tag']}]**"
+                    payee_desc = f"{role_tag} Treasury"
 
                 sender_tx_id = None if paid_from_treasury else payer_id
                 receiver_tx_id = recipient_id if recipient_id else None
@@ -883,12 +894,42 @@ class DatabaseManager:
             row = await cur.fetchone()
             return dict(row) if row else None
 
-    async def get_club_by_name(self, guild_id: int, query: str) -> Optional[Dict[str, Any]]:
-        """Search club by exact name/tag or case-insensitive partial match."""
-        q = query.strip()
+    async def get_club_by_name(self, guild_id: int, query: Any) -> Optional[Dict[str, Any]]:
+        """
+        Search club by Discord role object, role ID, exact name/tag, or case-insensitive partial match.
+        """
+        if not query:
+            return None
+
+        role_id = None
+        role_name = None
+
+        if hasattr(query, "id") and hasattr(query, "name"):
+            role_id = query.id
+            role_name = str(query.name).strip()
+            q = role_name
+        else:
+            q = str(query).strip()
+            if q.startswith("<@&") and q.endswith(">"):
+                raw_id = q.strip("<@&>")
+                if raw_id.isdigit():
+                    role_id = int(raw_id)
+            elif q.isdigit() and len(q) >= 15:
+                role_id = int(q)
+
         conn = await self.connect()
         async with conn.cursor() as cur:
-            # 1. Exact match by name or tag (case-insensitive)
+            # 1. Match by role_id if set on club
+            if role_id:
+                await cur.execute(
+                    "SELECT * FROM clubs WHERE guild_id = ? AND role_id = ?;",
+                    (guild_id, role_id),
+                )
+                row = await cur.fetchone()
+                if row:
+                    return dict(row)
+
+            # 2. Exact match by name or tag (case-insensitive)
             await cur.execute(
                 """
                 SELECT * FROM clubs
@@ -898,9 +939,36 @@ class DatabaseManager:
             )
             row = await cur.fetchone()
             if row:
-                return dict(row)
+                res = dict(row)
+                if role_id and not res.get("role_id"):
+                    await cur.execute("UPDATE clubs SET role_id = ? WHERE id = ?;", (role_id, res["id"]))
+                    await conn.commit()
+                    res["role_id"] = role_id
+                return res
 
-            # 2. Fuzzy / partial match
+            # 3. If query had brackets like "[RDF] Red Dragons", try stripping them
+            import re
+            bracket_match = re.search(r"\[(.*?)\]", q)
+            if bracket_match:
+                extracted_tag = bracket_match.group(1).strip()
+                cleaned_name = re.sub(r"\[.*?\]", "", q).strip()
+                await cur.execute(
+                    """
+                    SELECT * FROM clubs
+                    WHERE guild_id = ? AND (UPPER(tag) = UPPER(?) OR LOWER(name) = LOWER(?));
+                    """,
+                    (guild_id, extracted_tag, cleaned_name),
+                )
+                row = await cur.fetchone()
+                if row:
+                    res = dict(row)
+                    if role_id and not res.get("role_id"):
+                        await cur.execute("UPDATE clubs SET role_id = ? WHERE id = ?;", (role_id, res["id"]))
+                        await conn.commit()
+                        res["role_id"] = role_id
+                    return res
+
+            # 4. Partial match
             await cur.execute(
                 """
                 SELECT * FROM clubs
@@ -910,7 +978,35 @@ class DatabaseManager:
                 (guild_id, f"%{q}%", f"%{q}%"),
             )
             row = await cur.fetchone()
-            return dict(row) if row else None
+            if row:
+                res = dict(row)
+                if role_id and not res.get("role_id"):
+                    await cur.execute("UPDATE clubs SET role_id = ? WHERE id = ?;", (role_id, res["id"]))
+                    await conn.commit()
+                    res["role_id"] = role_id
+                return res
+
+            # 5. Role name fuzzy match
+            if role_name:
+                cleaned = re.sub(r"\[.*?\]", "", role_name).strip()
+                await cur.execute(
+                    """
+                    SELECT * FROM clubs
+                    WHERE guild_id = ? AND (LOWER(?) LIKE '%' || LOWER(name) || '%' OR LOWER(?) LIKE '%' || LOWER(tag) || '%')
+                    LIMIT 1;
+                    """,
+                    (guild_id, cleaned, cleaned),
+                )
+                row = await cur.fetchone()
+                if row:
+                    res = dict(row)
+                    if role_id and not res.get("role_id"):
+                        await cur.execute("UPDATE clubs SET role_id = ? WHERE id = ?;", (role_id, res["id"]))
+                        await conn.commit()
+                        res["role_id"] = role_id
+                    return res
+
+            return None
 
     async def get_club_members(self, club_id: int) -> List[Dict[str, Any]]:
         """Get roster for a club including linked Discord members and custom written players."""

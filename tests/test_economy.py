@@ -467,12 +467,11 @@ async def test_parse_amount_scientific_and_human():
 
 @pytest.mark.asyncio
 async def test_transfer_player_flow(db: DatabaseManager):
-    """Test full player transfer flow: custom player name, scientific amount, recipient payment, roster relocation."""
+    """Test full player transfer flow: custom player name, scientific amount, vault-to-vault payment without recipient, roster relocation."""
     guild_id = 999999999
     seller_owner = 1001
     buyer_owner = 1002
     custom_player = "Erling Haaland"
-    recipient_agent = 1004
 
     # Create selling club and buying club (starting with 0 vault balance)
     _, _, seller_club = await db.create_club(guild_id, "Real Stars", "RST", seller_owner)
@@ -489,13 +488,13 @@ async def test_transfer_player_flow(db: DatabaseManager):
         )
         await conn.commit()
 
-    # Grant cash to buyer owner and fund buying club treasury with 30M cash
+    # Fund buying club treasury with 30M cash
     transfer_fee = parse_amount("26e6")  # 26,000,000
     assert transfer_fee == 26_000_000
     await db.update_balance(buyer_owner, guild_id, "cash", 30_000_000, "admin_grant")
     await db.club_deposit(buyer_club["id"], buyer_owner, guild_id, "cash", 30_000_000)
 
-    # Execute transfer with recipient
+    # Execute transfer WITHOUT recipient (recipient_id=None)
     success, msg, data = await db.transfer_player(
         guild_id=guild_id,
         player_name=custom_player,
@@ -503,15 +502,15 @@ async def test_transfer_player_flow(db: DatabaseManager):
         to_club_query="BHW",
         amount=transfer_fee,
         payer_id=buyer_owner,
-        recipient_id=recipient_agent,
+        recipient_id=None,
     )
     assert success is True
     assert data["amount"] == 26_000_000
     assert data["player_name"] == custom_player
 
-    # Verify recipient received 26M cash (started from 0)
-    recipient_user = await db.get_or_create_user(recipient_agent, guild_id)
-    assert recipient_user["cash"] == 26_000_000
+    # Verify selling club vault received 26M cash (started from 0)
+    seller_after = await db.get_club_by_name(guild_id, "RST")
+    assert seller_after["treasury_cash"] == 26_000_000
 
     # Verify buyer club treasury debited by 26M (started from 0 + 30M - 26M = 4M)
     buyer_after = await db.get_club_by_name(guild_id, "BHW")
@@ -523,9 +522,79 @@ async def test_transfer_player_flow(db: DatabaseManager):
     assert not any(m.get("player_name") == custom_player for m in seller_members)
     assert any(m.get("player_name") == custom_player for m in buyer_members)
 
-    # Verify transaction ledger has record
-    txs = await db.get_transactions(recipient_agent, guild_id)
-    assert any(t["tx_type"] == "transfer_market" and t["amount"] == 26_000_000 for t in txs)
+
+@pytest.mark.asyncio
+async def test_role_mention_and_object_club_lookup(db: DatabaseManager):
+    """Test club resolution using Discord Role objects, role mentions, bracket tags, and auto-linking role_id."""
+    guild_id = 999999999
+    owner1 = 1111
+    owner2 = 2222
+
+    # Create two clubs
+    _, _, club1 = await db.create_club(guild_id, "Red Dragons", "RDF", owner1)
+    _, _, club2 = await db.create_club(guild_id, "Thunder FC", "TFC", owner2)
+
+    # Mock Discord Role objects
+    mock_from_role = MagicMock()
+    mock_from_role.id = 1222195412295745501
+    mock_from_role.name = "[RDF] Red Dragons"
+    mock_from_role.mention = "<@&1222195412295745501>"
+
+    mock_to_role = MagicMock()
+    mock_to_role.id = 1222195412295745502
+    mock_to_role.name = "Thunder FC"
+    mock_to_role.mention = "<@&1222195412295745502>"
+
+    # 1. Resolve club by Role object (matches tag in bracket or name)
+    resolved_from = await db.get_club_by_name(guild_id, mock_from_role)
+    assert resolved_from is not None
+    assert resolved_from["id"] == club1["id"]
+    assert resolved_from["role_id"] == mock_from_role.id
+
+    resolved_to = await db.get_club_by_name(guild_id, mock_to_role)
+    assert resolved_to is not None
+    assert resolved_to["id"] == club2["id"]
+    assert resolved_to["role_id"] == mock_to_role.id
+
+    # 2. Resolve by string mention "<@&...>"
+    mention_match = await db.get_club_by_name(guild_id, "<@&1222195412295745501>")
+    assert mention_match is not None
+    assert mention_match["id"] == club1["id"]
+
+    # 3. Transfer using role objects directly
+    # Add player to Red Dragons
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO club_players (club_id, guild_id, player_name, role) VALUES (?, ?, ?, 'Player');",
+            (club1["id"], guild_id, "Kylian Mbappe"),
+        )
+        await conn.commit()
+
+    # Fund Thunder FC vault
+    await db.update_club_treasury(guild_id, "TFC", "cash", "add", 50_000_000, owner2, "Seed")
+
+    success, msg, data = await db.transfer_player(
+        guild_id=guild_id,
+        player_name="Kylian Mbappe",
+        from_club_query=mock_from_role,
+        to_club_query=mock_to_role,
+        amount=30_000_000,
+        payer_id=owner2,
+        recipient_id=None,
+    )
+    assert success is True
+    assert data["amount"] == 30_000_000
+    assert data["player_name"] == "Kylian Mbappe"
+
+    # Verify Red Dragons vault gained 30M
+    c1_after = await db.get_club_by_name(guild_id, mock_from_role)
+    assert c1_after["treasury_cash"] == 30_000_000
+
+    # Verify Thunder FC vault debited 30M (50M - 30M = 20M)
+    c2_after = await db.get_club_by_name(guild_id, mock_to_role)
+    assert c2_after["treasury_cash"] == 20_000_000
+
 
 
 @pytest.mark.asyncio

@@ -36,19 +36,32 @@ async def club_name_autocomplete(
         return []
 
 
+async def send_msg(target: discord.Interaction | commands.Context, embed: discord.Embed, ephemeral: bool = False):
+    if isinstance(target, discord.Interaction):
+        if target.response.is_done():
+            await target.followup.send(embed=embed, ephemeral=ephemeral)
+        else:
+            await target.response.send_message(embed=embed, ephemeral=ephemeral)
+    else:
+        await target.send(embed=embed)
+
+
 async def execute_transfer(
     db,
-    interaction: discord.Interaction,
+    ctx_or_interaction: discord.Interaction | commands.Context,
     player: str,
-    from_club: str,
-    to_club: str,
+    from_club: discord.Role | str,
+    to_club: discord.Role | str,
     amount: str,
-    recipient: Optional[discord.Member] = None,
 ):
-    """Shared execution logic for /transfer and /club transfer."""
+    """Shared execution logic for /transfer, /club transfer, and bb!transfer."""
+    guild_id = ctx_or_interaction.guild_id if hasattr(ctx_or_interaction, "guild_id") and ctx_or_interaction.guild_id else ctx_or_interaction.guild.id
+    caller = ctx_or_interaction.user if hasattr(ctx_or_interaction, "user") else ctx_or_interaction.author
+
     parsed_fee = parse_amount(amount)
     if parsed_fee is None or parsed_fee < 0:
-        await interaction.response.send_message(
+        await send_msg(
+            ctx_or_interaction,
             embed=error_embed(
                 "Invalid Transfer Fee",
                 (
@@ -65,26 +78,26 @@ async def execute_transfer(
 
     clean_player = player.strip()
     if not clean_player:
-        await interaction.response.send_message(
+        await send_msg(
+            ctx_or_interaction,
             embed=error_embed("Invalid Player Name", "Player name cannot be empty."),
             ephemeral=True,
         )
         return
 
-    recipient_id = recipient.id if recipient else None
-
     success, msg, data = await db.transfer_player(
-        guild_id=interaction.guild_id,
+        guild_id=guild_id,
         player_name=clean_player,
         from_club_query=from_club,
         to_club_query=to_club,
         amount=parsed_fee,
-        payer_id=interaction.user.id,
-        recipient_id=recipient_id,
+        payer_id=caller.id,
+        recipient_id=None,
     )
 
     if not success:
-        await interaction.response.send_message(
+        await send_msg(
+            ctx_or_interaction,
             embed=error_embed("Transfer Failed", msg),
             ephemeral=True,
         )
@@ -94,10 +107,13 @@ async def execute_transfer(
     t_club = data["to_club"]
     player_name = data["player_name"]
 
+    from_label = from_club.mention if hasattr(from_club, "mention") else (f"<@&{f_club['role_id']}>" if f_club.get("role_id") else f"**[{f_club['tag']}] {f_club['name']}**")
+    to_label = to_club.mention if hasattr(to_club, "mention") else (f"<@&{t_club['role_id']}>" if t_club.get("role_id") else f"**[{t_club['tag']}] {t_club['name']}**")
+
     embed = create_beastly_embed(
         title="🚨 OFFICIAL TRANSFER CONFIRMED • HERE WE GO! 🚨",
         description=(
-            f"Official agreement finalized! **{player_name}** has completed the transfer to **[{t_club['tag']}] {t_club['name']}**!\n"
+            f"Official agreement finalized! **{player_name}** has completed the transfer from {from_label} to {to_label}!\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=COLOR_BEASTLY_GOLD,
@@ -114,28 +130,28 @@ async def execute_transfer(
         inline=True,
     )
     embed.add_field(
-        name="💳 Payment Disbursed To",
-        value=data["payee_desc"],
+        name="💳 Fee Paid To",
+        value=f"{from_label} Treasury",
         inline=True,
     )
     embed.add_field(
         name="📤 Departing Club",
-        value=f"**[{f_club['tag']}] {f_club['name']}**",
+        value=from_label,
         inline=True,
     )
     embed.add_field(
         name="📥 Destination Club",
-        value=f"**[{t_club['tag']}] {t_club['name']}**",
+        value=to_label,
         inline=True,
     )
     embed.add_field(
         name="📋 Authorized By",
-        value=interaction.user.mention,
+        value=caller.mention,
         inline=True,
     )
 
     embed.set_footer(text="BeastlyFC Official Transfer Market • BeastlyBank")
-    await interaction.response.send_message(embed=embed)
+    await send_msg(ctx_or_interaction, embed=embed)
 
 
 class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club Treasuries and Squads"):
@@ -534,27 +550,24 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
     )
     @app_commands.describe(
         player="The BeastlyFC player being transferred (custom written name, e.g. Erling Haaland)",
-        from_club="Selling club name or tag",
-        to_club="Destination/Buying club name or tag",
+        from_club="Selling club Discord role mention",
+        to_club="Destination/Buying club Discord role mention",
         amount="Transfer fee in Cash (e.g. 26e6 for 26M, 3e7 for 30M, 500k, 0)",
-        recipient="Discord member who receives the transfer fee payment (defaults to selling club treasury)",
     )
-    @app_commands.autocomplete(from_club=club_name_autocomplete, to_club=club_name_autocomplete)
     @require_beastlyfc()
     async def club_transfer(
         self,
         interaction: discord.Interaction,
         player: str,
-        from_club: str,
-        to_club: str,
+        from_club: discord.Role,
+        to_club: discord.Role,
         amount: str,
-        recipient: Optional[discord.Member] = None,
     ):
-        await execute_transfer(self.db, interaction, player, from_club, to_club, amount, recipient)
+        await execute_transfer(self.db, interaction, player, from_club, to_club, amount)
 
 
 class TransferMarket(commands.Cog):
-    """Top-level /transfer command for BeastlyFC transfer market."""
+    """Top-level transfer commands for BeastlyFC transfer market (/transfer and bb!transfer)."""
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -566,23 +579,60 @@ class TransferMarket(commands.Cog):
     )
     @app_commands.describe(
         player="The BeastlyFC player being transferred (custom written name, e.g. Erling Haaland)",
-        from_club="Selling club name or tag",
-        to_club="Destination/Buying club name or tag",
+        from_club="Selling club Discord role mention",
+        to_club="Destination/Buying club Discord role mention",
         amount="Transfer fee in Cash (e.g. 26e6 for 26M, 3e7 for 30M, 500k, 0)",
-        recipient="Discord member who receives the transfer fee payment (defaults to selling club treasury)",
     )
-    @app_commands.autocomplete(from_club=club_name_autocomplete, to_club=club_name_autocomplete)
     @require_beastlyfc()
     async def transfer(
         self,
         interaction: discord.Interaction,
         player: str,
-        from_club: str,
-        to_club: str,
+        from_club: discord.Role,
+        to_club: discord.Role,
         amount: str,
-        recipient: Optional[discord.Member] = None,
     ):
-        await execute_transfer(self.db, interaction, player, from_club, to_club, amount, recipient)
+        await execute_transfer(self.db, interaction, player, from_club, to_club, amount)
+
+    @commands.command(name="transfer")
+    async def prefix_transfer(self, ctx: commands.Context, *args):
+        """
+        Transfer a player between clubs using bb! prefix:
+        bb!transfer <player> <@from_role> <@to_role> <amount>
+        e.g. bb!transfer Erling Haaland @RealStars @BlueHawks 26e6
+        """
+        if not args or len(args) < 3:
+            embed = error_embed(
+                "Invalid Command Usage",
+                "**Usage:** `bb!transfer <player> <@from_club_role> <@to_club_role> <amount>`\n"
+                "**Example:** `bb!transfer Erling Haaland @RealStars @BlueHawks 26e6`"
+            )
+            await ctx.send(embed=embed)
+            return
+
+        roles = ctx.message.role_mentions
+        if len(roles) >= 2:
+            from_role = roles[0]
+            to_role = roles[1]
+            amount_str = args[-1]
+            player_words = [a for a in args[:-1] if not a.startswith("<@&")]
+            player_name = " ".join(player_words).strip()
+        elif len(args) >= 4:
+            player_name = " ".join(args[:-3]) if len(args) > 4 else args[0]
+            from_role = args[-3]
+            to_role = args[-2]
+            amount_str = args[-1]
+        else:
+            embed = error_embed(
+                "Missing Role Mentions",
+                "Please mention the two club roles:\n"
+                "`bb!transfer <player> <@from_club_role> <@to_club_role> <amount>`\n"
+                "**Example:** `bb!transfer Erling Haaland @RealStars @BlueHawks 26e6`"
+            )
+            await ctx.send(embed=embed)
+            return
+
+        await execute_transfer(self.db, ctx, player_name, from_role, to_role, amount_str)
 
 
 class ClubHistoryTop(commands.Cog):

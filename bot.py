@@ -92,16 +92,17 @@ class BeastlyCommandTree(app_commands.CommandTree):
 
 
 class BeastlyBankBot(commands.Bot):
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.message_content = False
-        # Do not require privileged members intent so bot runs without manual Developer Portal toggles
+    def __init__(self, intents=None):
+        if intents is None:
+            intents = discord.Intents.default()
+            intents.message_content = True
 
         super().__init__(
-            command_prefix="!",  # Slash commands primary
+            command_prefix=commands.when_mentioned_or("bb!", "BB!", "bb ", "BB "),
             intents=intents,
             help_command=None,
             tree_cls=BeastlyCommandTree,
+            case_insensitive=True,
         )
         self.db = DatabaseManager(DATABASE_PATH)
 
@@ -181,12 +182,20 @@ async def start_web_server(port: int):
 
 
 async def main_async():
+    global bot
     import os
     port_str = os.getenv("PORT")
     if port_str and port_str.isdigit():
         await start_web_server(int(port_str))
 
-    await bot.start(DISCORD_TOKEN)
+    try:
+        await bot.start(DISCORD_TOKEN)
+    except discord.errors.PrivilegedIntentsRequired:
+        logger.warning("Message Content Intent not enabled in Developer Portal. Starting with default intents.")
+        intents = discord.Intents.default()
+        intents.message_content = False
+        bot = BeastlyBankBot(intents=intents)
+        await bot.start(DISCORD_TOKEN)
 
 
 def main():

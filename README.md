@@ -4,24 +4,27 @@
 
 ---
 
-## 📋 Slash Command Reference
+## 📋 Command Reference
+
+> 💡 **Prefix Commands Supported!** You can use standard Discord slash commands (`/command`) or traditional prefix commands using **`bb!`** (e.g. `bb!balance`, `bb!transfer`, `bb!summary`).
 
 ### 👤 NORMAL USERS
 
 #### 💰 Balance & Payments
-| Command | Description |
-| :--- | :--- |
-| `/balance [user]` | View your Cash, Community Points & Training Tokens, and club affiliation. |
-| `/pay <user> <currency: cash\|tokens> <amount> [reason]` | Send Cash or Training Tokens directly to another BeastlyFC user. |
-| `/transfer <player> <from_club> <to_club> <amount> [recipient]` | Official player transfer with automatic fee disbursement (supports `26e6`, `3e7`, `26m`, `500k`, `0`). |
-| `/transactions [user]` | View your recent transaction history with page navigation. |
-| `/daily` | Claim your daily BeastlyBank salary. |
-| `/work` | Complete a football training drill (Scouting, Finishing, Box Office) for cash & token rewards. |
+| Command | Prefix (`bb!`) | Description |
+| :--- | :--- | :--- |
+| `/balance [user]` | `bb!balance`, `bb!bal` | View your Cash, Community Points & Training Tokens, and club affiliation. |
+| `/summary [user]` | `bb!summary`, `bb!profile` | Interactive financial profile and command cheatsheet with dropdown selector. |
+| `/pay <user> <curr> <amt>` | `bb!pay <@user> <curr> <amt>` | Send Cash or Training Tokens directly to another BeastlyFC user. |
+| `/transfer <player> <@from_role> <@to_role> <amt>` | `bb!transfer <player> <@from_role> <@to_role> <amt>` | Official player transfer! Debits buying club vault and deposits directly into selling club vault (supports `26e6`, `3e7`, `26m`, `500k`, `0`). |
+| `/transactions [user]` | `bb!transactions`, `bb!txs` | View your recent transaction history with page navigation. |
+| `/daily` | `bb!daily` | Claim your daily BeastlyBank salary. |
+| `/work` | `bb!work`, `bb!drill` | Complete a football training drill for cash & token rewards. |
 
 #### ⭐ Community Points
-| Command | Description |
-| :--- | :--- |
-| `/redeemcp <points>` | Convert your Community Points into Cash (Exchange rate: 1 CP = 2 Cash). |
+| Command | Prefix (`bb!`) | Description |
+| :--- | :--- | :--- |
+| `/redeemcp <points>` | `bb!redeemcp`, `bb!rcp` | Convert your Community Points into Cash (Exchange rate: 1 CP = 2 Cash). |
 
 #### 🛒 Shop & Stash
 | Command | Description |
@@ -36,8 +39,8 @@
 | `/club create <name> <tag>` | Create your own football club and activate its treasury (100% Free). |
 | `/club info [club]` | View club treasury balance, founder, and squad roster. |
 | `/club deposit <currency> <amount>` | Deposit personal Cash, Points, or Tokens into your club treasury. |
-| `/club withdraw <currency> <amount> <reason>` | Withdraw cash from your club treasury (Club Owners & Managers only). |
-| `/club transfer <player> <from_club> <to_club> <amount> [recipient]` | Execute official player transfer under club group. |
+| `/club withdraw <currency> <amount> <reason>` | Withdraw cash from your club treasury (Club Owners, Managers & Bankers). |
+| `/club transfer <player> <@from_role> <@to_role> <amt>` | Execute official player transfer under club group. |
 | `/club history` | View recent transactions for your club treasury. |
 | `/clubhistory [club]` | View recent club treasury transactions. |
 | `/club addmanager <user>` | Promote a squad member to Club Manager (Owner only). |

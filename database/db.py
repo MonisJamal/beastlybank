@@ -762,8 +762,8 @@ class DatabaseManager:
 
         conn = await self.connect()
         async with conn.cursor() as cur:
-            from_club = await self.get_club_by_name(guild_id, from_club_query)
-            to_club = await self.get_club_by_name(guild_id, to_club_query)
+            from_club = await self.get_or_create_club_from_role(guild_id, from_club_query, default_owner_id=payer_id)
+            to_club = await self.get_or_create_club_from_role(guild_id, to_club_query, default_owner_id=payer_id)
 
             from_label = from_club_query.mention if hasattr(from_club_query, "mention") else f"'{from_club_query}'"
             to_label = to_club_query.mention if hasattr(to_club_query, "mention") else f"'{to_club_query}'"
@@ -775,27 +775,12 @@ class DatabaseManager:
             if from_club["id"] == to_club["id"]:
                 return False, "Selling club and buying club cannot be the same.", {}
 
-            buying_treasury = to_club.get("treasury_cash", 0)
-            paid_from_treasury = False
-
             if amount > 0:
-                if buying_treasury >= amount:
-                    paid_from_treasury = True
-                    await cur.execute(
-                        "UPDATE clubs SET treasury_cash = treasury_cash - ? WHERE id = ?;",
-                        (amount, to_club["id"]),
-                    )
-                else:
-                    payer = await self.get_or_create_user(payer_id, guild_id)
-                    if payer["cash"] < amount:
-                        return False, (
-                            f"Insufficient funds for transfer fee of 💵 {amount:,} Cash! "
-                            f"**[{to_club['tag']}]** treasury has {buying_treasury:,}, and you have {payer['cash']:,}."
-                        ), {}
-                    await cur.execute(
-                        "UPDATE users SET cash = cash - ? WHERE user_id = ? AND guild_id = ?;",
-                        (amount, payer_id, guild_id),
-                    )
+                # Debit the buying club's vault treasury directly
+                await cur.execute(
+                    "UPDATE clubs SET treasury_cash = treasury_cash - ? WHERE id = ?;",
+                    (amount, to_club["id"]),
+                )
 
                 if recipient_id:
                     await self.get_or_create_user(recipient_id, guild_id)
@@ -812,8 +797,6 @@ class DatabaseManager:
                     role_tag = f"<@&{from_club['role_id']}>" if from_club.get("role_id") else f"**[{from_club['tag']}]**"
                     payee_desc = f"{role_tag} Treasury"
 
-                sender_tx_id = None if paid_from_treasury else payer_id
-                receiver_tx_id = recipient_id if recipient_id else None
                 await cur.execute(
                     """
                     INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
@@ -821,8 +804,8 @@ class DatabaseManager:
                     """,
                     (
                         guild_id,
-                        sender_tx_id,
-                        receiver_tx_id,
+                        payer_id,
+                        recipient_id if recipient_id else None,
                         amount,
                         f"Transfer Fee: {p_name} from [{from_club['tag']}] to [{to_club['tag']}] (Paid to {payee_desc})",
                     ),
@@ -893,6 +876,94 @@ class DatabaseManager:
             )
             row = await cur.fetchone()
             return dict(row) if row else None
+
+    async def get_or_create_club_from_role(
+        self,
+        guild_id: int,
+        query: Any,
+        default_owner_id: int = 0,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Resolve a club by Role or query; if not found, automatically register
+        the club using the Discord Role details so transfers succeed without manual club creation.
+        """
+        if not query:
+            return None
+
+        # First attempt standard lookup
+        club = await self.get_club_by_name(guild_id, query)
+        if club:
+            return club
+
+        role_id = None
+        role_name = None
+        if hasattr(query, "id") and hasattr(query, "name"):
+            role_id = query.id
+            role_name = str(query.name).strip()
+        elif isinstance(query, str):
+            clean = query.strip()
+            if clean.startswith("<@&") and clean.endswith(">"):
+                raw = clean.strip("<@&>")
+                if raw.isdigit():
+                    role_id = int(raw)
+            elif clean.isdigit() and len(clean) >= 15:
+                role_id = int(clean)
+
+        if not role_name and not role_id and isinstance(query, str):
+            role_name = query.strip()
+
+        if not role_name and not role_id:
+            return None
+
+        import re
+        display_name = role_name or f"Club-{str(role_id)[-4:]}"
+        tag_match = re.search(r"\[(.*?)\]", display_name)
+        if tag_match:
+            tag = tag_match.group(1).strip()[:5].upper()
+            display_name = re.sub(r"\[.*?\]", "", display_name).strip()
+        else:
+            words = [w for w in display_name.split() if w.isalnum()]
+            if len(words) >= 2:
+                tag = "".join(w[0] for w in words[:4]).upper()
+            else:
+                tag = display_name[:4].upper()
+
+        if not tag:
+            tag = "FC"
+        if not display_name:
+            display_name = tag
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            # Check if name or tag collision in this guild
+            await cur.execute(
+                "SELECT * FROM clubs WHERE guild_id = ? AND (LOWER(name) = LOWER(?) OR UPPER(tag) = UPPER(?));",
+                (guild_id, display_name, tag),
+            )
+            row = await cur.fetchone()
+            if row:
+                res = dict(row)
+                if role_id and not res.get("role_id"):
+                    await cur.execute("UPDATE clubs SET role_id = ? WHERE id = ?;", (role_id, res["id"]))
+                    await conn.commit()
+                    res["role_id"] = role_id
+                return res
+
+            # Auto-register club in database
+            await cur.execute(
+                """
+                INSERT INTO clubs (guild_id, name, tag, owner_id, role_id, treasury_cash, treasury_points, treasury_tokens)
+                VALUES (?, ?, ?, ?, ?, 0, 0, 0);
+                """,
+                (guild_id, display_name, tag, default_owner_id, role_id),
+            )
+            new_id = cur.lastrowid
+            await conn.commit()
+
+            await cur.execute("SELECT * FROM clubs WHERE id = ?;", (new_id,))
+            new_row = await cur.fetchone()
+            logger.info("Auto-registered club '%s' [%s] for role %s in guild %d", display_name, tag, role_id, guild_id)
+            return dict(new_row) if new_row else None
 
     async def get_club_by_name(self, guild_id: int, query: Any) -> Optional[Dict[str, Any]]:
         """

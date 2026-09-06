@@ -729,3 +729,44 @@ async def test_summary_system(db: DatabaseManager):
     assert any("Circulating Cash" in f.name for f in embed_econ.fields)
 
 
+@pytest.mark.asyncio
+async def test_transfer_auto_registers_unknown_club_roles(db: DatabaseManager):
+    """Verify transfer succeeds even when club roles were never pre-created in the database."""
+    guild_id = 999999999
+    role1 = MagicMock()
+    role1.id = 555111222333444
+    role1.name = "[MCI] Manchester City"
+    role1.mention = "<@&555111222333444>"
+
+    role2 = MagicMock()
+    role2.id = 555999888777666
+    role2.name = "Arsenal FC"
+    role2.mention = "<@&555999888777666>"
+
+    # Execute 30M transfer with neither club pre-existing in DB
+    success, msg, data = await db.transfer_player(
+        guild_id=guild_id,
+        player_name="Kevin De Bruyne",
+        from_club_query=role1,
+        to_club_query=role2,
+        amount=30_000_000,
+        payer_id=123,
+    )
+    assert success is True
+    assert data["amount"] == 30_000_000
+    assert data["player_name"] == "Kevin De Bruyne"
+
+    # Selling club received 30M
+    seller = await db.get_club_by_name(guild_id, role1)
+    assert seller is not None
+    assert seller["name"] == "Manchester City"
+    assert seller["tag"] == "MCI"
+    assert seller["treasury_cash"] == 30_000_000
+
+    # Buying club was debited 30M
+    buyer = await db.get_club_by_name(guild_id, role2)
+    assert buyer is not None
+    assert buyer["treasury_cash"] == -30_000_000
+
+
+

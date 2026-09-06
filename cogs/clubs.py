@@ -58,6 +58,10 @@ async def execute_transfer(
     guild_id = ctx_or_interaction.guild_id if hasattr(ctx_or_interaction, "guild_id") and ctx_or_interaction.guild_id else ctx_or_interaction.guild.id
     caller = ctx_or_interaction.user if hasattr(ctx_or_interaction, "user") else ctx_or_interaction.author
 
+    if isinstance(ctx_or_interaction, discord.Interaction):
+        if not ctx_or_interaction.response.is_done():
+            await ctx_or_interaction.response.defer()
+
     parsed_fee = parse_amount(amount)
     if parsed_fee is None or parsed_fee < 0:
         await send_msg(
@@ -85,15 +89,24 @@ async def execute_transfer(
         )
         return
 
-    success, msg, data = await db.transfer_player(
-        guild_id=guild_id,
-        player_name=clean_player,
-        from_club_query=from_club,
-        to_club_query=to_club,
-        amount=parsed_fee,
-        payer_id=caller.id,
-        recipient_id=None,
-    )
+    try:
+        success, msg, data = await db.transfer_player(
+            guild_id=guild_id,
+            player_name=clean_player,
+            from_club_query=from_club,
+            to_club_query=to_club,
+            amount=parsed_fee,
+            payer_id=caller.id,
+            recipient_id=None,
+        )
+    except Exception as e:
+        logger.error("Error executing player transfer: %s", e, exc_info=True)
+        await send_msg(
+            ctx_or_interaction,
+            embed=error_embed("Transfer Error", f"An unexpected error occurred during transfer: {str(e)}"),
+            ephemeral=True,
+        )
+        return
 
     if not success:
         await send_msg(
@@ -610,22 +623,39 @@ class TransferMarket(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        roles = ctx.message.role_mentions
-        if len(roles) >= 2:
-            from_role = roles[0]
-            to_role = roles[1]
-            amount_str = args[-1]
-            player_words = [a for a in args[:-1] if not a.startswith("<@&")]
-            player_name = " ".join(player_words).strip()
+        import re
+        role_matches = list(re.finditer(r"<@&(\d+)>", ctx.message.content))
+        if len(role_matches) >= 2:
+            m1 = role_matches[0]
+            m2 = role_matches[1]
+            r1_id = int(m1.group(1))
+            r2_id = int(m2.group(1))
+            from_role = ctx.guild.get_role(r1_id) if ctx.guild else None
+            if not from_role:
+                from_role = f"<@&{r1_id}>"
+            to_role = ctx.guild.get_role(r2_id) if ctx.guild else None
+            if not to_role:
+                to_role = f"<@&{r2_id}>"
+
+            before_m1 = ctx.message.content[:m1.start()]
+            player_name = re.sub(r"^(?:<@!?\d+>\s*|bb!\s*|BB!\s*|bb\s+|BB\s+)transfer\s+", "", before_m1, flags=re.IGNORECASE).strip()
+            after_m2 = ctx.message.content[m2.end():].strip()
+            amount_str = after_m2.split()[0] if after_m2 else args[-1]
         elif len(args) >= 4:
-            player_name = " ".join(args[:-3]) if len(args) > 4 else args[0]
+            player_name = " ".join(args[:-3])
             from_role = args[-3]
             to_role = args[-2]
             amount_str = args[-1]
+        elif len(ctx.message.role_mentions) >= 2:
+            from_role = ctx.message.role_mentions[0]
+            to_role = ctx.message.role_mentions[1]
+            amount_str = args[-1]
+            player_words = [a for a in args[:-1] if not a.startswith("<@&")]
+            player_name = " ".join(player_words).strip()
         else:
             embed = error_embed(
-                "Missing Role Mentions",
-                "Please mention the two club roles:\n"
+                "Missing Information",
+                "Please specify the player, selling club, buying club, and amount:\n"
                 "`bb!transfer <player> <@from_club_role> <@to_club_role> <amount>`\n"
                 "**Example:** `bb!transfer Erling Haaland @RealStars @BlueHawks 26e6`"
             )

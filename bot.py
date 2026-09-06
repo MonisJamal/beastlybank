@@ -156,6 +156,33 @@ class BeastlyBankBot(commands.Bot):
         )
         await self.change_presence(status=discord.Status.online, activity=activity)
 
+        # Ensure Slash Commands are synced
+        try:
+            if BEASTLYFC_GUILD_ID != 0:
+                guild_obj = discord.Object(id=BEASTLYFC_GUILD_ID)
+                self.tree.copy_global_to(guild=guild_obj)
+                synced = await self.tree.sync(guild=guild_obj)
+                logger.info("⚡ Guaranteed sync: %d slash commands active in BeastlyFC", len(synced))
+            else:
+                synced = await self.tree.sync()
+                logger.info("⚡ Guaranteed sync: %d slash commands active globally", len(synced))
+        except Exception as e:
+            logger.warning("Secondary tree sync notice: %s", e)
+
+    async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        """Global Prefix Command Error Handler."""
+        if isinstance(error, commands.CommandNotFound):
+            return
+        elif isinstance(error, commands.MissingRequiredArgument):
+            await ctx.send(embed=error_embed("Missing Argument", f"Missing required parameter: `{error.param.name}`\nUse `bb!help` or `/help` for usage."))
+        elif isinstance(error, commands.BadArgument):
+            await ctx.send(embed=error_embed("Invalid Parameter", str(error)))
+        elif isinstance(error, commands.CommandOnCooldown):
+            await ctx.send(embed=error_embed("Cooldown Active", f"Please wait **{error.retry_after:.1f}s** before using this command again."))
+        else:
+            logger.error("Unhandled Prefix Command Error in %s: %s", ctx.command, error, exc_info=error)
+            await ctx.send(embed=error_embed("Command Error", f"An error occurred while running `{ctx.invoked_with}`: {str(error)}"))
+
     async def close(self):
         logger.info("Shutting down BeastlyBank and closing database connections...")
         await self.db.close()

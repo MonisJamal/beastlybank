@@ -194,10 +194,15 @@ def club_info_embed(
     # Member list preview
     if members:
         roster_lines = []
-        for m in members[:8]:
-            roster_lines.append(f"• <@{m['user_id']}> — `{m['role']}`")
-        if len(members) > 8:
-            roster_lines.append(f"*...and {len(members) - 8} more players*")
+        for m in members[:12]:
+            if m.get("user_id"):
+                roster_lines.append(f"• <@{m['user_id']}> — `{m['role']}`")
+            elif m.get("player_name"):
+                roster_lines.append(f"• **{m['player_name']}** — `{m.get('role', 'Player')}`")
+            else:
+                roster_lines.append(f"• Unknown Player — `{m.get('role', 'Player')}`")
+        if len(members) > 12:
+            roster_lines.append(f"*...and {len(members) - 12} more players*")
         embed.add_field(
             name="📋 Squad Members",
             value="\n".join(roster_lines),

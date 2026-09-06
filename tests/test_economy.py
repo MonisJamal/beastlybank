@@ -467,23 +467,25 @@ async def test_parse_amount_scientific_and_human():
 
 @pytest.mark.asyncio
 async def test_transfer_player_flow(db: DatabaseManager):
-    """Test full player transfer flow: scientific amount, recipient payment, roster relocation."""
+    """Test full player transfer flow: custom player name, scientific amount, recipient payment, roster relocation."""
     guild_id = 999999999
     seller_owner = 1001
     buyer_owner = 1002
-    player_id = 1003
+    custom_player = "Erling Haaland"
     recipient_agent = 1004
 
-    # Create selling club and buying club
+    # Create selling club and buying club (starting with 0 vault balance)
     _, _, seller_club = await db.create_club(guild_id, "Real Stars", "RST", seller_owner)
     _, _, buyer_club = await db.create_club(guild_id, "Blue Hawks", "BHW", buyer_owner)
+    assert seller_club["treasury_cash"] == 0
+    assert buyer_club["treasury_cash"] == 0
 
-    # Put player in selling club
+    # Put custom player in selling club
     conn = await db.connect()
     async with conn.cursor() as cur:
         await cur.execute(
-            "INSERT INTO club_members (club_id, user_id, guild_id, role) VALUES (?, ?, ?, 'Member');",
-            (seller_club["id"], player_id, guild_id),
+            "INSERT INTO club_players (club_id, guild_id, player_name, role) VALUES (?, ?, ?, 'Player');",
+            (seller_club["id"], guild_id, custom_player),
         )
         await conn.commit()
 
@@ -496,7 +498,7 @@ async def test_transfer_player_flow(db: DatabaseManager):
     # Execute transfer with recipient
     success, msg, data = await db.transfer_player(
         guild_id=guild_id,
-        player_id=player_id,
+        player_name=custom_player,
         from_club_query="RST",
         to_club_query="BHW",
         amount=transfer_fee,
@@ -505,6 +507,7 @@ async def test_transfer_player_flow(db: DatabaseManager):
     )
     assert success is True
     assert data["amount"] == 26_000_000
+    assert data["player_name"] == custom_player
 
     # Verify recipient received 26M cash (started from 0)
     recipient_user = await db.get_or_create_user(recipient_agent, guild_id)
@@ -517,11 +520,91 @@ async def test_transfer_player_flow(db: DatabaseManager):
     # Verify player moved from seller roster to buyer roster
     seller_members = await db.get_club_members(seller_club["id"])
     buyer_members = await db.get_club_members(buyer_club["id"])
-    assert not any(m["user_id"] == player_id for m in seller_members)
-    assert any(m["user_id"] == player_id for m in buyer_members)
+    assert not any(m.get("player_name") == custom_player for m in seller_members)
+    assert any(m.get("player_name") == custom_player for m in buyer_members)
 
     # Verify transaction ledger has record
     txs = await db.get_transactions(recipient_agent, guild_id)
     assert any(t["tx_type"] == "transfer_market" and t["amount"] == 26_000_000 for t in txs)
+
+
+@pytest.mark.asyncio
+async def test_banker_vault_operations(db: DatabaseManager):
+    """Test BeastlyBank Banker permissions to operate club vaults and manage vault balances."""
+    guild_id = 999999999
+    banker_id = 777777777
+    owner_id = 888888888
+
+    # Create club with 0 default vault
+    _, _, club = await db.create_club(guild_id, "Apex Legends FC", "ALF", owner_id)
+    assert club["treasury_cash"] == 0
+    assert club["treasury_points"] == 0
+    assert club["treasury_tokens"] == 0
+
+    # 1. Banker /manage vault add
+    success, msg, res = await db.update_club_treasury(
+        guild_id=guild_id,
+        club_query="ALF",
+        currency="cash",
+        action="add",
+        amount=50_000_000,
+        admin_id=banker_id,
+        reason="Official BeastlyBank Sponsorship Grant",
+    )
+    assert success is True
+    assert res["new_balance"] == 50_000_000
+
+    # 2. Banker /manage vault remove
+    success, msg, res = await db.update_club_treasury(
+        guild_id=guild_id,
+        club_query="ALF",
+        currency="cash",
+        action="remove",
+        amount=10_000_000,
+        admin_id=banker_id,
+        reason="League Registration Fee",
+    )
+    assert success is True
+    assert res["new_balance"] == 40_000_000
+
+    # 3. Banker /manage vault set
+    success, msg, res = await db.update_club_treasury(
+        guild_id=guild_id,
+        club_query="ALF",
+        currency="cash",
+        action="set",
+        amount=100_000,
+        admin_id=banker_id,
+        reason="Vault Audit Reset",
+    )
+    assert success is True
+    assert res["new_balance"] == 100_000
+
+    # 4. Banker direct withdrawal from club vault (even if not in club squad)
+    w_success, w_msg = await db.club_withdraw(
+        club_id=club["id"],
+        user_id=banker_id,
+        guild_id=guild_id,
+        currency="cash",
+        amount=25_000,
+        reason="Official Banker Treasury Draw",
+        is_banker=True,
+    )
+    assert w_success is True
+    banker_user = await db.get_or_create_user(banker_id, guild_id)
+    assert banker_user["cash"] == 25_000
+
+    # 5. Non-banker, non-member withdrawal rejected
+    unauth_success, unauth_msg = await db.club_withdraw(
+        club_id=club["id"],
+        user_id=9999,
+        guild_id=guild_id,
+        currency="cash",
+        amount=1000,
+        reason="Unlawful withdrawal",
+        is_banker=False,
+    )
+    assert unauth_success is False
+    assert "Only Club Owners" in unauth_msg
 
 

@@ -40,9 +40,9 @@ class DatabaseManager:
                 CREATE TABLE IF NOT EXISTS users (
                     user_id INTEGER NOT NULL,
                     guild_id INTEGER NOT NULL,
-                    cash INTEGER NOT NULL DEFAULT 1000,
-                    points INTEGER NOT NULL DEFAULT 250,
-                    tokens INTEGER NOT NULL DEFAULT 5,
+                    cash INTEGER NOT NULL DEFAULT 0,
+                    points INTEGER NOT NULL DEFAULT 0,
+                    tokens INTEGER NOT NULL DEFAULT 0,
                     daily_streak INTEGER NOT NULL DEFAULT 0,
                     last_daily TEXT,
                     last_work TEXT,
@@ -101,6 +101,24 @@ class DatabaseManager:
                     FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE
                 );
                 """
+            )
+
+            # Club Custom Players Table (for custom written player transfers)
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS club_players (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    club_id INTEGER NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    player_name TEXT NOT NULL,
+                    role TEXT NOT NULL DEFAULT 'Player',
+                    transferred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE
+                );
+                """
+            )
+            await cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_club_players_lookup ON club_players (guild_id, LOWER(player_name));"
             )
 
             # Shop Items
@@ -253,6 +271,15 @@ class DatabaseManager:
                 """
             )
             await cur.execute("DELETE FROM transactions WHERE tx_type = 'starter_bonus';")
+
+            # Reset any legacy club vaults to 0
+            await cur.execute(
+                """
+                UPDATE clubs
+                SET treasury_cash = 0, treasury_points = 0, treasury_tokens = 0
+                WHERE treasury_cash != 0 OR treasury_points != 0 OR treasury_tokens != 0;
+                """
+            )
 
         await conn.commit()
         logger.info("Database schema initialized successfully.")
@@ -709,7 +736,7 @@ class DatabaseManager:
     async def transfer_player(
         self,
         guild_id: int,
-        player_id: int,
+        player_name: str,
         from_club_query: str,
         to_club_query: str,
         amount: int,
@@ -717,8 +744,12 @@ class DatabaseManager:
         recipient_id: Optional[int] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
-        Execute official transfer of a player between clubs with transfer fee disbursement.
+        Execute official transfer of a player (custom written name) between clubs with transfer fee disbursement.
         """
+        p_name = str(player_name).strip()
+        if not p_name:
+            return False, "Player name cannot be empty.", {}
+
         if amount < 0:
             return False, "Transfer fee cannot be negative.", {}
 
@@ -782,30 +813,53 @@ class DatabaseManager:
                         sender_tx_id,
                         receiver_tx_id,
                         amount,
-                        f"Transfer Fee: <@{player_id}> from [{from_club['tag']}] to [{to_club['tag']}] (Paid to {payee_desc})",
+                        f"Transfer Fee: {p_name} from [{from_club['tag']}] to [{to_club['tag']}] (Paid to {payee_desc})",
                     ),
                 )
             else:
                 payee_desc = "Free Transfer"
 
+            # Update custom players roster
             await cur.execute(
-                "DELETE FROM club_members WHERE guild_id = ? AND user_id = ?;",
-                (guild_id, player_id),
+                "DELETE FROM club_players WHERE guild_id = ? AND LOWER(player_name) = LOWER(?);",
+                (guild_id, p_name),
             )
-            await self.get_or_create_user(player_id, guild_id)
             await cur.execute(
                 """
-                INSERT INTO club_members (club_id, user_id, guild_id, role)
-                VALUES (?, ?, ?, 'Member')
-                ON CONFLICT(club_id, user_id) DO UPDATE SET role = 'Member';
+                INSERT INTO club_players (club_id, guild_id, player_name, role)
+                VALUES (?, ?, ?, 'Player');
                 """,
-                (to_club["id"], player_id, guild_id),
+                (to_club["id"], guild_id, p_name),
             )
+
+            # If p_name happens to be a mention or numeric user id, also move in club_members
+            mention_id = None
+            if p_name.startswith("<@") and p_name.endswith(">"):
+                raw_id = p_name.strip("<@!>")
+                if raw_id.isdigit():
+                    mention_id = int(raw_id)
+            elif p_name.isdigit():
+                mention_id = int(p_name)
+
+            if mention_id:
+                await cur.execute(
+                    "DELETE FROM club_members WHERE guild_id = ? AND user_id = ?;",
+                    (guild_id, mention_id),
+                )
+                await self.get_or_create_user(mention_id, guild_id)
+                await cur.execute(
+                    """
+                    INSERT INTO club_members (club_id, user_id, guild_id, role)
+                    VALUES (?, ?, ?, 'Member')
+                    ON CONFLICT(club_id, user_id) DO UPDATE SET role = 'Member';
+                    """,
+                    (to_club["id"], mention_id, guild_id),
+                )
 
             await conn.commit()
 
             return True, "Player transfer completed successfully!", {
-                "player_id": player_id,
+                "player_name": p_name,
                 "from_club": from_club,
                 "to_club": to_club,
                 "amount": amount,
@@ -859,12 +913,14 @@ class DatabaseManager:
             return dict(row) if row else None
 
     async def get_club_members(self, club_id: int) -> List[Dict[str, Any]]:
-        """Get roster for a club."""
+        """Get roster for a club including linked Discord members and custom written players."""
         conn = await self.connect()
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT cm.*, COALESCE(u.cash, 0) as cash, COALESCE(u.points, 0) as points, COALESCE(u.tokens, 0) as tokens
+                SELECT cm.club_id, cm.user_id, cm.guild_id, cm.role, cm.joined_at,
+                       COALESCE(u.cash, 0) as cash, COALESCE(u.points, 0) as points, COALESCE(u.tokens, 0) as tokens,
+                       NULL as player_name
                 FROM club_members cm
                 LEFT JOIN users u ON cm.user_id = u.user_id AND cm.guild_id = u.guild_id
                 WHERE cm.club_id = ?
@@ -878,11 +934,26 @@ class DatabaseManager:
                 """,
                 (club_id,),
             )
-            rows = await cur.fetchall()
-            return [dict(r) for r in rows]
+            discord_members = [dict(r) for r in await cur.fetchall()]
+
+            # Also fetch custom players registered to this club
+            await cur.execute(
+                """
+                SELECT club_id, NULL as user_id, guild_id, role, transferred_at as joined_at,
+                       0 as cash, 0 as points, 0 as tokens,
+                       player_name
+                FROM club_players
+                WHERE club_id = ?
+                ORDER BY id ASC;
+                """,
+                (club_id,),
+            )
+            custom_players = [dict(r) for r in await cur.fetchall()]
+
+            return discord_members + custom_players
 
     async def club_deposit(
-        self, club_id: int, user_id: int, guild_id: int, currency: str, amount: int
+        self, club_id: int, user_id: int, guild_id: int, currency: str, amount: int, is_banker: bool = False
     ) -> Tuple[bool, str]:
         """Deposit user funds into the club treasury."""
         if amount <= 0:
@@ -892,13 +963,14 @@ class DatabaseManager:
 
         conn = await self.connect()
         async with conn.cursor() as cur:
-            # Verify user is in this club
-            await cur.execute(
-                "SELECT * FROM club_members WHERE club_id = ? AND user_id = ?;",
-                (club_id, user_id),
-            )
-            if not await cur.fetchone():
-                return False, "You are not a member of this club!"
+            # Verify user is in this club unless authorized as Banker
+            if not is_banker:
+                await cur.execute(
+                    "SELECT * FROM club_members WHERE club_id = ? AND user_id = ?;",
+                    (club_id, user_id),
+                )
+                if not await cur.fetchone():
+                    return False, "You are not a member of this club!"
 
             # Check user balance
             user = await self.get_or_create_user(user_id, guild_id)
@@ -918,20 +990,21 @@ class DatabaseManager:
                 (amount, club_id),
             )
             # Record ledger
+            auth_tag = " [Banker Op]" if is_banker else ""
             await cur.execute(
                 """
                 INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
                 VALUES (?, ?, NULL, ?, ?, 'club_deposit', ?);
                 """,
-                (guild_id, user_id, currency, amount, f"Treasury Deposit into Club #{club_id}"),
+                (guild_id, user_id, currency, amount, f"Treasury Deposit into Club #{club_id}{auth_tag}"),
             )
             await conn.commit()
-            return True, f"Successfully deposited {amount:,} {currency} into your Club Treasury!"
+            return True, f"Successfully deposited {amount:,} {currency} into Club Treasury!"
 
     async def club_withdraw(
-        self, club_id: int, user_id: int, guild_id: int, currency: str, amount: int, reason: str
+        self, club_id: int, user_id: int, guild_id: int, currency: str, amount: int, reason: str, is_banker: bool = False
     ) -> Tuple[bool, str]:
-        """Withdraw funds from the club treasury (Owner or Captain only)."""
+        """Withdraw funds from the club treasury (Owner, Captain, Manager, or BeastlyBank Banker)."""
         if amount <= 0:
             return False, "Withdrawal amount must be greater than 0."
         if currency not in ("cash", "points", "tokens"):
@@ -940,17 +1013,21 @@ class DatabaseManager:
         conn = await self.connect()
         async with conn.cursor() as cur:
             # Check permissions
-            await cur.execute(
-                "SELECT role FROM club_members WHERE club_id = ? AND user_id = ?;",
-                (club_id, user_id),
-            )
-            member = await cur.fetchone()
-            if not member or member["role"] not in ("Owner", "Captain", "Manager"):
-                return False, "Only Club Owners, Captains, and Managers can withdraw from the Treasury."
+            if not is_banker:
+                await cur.execute(
+                    "SELECT role FROM club_members WHERE club_id = ? AND user_id = ?;",
+                    (club_id, user_id),
+                )
+                member = await cur.fetchone()
+                if not member or member["role"] not in ("Owner", "Captain", "Manager"):
+                    return False, "Only Club Owners, Captains, Managers, and BeastlyBank Bankers can withdraw from the Treasury."
 
             # Check club treasury
             await cur.execute("SELECT * FROM clubs WHERE id = ?;", (club_id,))
             club = await cur.fetchone()
+            if not club:
+                return False, "Club not found."
+
             treasury_col = f"treasury_{currency}"
             current_treasury = club[treasury_col]
 
@@ -962,21 +1039,87 @@ class DatabaseManager:
                 f"UPDATE clubs SET {treasury_col} = {treasury_col} - ? WHERE id = ?;",
                 (amount, club_id),
             )
-            # Credit to user
+            # Ensure user exists and credit to user
+            await self.get_or_create_user(user_id, guild_id)
             await cur.execute(
                 f"UPDATE users SET {currency} = {currency} + ? WHERE user_id = ? AND guild_id = ?;",
                 (amount, user_id, guild_id),
             )
             # Record ledger
+            auth_tag = " [Banker Op]" if is_banker else ""
             await cur.execute(
                 """
                 INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
                 VALUES (?, NULL, ?, ?, ?, 'club_withdraw', ?);
                 """,
-                (guild_id, user_id, currency, amount, f"Club Withdrawal [{club['tag']}]: {reason}"),
+                (guild_id, user_id, currency, amount, f"Club Withdrawal [{club['tag']}]{auth_tag}: {reason}"),
             )
             await conn.commit()
             return True, f"Withdrew {amount:,} {currency} from the Club Treasury."
+
+    async def update_club_treasury(
+        self,
+        guild_id: int,
+        club_query: str,
+        currency: str,
+        action: str,
+        amount: int,
+        admin_id: int,
+        reason: str = "Banker Vault Operation",
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """Directly add, remove, or set club vault balances (Banker / Admin operation)."""
+        if currency not in ("cash", "points", "tokens"):
+            return False, f"Invalid currency '{currency}'.", {}
+
+        if action in ("add", "remove") and amount <= 0:
+            return False, "Amount must be greater than 0.", {}
+        if action == "set" and amount < 0:
+            return False, "Balance cannot be set to a negative number.", {}
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            club = await self.get_club_by_name(guild_id, club_query)
+            if not club:
+                return False, f"Club '{club_query}' not found in BeastlyFC.", {}
+
+            treasury_col = f"treasury_{currency}"
+            current_val = club[treasury_col]
+
+            if action == "add":
+                new_val = current_val + amount
+            elif action == "remove":
+                if current_val < amount:
+                    return False, f"Club vault has insufficient {currency}! Available: {current_val:,}, requested deduction: {amount:,}.", {}
+                new_val = current_val - amount
+            elif action == "set":
+                new_val = amount
+            else:
+                return False, f"Invalid action '{action}'. Must be 'add', 'remove', or 'set'.", {}
+
+            await cur.execute(
+                f"UPDATE clubs SET {treasury_col} = ? WHERE id = ?;",
+                (new_val, club["id"]),
+            )
+
+            tx_type = f"banker_vault_{action}"
+            await cur.execute(
+                """
+                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                VALUES (?, ?, NULL, ?, ?, ?, ?);
+                """,
+                (guild_id, admin_id, currency, amount, tx_type, f"Banker Vault {action.upper()} [{club['tag']}]: {reason}"),
+            )
+            await conn.commit()
+
+            updated_club = await self.get_club_by_name(guild_id, club_query)
+            return True, f"Successfully updated [{club['tag']}] {club['name']} vault!", {
+                "club": updated_club,
+                "currency": currency,
+                "action": action,
+                "amount": amount,
+                "previous": current_val,
+                "new_balance": new_val,
+            }
 
     async def set_club_manager(
         self, club_id: int, owner_id: int, target_user_id: int, is_manager: bool

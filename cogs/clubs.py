@@ -7,7 +7,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from config import CURRENCIES, COLOR_BEASTLY_GOLD, COLOR_PITCH_GREEN, COLOR_SUCCESS, parse_amount
-from utils.checks import require_beastlyfc
+from utils.checks import require_beastlyfc, is_banker_or_admin
 from utils.embeds import (
     club_info_embed,
     create_beastly_embed,
@@ -39,7 +39,7 @@ async def club_name_autocomplete(
 async def execute_transfer(
     db,
     interaction: discord.Interaction,
-    player: discord.Member,
+    player: str,
     from_club: str,
     to_club: str,
     amount: str,
@@ -63,11 +63,19 @@ async def execute_transfer(
         )
         return
 
+    clean_player = player.strip()
+    if not clean_player:
+        await interaction.response.send_message(
+            embed=error_embed("Invalid Player Name", "Player name cannot be empty."),
+            ephemeral=True,
+        )
+        return
+
     recipient_id = recipient.id if recipient else None
 
     success, msg, data = await db.transfer_player(
         guild_id=interaction.guild_id,
-        player_id=player.id,
+        player_name=clean_player,
         from_club_query=from_club,
         to_club_query=to_club,
         amount=parsed_fee,
@@ -84,10 +92,12 @@ async def execute_transfer(
 
     f_club = data["from_club"]
     t_club = data["to_club"]
+    player_name = data["player_name"]
+
     embed = create_beastly_embed(
         title="🚨 OFFICIAL TRANSFER CONFIRMED • HERE WE GO! 🚨",
         description=(
-            f"Official agreement finalized! **{player.mention}** has completed the transfer to **[{t_club['tag']}] {t_club['name']}**!\n"
+            f"Official agreement finalized! **{player_name}** has completed the transfer to **[{t_club['tag']}] {t_club['name']}**!\n"
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=COLOR_BEASTLY_GOLD,
@@ -95,7 +105,7 @@ async def execute_transfer(
 
     embed.add_field(
         name="🏃 Player",
-        value=f"{player.mention} (`{player.display_name}`)",
+        value=f"**{player_name}**",
         inline=True,
     )
     embed.add_field(
@@ -123,9 +133,6 @@ async def execute_transfer(
         value=interaction.user.mention,
         inline=True,
     )
-
-    if player.display_avatar:
-        embed.set_thumbnail(url=player.display_avatar.url)
 
     embed.set_footer(text="BeastlyFC Official Transfer Market • BeastlyBank")
     await interaction.response.send_message(embed=embed)
@@ -211,33 +218,64 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
 
     @app_commands.command(
         name="deposit",
-        description="Deposit personal Cash, Points, or Tokens into your club's treasury vault.",
+        description="Deposit personal Cash, Points, or Tokens into a club's treasury vault.",
     )
     @app_commands.describe(
         currency="Currency type to deposit into the treasury",
-        amount="Amount to deposit",
+        amount="Amount to deposit (e.g. 5000, 26e6, 1m)",
+        club="Target club (Bankers can deposit into any club; defaults to your club)",
     )
+    @app_commands.autocomplete(club=club_name_autocomplete)
     @require_beastlyfc()
     async def club_deposit(
         self,
         interaction: discord.Interaction,
         currency: Literal["cash", "points", "tokens"],
-        amount: int,
+        amount: str,
+        club: Optional[str] = None,
     ):
-        user_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
-        if not user_club:
+        parsed_amount = parse_amount(amount)
+        if parsed_amount is None or parsed_amount <= 0:
             await interaction.response.send_message(
-                embed=error_embed("No Club Affiliation", "You must be a member of a club to deposit funds!"),
+                embed=error_embed("Invalid Amount", f"Deposit amount must be greater than 0: `{amount}`"),
                 ephemeral=True,
             )
             return
 
+        is_banker = is_banker_or_admin(interaction.user)
+
+        if club:
+            target_club = await self.db.get_club_by_name(interaction.guild_id, club)
+            if not target_club:
+                await interaction.response.send_message(
+                    embed=error_embed("Club Not Found", f"No club found matching `{club}`."),
+                    ephemeral=True,
+                )
+                return
+            if not is_banker:
+                user_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+                if not user_club or user_club["id"] != target_club["id"]:
+                    await interaction.response.send_message(
+                        embed=error_embed("Permission Denied", "You must be a BeastlyBank Banker to deposit directly into another club's vault."),
+                        ephemeral=True,
+                    )
+                    return
+        else:
+            target_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+            if not target_club:
+                await interaction.response.send_message(
+                    embed=error_embed("No Club Affiliation", "You must be a member of a club to deposit funds (or specify a club if you are a BeastlyBank Banker)!"),
+                    ephemeral=True,
+                )
+                return
+
         success, msg = await self.db.club_deposit(
-            club_id=user_club["id"],
+            club_id=target_club["id"],
             user_id=interaction.user.id,
             guild_id=interaction.guild_id,
             currency=currency,
-            amount=amount,
+            amount=parsed_amount,
+            is_banker=is_banker,
         )
 
         if not success:
@@ -248,11 +286,12 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
             return
 
         curr_emoji = CURRENCIES.get(currency, {}).get("emoji", "💰")
+        banker_note = " *(Authorized by BeastlyBank Banker)*" if is_banker else ""
         embed = create_beastly_embed(
             title="📥 Club Treasury Deposit",
             description=(
-                f"{interaction.user.mention} contributed {curr_emoji} **{amount:,}** into the "
-                f"**[{user_club['tag']}] {user_club['name']}** Treasury!\n\n"
+                f"{interaction.user.mention} contributed {curr_emoji} **{parsed_amount:,}** into the "
+                f"**[{target_club['tag']}] {target_club['name']}** Treasury!{banker_note}\n\n"
                 f"🏦 *Recorded in BeastlyBank automated club ledger.*"
             ),
             color=COLOR_SUCCESS,
@@ -261,36 +300,67 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
 
     @app_commands.command(
         name="withdraw",
-        description="Withdraw funds from your club treasury into your personal account (Owner/Captain only).",
+        description="Withdraw funds from a club treasury into your personal account (Owner, Captain, or Banker).",
     )
     @app_commands.describe(
         currency="Currency type to withdraw",
-        amount="Amount to withdraw",
+        amount="Amount to withdraw (e.g. 5000, 26e6, 1m)",
         reason="Official memo explaining the treasury withdrawal",
+        club="Target club (Bankers can withdraw from any club; defaults to your club)",
     )
+    @app_commands.autocomplete(club=club_name_autocomplete)
     @require_beastlyfc()
     async def club_withdraw(
         self,
         interaction: discord.Interaction,
         currency: Literal["cash", "points", "tokens"],
-        amount: int,
+        amount: str,
         reason: str,
+        club: Optional[str] = None,
     ):
-        user_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
-        if not user_club:
+        parsed_amount = parse_amount(amount)
+        if parsed_amount is None or parsed_amount <= 0:
             await interaction.response.send_message(
-                embed=error_embed("No Club Affiliation", "You must be in a club to withdraw funds!"),
+                embed=error_embed("Invalid Amount", f"Withdrawal amount must be greater than 0: `{amount}`"),
                 ephemeral=True,
             )
             return
 
+        is_banker = is_banker_or_admin(interaction.user)
+
+        if club:
+            target_club = await self.db.get_club_by_name(interaction.guild_id, club)
+            if not target_club:
+                await interaction.response.send_message(
+                    embed=error_embed("Club Not Found", f"No club found matching `{club}`."),
+                    ephemeral=True,
+                )
+                return
+            if not is_banker:
+                user_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+                if not user_club or user_club["id"] != target_club["id"]:
+                    await interaction.response.send_message(
+                        embed=error_embed("Permission Denied", "You must be a BeastlyBank Banker to withdraw from another club's vault."),
+                        ephemeral=True,
+                    )
+                    return
+        else:
+            target_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+            if not target_club:
+                await interaction.response.send_message(
+                    embed=error_embed("No Club Affiliation", "You must be in a club to withdraw funds (or specify a club if you are a BeastlyBank Banker)!"),
+                    ephemeral=True,
+                )
+                return
+
         success, msg = await self.db.club_withdraw(
-            club_id=user_club["id"],
+            club_id=target_club["id"],
             user_id=interaction.user.id,
             guild_id=interaction.guild_id,
             currency=currency,
-            amount=amount,
+            amount=parsed_amount,
             reason=reason,
+            is_banker=is_banker,
         )
 
         if not success:
@@ -301,11 +371,12 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
             return
 
         curr_emoji = CURRENCIES.get(currency, {}).get("emoji", "💰")
+        banker_note = " *(Authorized by BeastlyBank Banker)*" if is_banker else ""
         embed = create_beastly_embed(
             title="📤 Club Treasury Withdrawal",
             description=(
-                f"{interaction.user.mention} withdrew {curr_emoji} **{amount:,}** from "
-                f"**[{user_club['tag']}] {user_club['name']}** Treasury.\n\n"
+                f"{interaction.user.mention} withdrew {curr_emoji} **{parsed_amount:,}** from "
+                f"**[{target_club['tag']}] {target_club['name']}** Treasury.{banker_note}\n\n"
                 f"📝 **Reason:** *{reason}*\n"
                 f"🏦 *Funds credited to personal account.*"
             ),
@@ -462,7 +533,7 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
         description="Transfer a player between clubs with official transfer fee disbursement.",
     )
     @app_commands.describe(
-        player="The BeastlyFC player being transferred",
+        player="The BeastlyFC player being transferred (custom written name, e.g. Erling Haaland)",
         from_club="Selling club name or tag",
         to_club="Destination/Buying club name or tag",
         amount="Transfer fee in Cash (e.g. 26e6 for 26M, 3e7 for 30M, 500k, 0)",
@@ -473,7 +544,7 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
     async def club_transfer(
         self,
         interaction: discord.Interaction,
-        player: discord.Member,
+        player: str,
         from_club: str,
         to_club: str,
         amount: str,
@@ -494,7 +565,7 @@ class TransferMarket(commands.Cog):
         description="Transfer a player between clubs with official transfer fee disbursement.",
     )
     @app_commands.describe(
-        player="The BeastlyFC player being transferred",
+        player="The BeastlyFC player being transferred (custom written name, e.g. Erling Haaland)",
         from_club="Selling club name or tag",
         to_club="Destination/Buying club name or tag",
         amount="Transfer fee in Cash (e.g. 26e6 for 26M, 3e7 for 30M, 500k, 0)",
@@ -505,7 +576,7 @@ class TransferMarket(commands.Cog):
     async def transfer(
         self,
         interaction: discord.Interaction,
-        player: discord.Member,
+        player: str,
         from_club: str,
         to_club: str,
         amount: str,

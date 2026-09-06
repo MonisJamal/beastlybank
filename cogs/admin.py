@@ -16,9 +16,11 @@ from config import (
     COLOR_BEASTLY_GOLD,
     COLOR_PITCH_GREEN,
     COLOR_SUCCESS,
+    parse_amount,
 )
 from utils.checks import require_beastlyfc, require_banker_or_admin
 from utils.embeds import create_beastly_embed, error_embed, success_embed
+from cogs.clubs import club_name_autocomplete
 
 
 class ManageCurrency(commands.GroupCog, name="manage", description="Manage User Cash, CP, and Training Tokens"):
@@ -181,6 +183,73 @@ class ManageCurrency(commands.GroupCog, name="manage", description="Manage User 
                 f"👮 **Authorized by:** {interaction.user.mention}"
             ),
             color=COLOR_BEASTLY_GOLD,
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="vault",
+        description="Manage and operate a club's treasury vault (BeastlyBank Banker command).",
+    )
+    @app_commands.describe(
+        club="Club name or tag to adjust",
+        currency="Currency type (Cash, Points/CP, Tokens)",
+        action="Adjustment type (add, remove, or set)",
+        amount="Amount (e.g. 26e6, 3e7, 500k, 1000)",
+        reason="Official memo explaining the vault adjustment",
+    )
+    @app_commands.autocomplete(club=club_name_autocomplete)
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def manage_vault(
+        self,
+        interaction: discord.Interaction,
+        club: str,
+        currency: Literal["cash", "points", "tokens"],
+        action: Literal["add", "remove", "set"],
+        amount: str,
+        reason: Optional[str] = "BeastlyBank Banker Vault Operation",
+    ):
+        parsed_amount = parse_amount(amount)
+        if parsed_amount is None or parsed_amount < 0:
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Invalid Amount",
+                    f"Invalid amount format: `{amount}`. Examples: `26e6`, `3e7`, `500k`, `1000000`, `0`."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        success, msg, data = await self.db.update_club_treasury(
+            guild_id=interaction.guild_id,
+            club_query=club,
+            currency=currency,
+            action=action,
+            amount=parsed_amount,
+            admin_id=interaction.user.id,
+            reason=reason or "BeastlyBank Banker Vault Operation",
+        )
+
+        if not success:
+            await interaction.response.send_message(embed=error_embed("Vault Operation Failed", msg), ephemeral=True)
+            return
+
+        curr_emoji = CURRENCIES[currency]["emoji"]
+        curr_name = CURRENCIES[currency]["name"]
+        target_club = data["club"]
+
+        embed = create_beastly_embed(
+            title="🏦 BeastlyBank Vault Operation Completed",
+            description=(
+                f"Successfully updated the treasury vault for **[{target_club['tag']}] {target_club['name']}**!\n\n"
+                f"• **Operation:** `{action.upper()}`\n"
+                f"• **Amount:** {curr_emoji} **{parsed_amount:,} {curr_name}** (`{amount}`)\n"
+                f"• **Previous Balance:** {curr_emoji} `{data['previous']:,}`\n"
+                f"• **New Vault Balance:** {curr_emoji} **{data['new_balance']:,}**\n"
+                f"• **Authorized Banker:** {interaction.user.mention}\n"
+                f"• **Official Memo:** *{reason}*"
+            ),
+            color=COLOR_SUCCESS if action == "add" else COLOR_BEASTLY_GOLD,
         )
         await interaction.response.send_message(embed=embed)
 

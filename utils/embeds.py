@@ -263,7 +263,7 @@ def summary_overview_embed(
             "• `/inventory` — Inspect your items, perks, and roles.\n\n"
             "**🏟️ Club & Transfers**\n"
             "• `/transfer <player> <@from_role> <@to_role> <amount>` — Transfer player with fee disbursement (supports `26e6`, `30m`).\n"
-            "• `/club create <name> <tag> [@role]` — Form your club and vault (100% Free!).\n"
+            "• `/club create <name> <tag> <@role>` — Form your club and vault (100% Free!).\n"
             "• `/club info [@role]` — View squad roster and treasury balances.\n"
             "• `/club deposit <currency> <amount> [@role]` & `/club withdraw` — Manage your team's treasury vault.\n"
             "• `/clubhistory [@role]` — View your club's ledger history.\n\n"
@@ -385,7 +385,7 @@ def summary_commands_embed() -> discord.Embed:
     embed.add_field(
         name="🏟️ Football Clubs",
         value=(
-            "• `/club create <name> <tag> [@role]` | `bb!club create` — Register a club (100% Free)\n"
+            "• `/club create <name> <tag> <@role>` | `bb!club create` — Register a club (100% Free)\n"
             "• `/club info [@role]` | `bb!club info` — Inspect club treasury & squad roster\n"
             "• `/club deposit <currency> <amount> [@role]` | `bb!club deposit` — Fund club treasury\n"
             "• `/club withdraw <currency> <amount> <reason> [@role]` | `bb!club withdraw` — Withdraw from club vault\n"

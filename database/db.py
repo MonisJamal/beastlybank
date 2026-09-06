@@ -595,6 +595,16 @@ class DatabaseManager:
             if await cur.fetchone():
                 return False, "A club with this name or tag already exists in BeastlyFC!", None
 
+            # Check if role_id is already linked to another club
+            if role_id:
+                await cur.execute(
+                    "SELECT name, tag FROM clubs WHERE guild_id = ? AND role_id = ?;",
+                    (guild_id, role_id),
+                )
+                existing_role = await cur.fetchone()
+                if existing_role:
+                    return False, f"The role <@&{role_id}> is already linked to **[{existing_role['tag']}] {existing_role['name']}**!", None
+
             # Creation fee: 100% Free!
             # Insert Club with 0 starter treasury and optional linked role_id
             await cur.execute(

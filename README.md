@@ -29,7 +29,7 @@
 #### 🏟️ Club & Treasuries
 | Command | Prefix (`bb!`) | Description |
 | :--- | :--- | :--- |
-| `/club create <name> <tag> [role]` | `bb!club create <name> <tag> [@role]` | Create your own football club and link an official Discord role (100% Free). |
+| `/club create <name> <tag> <role: @role>` | `bb!club create <name> <tag> <@role>` | Create your own football club and link an official Discord role (100% Free). |
 | `/club info [club: @role]` | `bb!club info [@role]`, `bb!club [@role]` | View club treasury balance, role mention, founder, and squad roster. |
 | `/club deposit <currency> <amount> [club: @role]` | `bb!club deposit <curr> <amt> [@role]` | Deposit Cash, Points, or Tokens into your club treasury (Bankers can deposit into any club role). |
 | `/club withdraw <currency> <amount> <reason> [club: @role]` | `bb!club withdraw <curr> <amt> [reason] [@role]` | Withdraw cash from your club treasury (Club Owners, Managers & Bankers). |

@@ -1034,6 +1034,63 @@ async def test_squad_cog_loading(db: DatabaseManager):
     assert "swap" in cmd_names
 
 
+@pytest.mark.asyncio
+async def test_mandatory_club_role_on_create(db: DatabaseManager):
+    """Verify mandatory role handling and duplicate role protection in club creation."""
+    from unittest.mock import AsyncMock, MagicMock
+    from cogs.clubs import ClubPrefixCommands, Clubs
+
+    guild_id = 999888
+    owner1 = 111
+    owner2 = 222
+    role_id = 888123456789012345
+
+    # 1. Create first club with role
+    ok1, msg1, c1 = await db.create_club(guild_id, "Apex Legends FC", "ALF", owner1, role_id)
+    assert ok1 is True
+    assert c1["role_id"] == role_id
+
+    # 2. Attempt to create another club with the same role should fail
+    ok2, msg2, c2 = await db.create_club(guild_id, "Beta Squad FC", "BSF", owner2, role_id)
+    assert ok2 is False
+    assert "already linked" in msg2
+
+    # 3. Test ClubsCog prefix_club_create requires role mention
+    bot = MagicMock()
+    bot.db = db
+    cog = ClubPrefixCommands(bot)
+
+    ctx_no_role = MagicMock()
+    ctx_no_role.guild.id = guild_id
+    ctx_no_role.author.id = 333
+    ctx_no_role.message.role_mentions = []
+    ctx_no_role.send = AsyncMock()
+
+    # Call bb!club create without role
+    await cog.prefix_club_create.callback(cog, ctx_no_role, "Gamma FC", "GFC")
+    ctx_no_role.send.assert_called_once()
+    sent_embed = ctx_no_role.send.call_args[1]["embed"]
+    assert "Club Role Required" in sent_embed.title
+
+    # Call bb!club create with role mention
+    mock_role = MagicMock()
+    mock_role.id = 777999888111222333
+    mock_role.mention = f"<@&{mock_role.id}>"
+
+    ctx_with_role = MagicMock()
+    ctx_with_role.guild.id = guild_id
+    ctx_with_role.author.id = 333
+    ctx_with_role.message.role_mentions = [mock_role]
+    ctx_with_role.author.mention = "<@333>"
+    ctx_with_role.send = AsyncMock()
+
+    await cog.prefix_club_create.callback(cog, ctx_with_role, "Gamma FC", "GFC", mock_role.mention)
+    ctx_with_role.send.assert_called_once()
+    success_embed = ctx_with_role.send.call_args[1]["embed"]
+    assert "Club Registered Successfully" in success_embed.title
+
+
+
 
 
 

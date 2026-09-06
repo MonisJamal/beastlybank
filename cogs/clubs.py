@@ -190,7 +190,7 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
     @app_commands.describe(
         name="Full name of your club (e.g. Red Dragons FC)",
         tag="Short abbreviation tag (up to 5 letters, e.g. RDF)",
-        role="Optional Discord role mention representing your club",
+        role="Mandatory Discord role representing your club",
     )
     @require_beastlyfc()
     async def club_create(
@@ -198,15 +198,21 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
         interaction: discord.Interaction,
         name: str,
         tag: str,
-        role: Optional[discord.Role] = None,
+        role: discord.Role,
     ):
-        role_id = role.id if role else None
+        if not role:
+            await interaction.response.send_message(
+                embed=error_embed("Club Role Required", "A Discord club role is mandatory to register a club!"),
+                ephemeral=True,
+            )
+            return
+
         success, msg, club = await self.db.create_club(
             guild_id=interaction.guild_id,
             name=name,
             tag=tag,
             owner_id=interaction.user.id,
-            role_id=role_id,
+            role_id=role.id,
         )
 
         if not success:
@@ -216,7 +222,7 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
             )
             return
 
-        role_info = f"\n• 🏷️ **Club Role:** {role.mention}" if role else ""
+        role_info = f"\n• 🏷️ **Club Role:** {role.mention}"
         embed = create_beastly_embed(
             title="🏟️ Club Registered Successfully!",
             description=(
@@ -829,18 +835,50 @@ class ClubPrefixCommands(commands.Cog):
         await self.prefix_club(ctx, club_query=club_query)
 
     @prefix_club.command(name="create")
-    async def prefix_club_create(self, ctx: commands.Context, name: str, tag: str, *, rest: Optional[str] = None):
-        """bb!club create <name> <tag> [@role]"""
-        role_id = None
-        if ctx.message.role_mentions:
-            role_id = ctx.message.role_mentions[0].id
-        elif rest:
-            import re
-            m = re.search(r"<@&(\d+)>", rest)
-            if m:
-                role_id = int(m.group(1))
-            elif rest.strip().isdigit() and len(rest.strip()) >= 15:
-                role_id = int(rest.strip())
+    async def prefix_club_create(self, ctx: commands.Context, *args):
+        """
+        Register a new BeastlyFC football club with mandatory Discord role.
+        Usage: bb!club create <name> <tag> <@role>
+        Example: bb!club create Real Madrid RMA @RealMadrid
+        """
+        role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        role_id = role.id if role else None
+
+        clean_args = []
+        for a in args:
+            if role and a == role.mention:
+                continue
+            if a.startswith("<@&") and a.endswith(">"):
+                r_id = a.strip("<@&>")
+                if r_id.isdigit():
+                    role_id = int(r_id)
+                    continue
+            clean_args.append(a)
+
+        if not role_id:
+            await ctx.send(
+                embed=error_embed(
+                    "Club Role Required",
+                    "A Discord club role is mandatory to register a club!\n\n"
+                    "**Usage:** `bb!club create <name> <tag> <@role>`\n"
+                    "**Example:** `bb!club create Real Madrid RMA @RealMadrid`",
+                )
+            )
+            return
+
+        if len(clean_args) < 2:
+            await ctx.send(
+                embed=error_embed(
+                    "Missing Parameters",
+                    "Please specify both the club name and tag.\n\n"
+                    "**Usage:** `bb!club create <name> <tag> <@role>`\n"
+                    "**Example:** `bb!club create Real Madrid RMA @RealMadrid`",
+                )
+            )
+            return
+
+        tag = clean_args[-1].strip().upper()
+        name = " ".join(clean_args[:-1]).strip()
 
         success, msg, club = await self.db.create_club(
             guild_id=ctx.guild.id,
@@ -853,7 +891,7 @@ class ClubPrefixCommands(commands.Cog):
             await ctx.send(embed=error_embed("Club Registration Failed", msg))
             return
 
-        role_info = f"\n• 🏷️ **Club Role:** <@&{role_id}>" if role_id else ""
+        role_info = f"\n• 🏷️ **Club Role:** <@&{role_id}>"
         embed = create_beastly_embed(
             title="🏟️ Club Registered Successfully!",
             description=(

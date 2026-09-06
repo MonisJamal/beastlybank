@@ -42,8 +42,9 @@ class Leaderboard(commands.Cog):
                 medals = ["🥇", "🥈", "🥉"]
                 for i, c in enumerate(clubs, start=1):
                     rank_icon = medals[i - 1] if i <= 3 else f"`#{i}`"
+                    role_str = f" • <@&{c['role_id']}>" if c.get("role_id") else ""
                     embed.add_field(
-                        name=f"{rank_icon} [{c['tag']}] {c['name']}",
+                        name=f"{rank_icon} [{c['tag']}] {c['name']}{role_str}",
                         value=(
                             f"👑 Owner: <@{c['owner_id']}> | 👥 Squad: `{c.get('member_count', 1)}`\n"
                             f"💵 Cash: `{c['treasury_cash']:,}` | ⭐ Points: `{c['treasury_points']:,}` | 🎟️ Tokens: `{c['treasury_tokens']:,}`"
@@ -97,8 +98,9 @@ class Leaderboard(commands.Cog):
                 medals = ["🥇", "🥈", "🥉"]
                 for i, c in enumerate(clubs, start=1):
                     rank_icon = medals[i - 1] if i <= 3 else f"`#{i}`"
+                    role_str = f" • <@&{c['role_id']}>" if c.get("role_id") else ""
                     embed.add_field(
-                        name=f"{rank_icon} [{c['tag']}] {c['name']}",
+                        name=f"{rank_icon} [{c['tag']}] {c['name']}{role_str}",
                         value=(
                             f"👑 Owner: <@{c['owner_id']}> | 👥 Squad: `{c.get('member_count', 1)}`\n"
                             f"💵 Cash: `{c['treasury_cash']:,}` | ⭐ Points: `{c['treasury_points']:,}` | 🎟️ Tokens: `{c['treasury_tokens']:,}`"

@@ -89,9 +89,10 @@ def bank_card_embed(
     # Club affiliation
     if club:
         role_label = club.get("user_role", "Member")
+        role_str = f" • <@&{club['role_id']}>" if club.get("role_id") else ""
         embed.add_field(
             name="🏟️ BeastlyFC Club",
-            value=f"**[{club['tag']}] {club['name']}**\nRole: `{role_label}`",
+            value=f"**[{club['tag']}] {club['name']}**{role_str}\nRole: `{role_label}`",
             inline=True,
         )
     else:
@@ -169,6 +170,12 @@ def club_info_embed(
         value=f"<@{club['owner_id']}>",
         inline=True,
     )
+    role_mention = f"<@&{club['role_id']}>" if club.get("role_id") else "*None linked*"
+    embed.add_field(
+        name="🏷️ Club Role",
+        value=role_mention,
+        inline=True,
+    )
     embed.add_field(
         name="👥 Squad Roster",
         value=f"**{len(members)}** Members",
@@ -229,7 +236,8 @@ def summary_overview_embed(
     )
 
     # Account status field
-    club_str = f"**[{club['tag']}] {club['name']}** (`{club.get('user_role', 'Member')}`)" if club else "*Free Agent (No Club)*"
+    club_role_str = f" • <@&{club['role_id']}>" if club and club.get("role_id") else ""
+    club_str = f"**[{club['tag']}] {club['name']}**{club_role_str} (`{club.get('user_role', 'Member')}`)" if club else "*Free Agent (No Club)*"
     embed.add_field(
         name="👤 Your Account Summary",
         value=(
@@ -252,11 +260,11 @@ def summary_overview_embed(
             "• `/shop` & `/buy <id>` — Browse and purchase items from the BeastlyBank Store.\n"
             "• `/inventory` — Inspect your items, perks, and roles.\n\n"
             "**🏟️ Club & Transfers**\n"
-            "• `/transfer <player> <from> <to> <amount>` — Transfer player with fee disbursement (supports `26e6`, `30m`).\n"
-            "• `/club create <name> <tag>` — Form your club and vault (100% Free!).\n"
-            "• `/club info` — View squad roster and treasury balances.\n"
-            "• `/club deposit` & `/club withdraw` — Manage your team's treasury vault.\n"
-            "• `/clubhistory` — View your club's ledger history.\n\n"
+            "• `/transfer <player> <@from_role> <@to_role> <amount>` — Transfer player with fee disbursement (supports `26e6`, `30m`).\n"
+            "• `/club create <name> <tag> [@role]` — Form your club and vault (100% Free!).\n"
+            "• `/club info [@role]` — View squad roster and treasury balances.\n"
+            "• `/club deposit <currency> <amount> [@role]` & `/club withdraw` — Manage your team's treasury vault.\n"
+            "• `/clubhistory [@role]` — View your club's ledger history.\n\n"
             "**🏆 Competitions & Leaderboards**\n"
             "• `/leaderboard` — View the wealthiest players and clubs.\n"
             "• `/giveaway start/end` — Server giveaways with instant payouts."
@@ -269,7 +277,7 @@ def summary_overview_embed(
         name="👑 BeastlyBank Banker & Admin Commands",
         value=(
             "• `/manage add/remove/set` — Credit, debit, or override a user's currency.\n"
-            "• `/manage vault <club> <currency> <action> <amount>` — Add, remove, or set club vaults (`26e6`, `30m`, `500k`).\n"
+            "• `/manage vault <@club_role> <currency> <action> <amount>` — Add, remove, or set club vaults (`26e6`, `30m`, `500k`).\n"
             "• `/shopadmin add/edit/list/toggle/remove` — Manage the store catalogue.\n"
             "• `/bank announce` & `/bank audit` — Server announcements & user audits."
         ),
@@ -310,10 +318,11 @@ def summary_finance_embed(
     )
 
     if club:
+        role_mention_str = f" (<@&{club['role_id']}>)" if club.get("role_id") else ""
         embed.add_field(
             name="🏟️ Club Affiliation",
             value=(
-                f"**[{club['tag']}] {club['name']}**\n"
+                f"**[{club['tag']}] {club['name']}**{role_mention_str}\n"
                 f"Role: `{club.get('user_role', 'Member')}`\n"
                 f"Vault Cash: `{club.get('treasury_cash', 0):,}`"
             ),
@@ -353,20 +362,20 @@ def summary_commands_embed() -> discord.Embed:
     """Clean cheatsheet of all available commands in BeastlyBank."""
     embed = create_beastly_embed(
         title="📖 BeastlyBank • Command Cheatsheet",
-        description="Quick reference guide for every slash command in the server:\n━━━━━━━━━━━━━━━━━━━━━━",
+        description="Quick reference guide for every command in the server:\n━━━━━━━━━━━━━━━━━━━━━━",
         color=COLOR_BEASTLY_GOLD,
     )
 
     embed.add_field(
         name="💰 Economy & Banking",
         value=(
-            "• `/balance [user]` — Check bank cards and balances\n"
-            "• `/pay <user> <currency> <amount>` — Send money to another player\n"
-            "• `/transfer <player> <from> <to> <amount>` — Transfer custom player with fee\n"
-            "• `/transactions [user]` — View transaction records\n"
-            "• `/shop` — Browse official BeastlyBank Store\n"
-            "• `/buy <id> [qty]` — Purchase store items & perks\n"
-            "• `/inventory [user]` — Inspect personal item stash"
+            "• `/balance [user]` | `bb!bal` — Check bank cards and balances\n"
+            "• `/pay <user> <currency> <amount>` | `bb!pay` — Send money to another player\n"
+            "• `/transfer <player> <@from> <@to> <amount>` | `bb!transfer` — Transfer custom player with fee\n"
+            "• `/transactions [user]` | `bb!txs` — View transaction records\n"
+            "• `/shop` | `bb!shop` — Browse official BeastlyBank Store\n"
+            "• `/buy <id> [qty]` | `bb!buy` — Purchase store items & perks\n"
+            "• `/inventory [user]` | `bb!inv` — Inspect personal item stash"
         ),
         inline=False,
     )
@@ -374,12 +383,12 @@ def summary_commands_embed() -> discord.Embed:
     embed.add_field(
         name="🏟️ Football Clubs",
         value=(
-            "• `/club create <name> <tag>` — Register a club (100% Free)\n"
-            "• `/club info [club]` — Inspect club treasury & squad roster\n"
-            "• `/club deposit <currency> <amount>` — Fund your club treasury\n"
-            "• `/club withdraw <currency> <amount> <reason>` — Withdraw from club vault\n"
-            "• `/club list` — Wealthiest club treasuries leaderboard\n"
-            "• `/clubhistory [club]` — Club transaction ledger"
+            "• `/club create <name> <tag> [@role]` | `bb!club create` — Register a club (100% Free)\n"
+            "• `/club info [@role]` | `bb!club info` — Inspect club treasury & squad roster\n"
+            "• `/club deposit <currency> <amount> [@role]` | `bb!club deposit` — Fund club treasury\n"
+            "• `/club withdraw <currency> <amount> <reason> [@role]` | `bb!club withdraw` — Withdraw from club vault\n"
+            "• `/club list` | `bb!club list` — Wealthiest club treasuries leaderboard\n"
+            "• `/clubhistory [@role]` | `bb!clubhistory` — Club transaction ledger"
         ),
         inline=False,
     )
@@ -390,7 +399,7 @@ def summary_commands_embed() -> discord.Embed:
             "• `/manage add <user> <currency> <amount>` — Grant currency\n"
             "• `/manage remove <user> <currency> <amount>` — Deduct currency\n"
             "• `/manage set <user> <currency> <amount>` — Set exact balance\n"
-            "• `/manage vault <club> <currency> <action> <amount>` — Operate club vault\n"
+            "• `/manage vault <@club_role> <currency> <action> <amount>` | `bb!vault` — Operate club vault\n"
             "• `/bank announce` — Send official announcement\n"
             "• `/bank audit <user>` — Full financial audit"
         ),

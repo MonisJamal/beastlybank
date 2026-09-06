@@ -191,19 +191,18 @@ class ManageCurrency(commands.GroupCog, name="manage", description="Manage User 
         description="Manage and operate a club's treasury vault (BeastlyBank Banker command).",
     )
     @app_commands.describe(
-        club="Club name or tag to adjust",
+        club="Club role mention to adjust",
         currency="Currency type (Cash, Points/CP, Tokens)",
         action="Adjustment type (add, remove, or set)",
         amount="Amount (e.g. 26e6, 3e7, 500k, 1000)",
         reason="Official memo explaining the vault adjustment",
     )
-    @app_commands.autocomplete(club=club_name_autocomplete)
     @require_beastlyfc()
     @require_banker_or_admin()
     async def manage_vault(
         self,
         interaction: discord.Interaction,
-        club: str,
+        club: discord.Role,
         currency: Literal["cash", "points", "tokens"],
         action: Literal["add", "remove", "set"],
         amount: str,
@@ -237,11 +236,12 @@ class ManageCurrency(commands.GroupCog, name="manage", description="Manage User 
         curr_emoji = CURRENCIES[currency]["emoji"]
         curr_name = CURRENCIES[currency]["name"]
         target_club = data["club"]
+        role_label = f"<@&{target_club['role_id']}>" if target_club.get("role_id") else f"**[{target_club['tag']}] {target_club['name']}**"
 
         embed = create_beastly_embed(
             title="🏦 BeastlyBank Vault Operation Completed",
             description=(
-                f"Successfully updated the treasury vault for **[{target_club['tag']}] {target_club['name']}**!\n\n"
+                f"Successfully updated the treasury vault for {role_label}!\n\n"
                 f"• **Operation:** `{action.upper()}`\n"
                 f"• **Amount:** {curr_emoji} **{parsed_amount:,} {curr_name}** (`{amount}`)\n"
                 f"• **Previous Balance:** {curr_emoji} `{data['previous']:,}`\n"
@@ -434,7 +434,136 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
         )
 
 
+class BankerPrefixCommands(commands.Cog):
+    """Prefix commands for BeastlyBank Bankers and Admins."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db = bot.db  # type: ignore
+
+    @commands.command(name="vault")
+    @require_banker_or_admin()
+    async def prefix_vault(self, ctx: commands.Context, *args):
+        """
+        bb!vault <@club_role> <cash|points|tokens> <add|remove|set> <amount> [reason]
+        e.g. bb!vault @RealMadrid cash add 10m Bonus
+        """
+        if len(args) < 4 and not (ctx.message.role_mentions and len(args) >= 3):
+            embed = error_embed(
+                "Invalid Command Usage",
+                "**Usage:** `bb!vault <@club_role> <currency> <add|remove|set> <amount> [reason]`\n"
+                "**Example:** `bb!vault @RealMadrid cash add 10m Bonus`"
+            )
+            await ctx.send(embed=embed)
+            return
+
+        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+
+        # Filter args
+        cur_args = list(args)
+        if target_role:
+            cur_args = [a for a in cur_args if not (a.startswith("<@&") and a.endswith(">"))]
+
+        # Extract currency
+        valid_currencies = ("cash", "points", "tokens", "token", "point")
+        curr_key = None
+        curr_idx = -1
+        for i, a in enumerate(cur_args):
+            low = a.lower().strip()
+            if low in valid_currencies:
+                curr_key = "points" if "point" in low else ("tokens" if "token" in low else "cash")
+                curr_idx = i
+                break
+
+        if not curr_key:
+            await ctx.send(embed=error_embed("Invalid Currency", "Currency must be `cash`, `points`, or `tokens`."))
+            return
+
+        cur_args.pop(curr_idx)
+
+        # Extract action
+        valid_actions = ("add", "remove", "set")
+        action = None
+        action_idx = -1
+        for i, a in enumerate(cur_args):
+            low = a.lower().strip()
+            if low in valid_actions:
+                action = low
+                action_idx = i
+                break
+
+        if not action:
+            await ctx.send(embed=error_embed("Invalid Action", "Action must be `add`, `remove`, or `set`."))
+            return
+
+        cur_args.pop(action_idx)
+
+        # Extract amount
+        amount_idx = -1
+        parsed_amount = None
+        amount_raw = ""
+        for i, a in enumerate(cur_args):
+            val = parse_amount(a)
+            if val is not None and val >= 0:
+                parsed_amount = val
+                amount_raw = a
+                amount_idx = i
+                break
+
+        if parsed_amount is None:
+            await ctx.send(embed=error_embed("Invalid Amount", "Please specify a valid amount (e.g. `26e6`, `3e7`, `500k`, `1000`)."))
+            return
+
+        cur_args.pop(amount_idx)
+
+        # Remaining is club (if no role mention) and reason
+        if target_role:
+            club_target = target_role
+            reason = " ".join(cur_args).strip() or "BeastlyBank Banker Vault Operation"
+        else:
+            if not cur_args:
+                await ctx.send(embed=error_embed("Missing Club", "Please mention a club role (e.g. `bb!vault @ClubRole cash add 10m`)."))
+                return
+            club_target = cur_args[0]
+            reason = " ".join(cur_args[1:]).strip() or "BeastlyBank Banker Vault Operation"
+
+        success, msg, data = await self.db.update_club_treasury(
+            guild_id=ctx.guild.id,
+            club_query=club_target,
+            currency=curr_key,
+            action=action,
+            amount=parsed_amount,
+            admin_id=ctx.author.id,
+            reason=reason,
+        )
+
+        if not success:
+            await ctx.send(embed=error_embed("Vault Operation Failed", msg))
+            return
+
+        curr_emoji = CURRENCIES[curr_key]["emoji"]
+        curr_name = CURRENCIES[curr_key]["name"]
+        target_club = data["club"]
+        role_label = f"<@&{target_club['role_id']}>" if target_club.get("role_id") else f"**[{target_club['tag']}] {target_club['name']}**"
+
+        embed = create_beastly_embed(
+            title="🏦 BeastlyBank Vault Operation Completed",
+            description=(
+                f"Successfully updated the treasury vault for {role_label}!\n\n"
+                f"• **Operation:** `{action.upper()}`\n"
+                f"• **Amount:** {curr_emoji} **{parsed_amount:,} {curr_name}** (`{amount_raw}`)\n"
+                f"• **Previous Balance:** {curr_emoji} `{data['previous']:,}`\n"
+                f"• **New Vault Balance:** {curr_emoji} **{data['new_balance']:,}**\n"
+                f"• **Authorized Banker:** {ctx.author.mention}\n"
+                f"• **Official Memo:** *{reason}*"
+            ),
+            color=COLOR_SUCCESS if action == "add" else COLOR_BEASTLY_GOLD,
+        )
+        await ctx.send(embed=embed)
+
+
 async def setup(bot: commands.Bot):
     await bot.add_cog(ManageCurrency(bot))
     await bot.add_cog(ServerSettings(bot))
     await bot.add_cog(BankAdmin(bot))
+    await bot.add_cog(BankerPrefixCommands(bot))

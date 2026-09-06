@@ -27,30 +27,30 @@
 | `/inventory [user]` | `bb!inventory`, `bb!inv` | Inspect items, roles, and perks in your personal stash. |
 
 #### 🏟️ Club & Treasuries
-| Command | Description |
-| :--- | :--- |
-| `/club create <name> <tag>` | Create your own football club and activate its treasury (100% Free). |
-| `/club info [club]` | View club treasury balance, founder, and squad roster. |
-| `/club deposit <currency> <amount>` | Deposit personal Cash, Points, or Tokens into your club treasury. |
-| `/club withdraw <currency> <amount> <reason>` | Withdraw cash from your club treasury (Club Owners, Managers & Bankers). |
-| `/club transfer <player> <@from_role> <@to_role> <amt>` | Execute official player transfer under club group. |
-| `/club history` | View recent transactions for your club treasury. |
-| `/clubhistory [club]` | View recent club treasury transactions. |
-| `/club addmanager <user>` | Promote a squad member to Club Manager (Owner only). |
-| `/club removemanager <user>` | Demote a Club Manager back to squad member (Owner only). |
-| `/club list` | View the richest BeastlyFC clubs leaderboard. |
+| Command | Prefix (`bb!`) | Description |
+| :--- | :--- | :--- |
+| `/club create <name> <tag> [role]` | `bb!club create <name> <tag> [@role]` | Create your own football club and link an official Discord role (100% Free). |
+| `/club info [club: @role]` | `bb!club info [@role]`, `bb!club [@role]` | View club treasury balance, role mention, founder, and squad roster. |
+| `/club deposit <currency> <amount> [club: @role]` | `bb!club deposit <curr> <amt> [@role]` | Deposit Cash, Points, or Tokens into your club treasury (Bankers can deposit into any club role). |
+| `/club withdraw <currency> <amount> <reason> [club: @role]` | `bb!club withdraw <curr> <amt> [reason] [@role]` | Withdraw cash from your club treasury (Club Owners, Managers & Bankers). |
+| `/club transfer <player> <@from_role> <@to_role> <amt>` | `bb!transfer <player> <@from_role> <@to_role> <amt>` | Official player transfer! Debits buying club vault and deposits directly into selling club vault. |
+| `/club history [club: @role]` | `bb!club history [@role]` | View recent transactions for a club treasury. |
+| `/clubhistory [club: @role]` | `bb!clubhistory [@role]`, `bb!chistory` | View recent club treasury transactions. |
+| `/club addmanager <user>` | — | Promote a squad member to Club Manager (Owner only). |
+| `/club removemanager <user>` | — | Demote a Club Manager back to squad member (Owner only). |
+| `/club list` | `bb!club list` | View the richest BeastlyFC clubs leaderboard. |
 
 ---
 
 ### 👑 ADMINS & STAFF
 
-#### 💵 Manage Currency (`/manage`)
-| Command | Description |
-| :--- | :--- |
-| `/manage add <user> <currency> <amount> [reason]` | Add Cash, CP or Training Tokens to a user. |
-| `/manage remove <user> <currency> <amount> [reason]` | Remove Cash, CP or Training Tokens from a user. |
-| `/manage set <user> <currency> <amount> [reason]` | Set a user's Cash, CP or Training Tokens to a specific amount. |
-| `/manage vault <club> <currency> <action> <amount>` | Add, remove, or set club vault treasury balances directly. |
+#### 💵 Manage Currency (`/manage`) & Banker Vault
+| Command | Prefix (`bb!`) | Description |
+| :--- | :--- | :--- |
+| `/manage add <user> <currency> <amount> [reason]` | — | Add Cash, CP or Training Tokens to a user. |
+| `/manage remove <user> <currency> <amount> [reason]` | — | Remove Cash, CP or Training Tokens from a user. |
+| `/manage set <user> <currency> <amount> [reason]` | — | Set a user's Cash, CP or Training Tokens to a specific amount. |
+| `/manage vault <@club_role> <currency> <action> <amount> [reason]` | `bb!vault <@club_role> <currency> <action> <amount> [reason]` | Operate club vaults directly: add, remove, or set treasury balances (`26e6`, `3e7`, `500k`). |
 
 #### 🛒 Manage Shop (`/shopadmin`)
 | Command | Description |

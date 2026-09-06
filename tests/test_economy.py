@@ -723,6 +723,7 @@ async def test_prefix_commands_resolution():
         ("bb!help", "help"),
         ("bb!shop", "shop"),
         ("bb!inventory", "inventory"),
+        ("bb!vault @ClubRole cash add 10m Bonus", "vault"),
     ]
 
     for text, expected_name in commands_to_check:
@@ -735,6 +736,95 @@ async def test_prefix_commands_resolution():
         assert ctx.command.name == expected_name
 
     await bot.close()
+
+
+@pytest.mark.asyncio
+async def test_role_mentionable_clubs(db: DatabaseManager):
+    """Test full role mention support for club creation, info, treasury management, and transfers."""
+    guild_id = 1122334455
+    owner_id = 9988776655
+    banker_id = 5544332211
+    role_id = 123456789012345678
+
+    # 1. Create club with linked role_id
+    success, msg, club = await db.create_club(
+        guild_id=guild_id,
+        name="Galacticos FC",
+        tag="GFC",
+        owner_id=owner_id,
+        role_id=role_id,
+    )
+    assert success is True
+    assert club["role_id"] == role_id
+
+    # 2. Look up club by Mock discord.Role
+    class MockRole:
+        def __init__(self, id, name):
+            self.id = id
+            self.name = name
+            self.mention = f"<@&{id}>"
+
+    mock_role = MockRole(role_id, "Galacticos FC")
+    found = await db.get_club_by_name(guild_id, mock_role)
+    assert found is not None
+    assert found["id"] == club["id"]
+
+    # 3. Look up club by mention string <@&123456789012345678>
+    mention_str = f"<@&{role_id}>"
+    found_by_mention = await db.get_club_by_name(guild_id, mention_str)
+    assert found_by_mention is not None
+    assert found_by_mention["id"] == club["id"]
+
+    # 4. Look up club by snowflake role_id string
+    found_by_id = await db.get_club_by_name(guild_id, str(role_id))
+    assert found_by_id is not None
+    assert found_by_id["id"] == club["id"]
+
+    # 5. Look up club by database integer id
+    found_by_db_id = await db.get_club_by_name(guild_id, club["id"])
+    assert found_by_db_id is not None
+    assert found_by_db_id["id"] == club["id"]
+
+    # 6. Update club treasury via Mock discord.Role
+    u_success, u_msg, u_res = await db.update_club_treasury(
+        guild_id=guild_id,
+        club_query=mock_role,
+        currency="cash",
+        action="add",
+        amount=75_000_000,
+        admin_id=banker_id,
+        reason="Role mention treasury injection",
+    )
+    assert u_success is True
+    assert u_res["new_balance"] == 75_000_000
+
+    # 7. Update club treasury via role mention string <@&123456789012345678>
+    u_success2, u_msg2, u_res2 = await db.update_club_treasury(
+        guild_id=guild_id,
+        club_query=mention_str,
+        currency="cash",
+        action="remove",
+        amount=25_000_000,
+        admin_id=banker_id,
+        reason="Role mention treasury deduction",
+    )
+    assert u_success2 is True
+    assert u_res2["new_balance"] == 50_000_000
+
+    # 8. Unregistered role auto-creation in update_club_treasury
+    new_role = MockRole(987654321098765432, "Super Strikers")
+    auto_success, auto_msg, auto_res = await db.update_club_treasury(
+        guild_id=guild_id,
+        club_query=new_role,
+        currency="cash",
+        action="set",
+        amount=100_000_000,
+        admin_id=banker_id,
+        reason="Brand new squad initial vault",
+    )
+    assert auto_success is True
+    assert auto_res["new_balance"] == 100_000_000
+    assert auto_res["club"]["role_id"] == new_role.id
 
 
 

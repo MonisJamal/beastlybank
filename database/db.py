@@ -552,7 +552,7 @@ class DatabaseManager:
     # ------------------ Club Treasuries ------------------ #
 
     async def create_club(
-        self, guild_id: int, name: str, tag: str, owner_id: int
+        self, guild_id: int, name: str, tag: str, owner_id: int, role_id: Optional[int] = None
     ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
         """Form a new BeastlyFC football club with its own treasury."""
         name = name.strip()
@@ -581,13 +581,13 @@ class DatabaseManager:
                 return False, "A club with this name or tag already exists in BeastlyFC!", None
 
             # Creation fee: 100% Free!
-            # Insert Club with 0 starter treasury
+            # Insert Club with 0 starter treasury and optional linked role_id
             await cur.execute(
                 """
-                INSERT INTO clubs (guild_id, name, tag, owner_id, treasury_cash, treasury_points, treasury_tokens)
-                VALUES (?, ?, ?, ?, 0, 0, 0);
+                INSERT INTO clubs (guild_id, name, tag, owner_id, treasury_cash, treasury_points, treasury_tokens, role_id)
+                VALUES (?, ?, ?, ?, 0, 0, 0, ?);
                 """,
-                (guild_id, name, tag, owner_id),
+                (guild_id, name, tag, owner_id, role_id),
             )
             club_id = cur.lastrowid
 
@@ -834,7 +834,7 @@ class DatabaseManager:
 
     async def get_club_by_name(self, guild_id: int, query: Any) -> Optional[Dict[str, Any]]:
         """
-        Search club by Discord role object, role ID, exact name/tag, or case-insensitive partial match.
+        Search club by Discord role object, role mention, role ID, database ID, exact name/tag, or case-insensitive partial match.
         """
         if not query:
             return None
@@ -848,15 +848,25 @@ class DatabaseManager:
             q = role_name
         else:
             q = str(query).strip()
-            if q.startswith("<@&") and q.endswith(">"):
-                raw_id = q.strip("<@&>")
-                if raw_id.isdigit():
-                    role_id = int(raw_id)
+            import re
+            m = re.search(r"<@&(\d+)>", q)
+            if m:
+                role_id = int(m.group(1))
             elif q.isdigit() and len(q) >= 15:
                 role_id = int(q)
 
         conn = await self.connect()
         async with conn.cursor() as cur:
+            # 0. If integer ID < 1000000000, match by database primary key
+            if isinstance(query, int) and query < 1000000000:
+                await cur.execute(
+                    "SELECT * FROM clubs WHERE guild_id = ? AND id = ?;",
+                    (guild_id, query),
+                )
+                row = await cur.fetchone()
+                if row:
+                    return dict(row)
+
             # 1. Match by role_id if set on club
             if role_id:
                 await cur.execute(
@@ -1112,7 +1122,7 @@ class DatabaseManager:
 
         conn = await self.connect()
         async with conn.cursor() as cur:
-            club = await self.get_club_by_name(guild_id, club_query)
+            club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=admin_id)
             if not club:
                 return False, f"Club '{club_query}' not found in BeastlyFC.", {}
 
@@ -1145,7 +1155,8 @@ class DatabaseManager:
             )
             await conn.commit()
 
-            updated_club = await self.get_club_by_name(guild_id, club_query)
+            await cur.execute("SELECT * FROM clubs WHERE id = ?;", (club["id"],))
+            updated_club = dict(await cur.fetchone())
             return True, f"Successfully updated [{club['tag']}] {club['name']} vault!", {
                 "club": updated_club,
                 "currency": currency,

@@ -760,20 +760,21 @@ class DatabaseManager:
         if amount < 0:
             return False, "Transfer fee cannot be negative.", {}
 
+        from_club = await self.get_or_create_club_from_role(guild_id, from_club_query, default_owner_id=payer_id)
+        to_club = await self.get_or_create_club_from_role(guild_id, to_club_query, default_owner_id=payer_id)
+
+        from_label = from_club_query.mention if hasattr(from_club_query, "mention") else f"'{from_club_query}'"
+        to_label = to_club_query.mention if hasattr(to_club_query, "mention") else f"'{to_club_query}'"
+
+        if not from_club:
+            return False, f"Selling club {from_label} not found in BeastlyBank.", {}
+        if not to_club:
+            return False, f"Buying club {to_label} not found in BeastlyBank.", {}
+        if from_club["id"] == to_club["id"]:
+            return False, "Selling club and buying club cannot be the same.", {}
+
         conn = await self.connect()
         async with conn.cursor() as cur:
-            from_club = await self.get_or_create_club_from_role(guild_id, from_club_query, default_owner_id=payer_id)
-            to_club = await self.get_or_create_club_from_role(guild_id, to_club_query, default_owner_id=payer_id)
-
-            from_label = from_club_query.mention if hasattr(from_club_query, "mention") else f"'{from_club_query}'"
-            to_label = to_club_query.mention if hasattr(to_club_query, "mention") else f"'{to_club_query}'"
-
-            if not from_club:
-                return False, f"Selling club {from_label} not found in BeastlyBank.", {}
-            if not to_club:
-                return False, f"Buying club {to_label} not found in BeastlyBank.", {}
-            if from_club["id"] == to_club["id"]:
-                return False, "Selling club and buying club cannot be the same.", {}
 
             if amount > 0:
                 # Debit the buying club's vault treasury directly

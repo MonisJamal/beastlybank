@@ -37,13 +37,19 @@ async def club_name_autocomplete(
 
 
 async def send_msg(target: discord.Interaction | commands.Context, embed: discord.Embed, ephemeral: bool = False):
-    if isinstance(target, discord.Interaction):
-        if target.response.is_done():
-            await target.followup.send(embed=embed, ephemeral=ephemeral)
+    try:
+        if isinstance(target, discord.Interaction):
+            if target.response.is_done():
+                try:
+                    await target.followup.send(embed=embed, ephemeral=ephemeral)
+                except Exception:
+                    await target.followup.send(embed=embed)
+            else:
+                await target.response.send_message(embed=embed, ephemeral=ephemeral)
         else:
-            await target.response.send_message(embed=embed, ephemeral=ephemeral)
-    else:
-        await target.send(embed=embed)
+            await target.send(embed=embed)
+    except Exception as e:
+        logger.error("Error in send_msg: %s", e, exc_info=True)
 
 
 async def execute_transfer(
@@ -57,10 +63,6 @@ async def execute_transfer(
     """Shared execution logic for /transfer, /club transfer, and bb!transfer."""
     guild_id = ctx_or_interaction.guild_id if hasattr(ctx_or_interaction, "guild_id") and ctx_or_interaction.guild_id else ctx_or_interaction.guild.id
     caller = ctx_or_interaction.user if hasattr(ctx_or_interaction, "user") else ctx_or_interaction.author
-
-    if isinstance(ctx_or_interaction, discord.Interaction):
-        if not ctx_or_interaction.response.is_done():
-            await ctx_or_interaction.response.defer()
 
     parsed_fee = parse_amount(amount)
     if parsed_fee is None or parsed_fee < 0:
@@ -88,6 +90,10 @@ async def execute_transfer(
             ephemeral=True,
         )
         return
+
+    if isinstance(ctx_or_interaction, discord.Interaction):
+        if not ctx_or_interaction.response.is_done():
+            await ctx_or_interaction.response.defer()
 
     try:
         success, msg, data = await db.transfer_player(

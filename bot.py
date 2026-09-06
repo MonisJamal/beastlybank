@@ -66,28 +66,30 @@ class BeastlyCommandTree(app_commands.CommandTree):
 
     async def on_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         """Global Slash Command Error Handler."""
-        if isinstance(error, NotInBeastlyFCError):
-            await interaction.response.send_message(
-                embed=error_embed("Server Lock Violation", str(error)),
-                ephemeral=True,
-            )
-        elif isinstance(error, NotBankerError):
-            await interaction.response.send_message(
-                embed=error_embed("Staff Authorization Required", str(error)),
-                ephemeral=True,
-            )
-        elif isinstance(error, app_commands.CommandOnCooldown):
-            await interaction.response.send_message(
-                embed=error_embed("Cooldown Active", f"Please wait **{error.retry_after:.1f} seconds** before using this again."),
-                ephemeral=True,
-            )
+        actual_error = getattr(error, "original", error)
+
+        async def safe_reply(embed: discord.Embed):
+            try:
+                if interaction.response.is_done():
+                    try:
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                    except Exception:
+                        await interaction.followup.send(embed=embed)
+                else:
+                    await interaction.response.send_message(embed=embed, ephemeral=True)
+            except Exception as e:
+                logger.error("Failed to send slash error response: %s", e)
+
+        if isinstance(actual_error, NotInBeastlyFCError):
+            await safe_reply(error_embed("Server Lock Violation", str(actual_error)))
+        elif isinstance(actual_error, NotBankerError):
+            await safe_reply(error_embed("Staff Authorization Required", str(actual_error)))
+        elif isinstance(actual_error, app_commands.CommandOnCooldown):
+            await safe_reply(error_embed("Cooldown Active", f"Please wait **{actual_error.retry_after:.1f} seconds** before using this again."))
         else:
-            logger.error("Unhandled Slash Command Error: %s", error, exc_info=error)
-            msg = f"An unexpected error occurred: {str(error)}"
-            if interaction.response.is_done():
-                await interaction.followup.send(embed=error_embed("System Error", msg), ephemeral=True)
-            else:
-                await interaction.response.send_message(embed=error_embed("System Error", msg), ephemeral=True)
+            logger.error("Unhandled Slash Command Error: %s", actual_error, exc_info=actual_error)
+            msg = f"An unexpected error occurred: {str(actual_error)}"
+            await safe_reply(error_embed("System Error", msg))
 
 
 class BeastlyBankBot(commands.Bot):
@@ -154,19 +156,6 @@ class BeastlyBankBot(commands.Bot):
             name=f"{SERVER_NAME} Finances ⚽ | /balance",
         )
         await self.change_presence(status=discord.Status.online, activity=activity)
-
-        # Ensure Slash Commands are synced
-        try:
-            if BEASTLYFC_GUILD_ID != 0:
-                guild_obj = discord.Object(id=BEASTLYFC_GUILD_ID)
-                self.tree.copy_global_to(guild=guild_obj)
-                synced = await self.tree.sync(guild=guild_obj)
-                logger.info("⚡ Guaranteed sync: %d slash commands active in BeastlyFC", len(synced))
-            else:
-                synced = await self.tree.sync()
-                logger.info("⚡ Guaranteed sync: %d slash commands active globally", len(synced))
-        except Exception as e:
-            logger.warning("Secondary tree sync notice: %s", e)
 
     async def on_command_error(self, ctx: commands.Context, error: commands.CommandError):
         """Global Prefix Command Error Handler."""

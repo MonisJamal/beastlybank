@@ -177,6 +177,39 @@ async def execute_transfer(
     await send_msg(ctx_or_interaction, embed=embed)
 
 
+async def resolve_owner_names(
+    bot: commands.Bot, guild: Optional[discord.Guild], clubs: List[Dict[str, Any]]
+) -> Dict[int, str]:
+    """Map owner_id -> display username for clean embed rendering."""
+    owner_map: Dict[int, str] = {0: "Vacant"}
+    for c in clubs:
+        oid = c.get("owner_id")
+        if not oid or oid in owner_map:
+            continue
+
+        name = None
+        if guild:
+            member = guild.get_member(oid)
+            if member:
+                name = getattr(member, "display_name", None) or getattr(member, "name", None)
+
+        if not name and bot:
+            user = bot.get_user(oid)
+            if user:
+                name = getattr(user, "display_name", None) or getattr(user, "name", None)
+
+        if not name and bot:
+            try:
+                user = await bot.fetch_user(oid)
+                if user:
+                    name = getattr(user, "display_name", None) or getattr(user, "name", None)
+            except Exception:
+                name = None
+
+        owner_map[oid] = name or f"User-{str(oid)[-4:]}"
+    return owner_map
+
+
 class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club Treasuries and Squads"):
     """BeastlyFC Club Finance and Treasury Management."""
 
@@ -463,6 +496,8 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
             await interaction.response.send_message(embed=embed)
             return
 
+        owner_map = await resolve_owner_names(self.bot, interaction.guild, clubs)
+
         per_page = 10
         total_pages = max(1, (len(clubs) + per_page - 1) // per_page)
         target_page = max(1, min(page or 1, total_pages))
@@ -485,9 +520,9 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
             medals = ["🥇", "🥈", "🥉"]
             for idx, c in enumerate(page_clubs, start=start_idx + 1):
                 rank_str = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
-                owner_str = f"<@{c['owner_id']}>" if c.get("owner_id") else "*Vacant*"
+                owner_name = owner_map.get(c.get("owner_id", 0), "Vacant")
                 embed.add_field(
-                    name=f"{rank_str} [{c['tag']}] {c['name']} (Owner: {owner_str})",
+                    name=f"{rank_str} [{c['tag']}] {c['name']} (Owner: {owner_name})",
                     value=(
                         f"👥 Squad: **{c.get('member_count', 1)}** | "
                         f"💵 Cash: `{c['treasury_cash']:,}` | "
@@ -1228,6 +1263,8 @@ class ClubPrefixCommands(commands.Cog):
             await ctx.send(embed=embed)
             return
 
+        owner_map = await resolve_owner_names(self.bot, ctx.guild, clubs)
+
         per_page = 10
         total_pages = max(1, (len(clubs) + per_page - 1) // per_page)
         target_page = max(1, min(target_page, total_pages))
@@ -1250,9 +1287,9 @@ class ClubPrefixCommands(commands.Cog):
             medals = ["🥇", "🥈", "🥉"]
             for idx, c in enumerate(page_clubs, start=start_idx + 1):
                 rank_str = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
-                owner_str = f"<@{c['owner_id']}>" if c.get("owner_id") else "*Vacant*"
+                owner_name = owner_map.get(c.get("owner_id", 0), "Vacant")
                 embed.add_field(
-                    name=f"{rank_str} [{c['tag']}] {c['name']} (Owner: {owner_str})",
+                    name=f"{rank_str} [{c['tag']}] {c['name']} (Owner: {owner_name})",
                     value=(
                         f"👥 Squad: **{c.get('member_count', 1)}** | "
                         f"💵 Cash: `{c['treasury_cash']:,}` | "

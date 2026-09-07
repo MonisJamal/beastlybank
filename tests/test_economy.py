@@ -2501,13 +2501,90 @@ async def test_club_list_pagination(db: DatabaseManager):
     assert "Page 2 of 2" in pref_embed3.footer.text
 
 
+@pytest.mark.asyncio
+async def test_club_owner_username_display(db: DatabaseManager):
+    """Verify club list and leaderboard resolve and display owner usernames instead of raw user IDs or mentions."""
+    from unittest.mock import AsyncMock
+    from discord.ext import commands
+    from cogs.clubs import Clubs, ClubPrefixCommands, resolve_owner_names
+    from cogs.leaderboard import Leaderboard
 
+    guild_id = 1222195412295745536
+    owner_id = 9876543210
 
+    # Create club
+    await db.create_club(guild_id, "Apex Predators", "APX", owner_id, role_id=888111)
 
+    # Setup mock bot and guild with member
+    mock_bot = MagicMock()
+    mock_bot.db = db
 
+    mock_member = MagicMock()
+    mock_member.display_name = "Destinix"
+    mock_guild = MagicMock(spec=discord.Guild)
+    mock_guild.id = guild_id
+    mock_guild.get_member.side_effect = lambda uid: mock_member if uid == owner_id else None
 
+    # 1. Direct unit test of resolve_owner_names
+    clubs = await db.get_club_leaderboard(guild_id)
+    owner_map = await resolve_owner_names(mock_bot, mock_guild, clubs)
+    assert owner_map[owner_id] == "Destinix"
+    assert owner_map[0] == "Vacant"
 
+    # Test fallback to bot.fetch_user
+    mock_guild_empty = MagicMock(spec=discord.Guild)
+    mock_guild_empty.get_member.return_value = None
+    mock_bot.get_user.return_value = None
+    mock_fetched_user = MagicMock()
+    mock_fetched_user.display_name = "FetchedOwner"
+    mock_bot.fetch_user = AsyncMock(return_value=mock_fetched_user)
 
+    owner_map_fetched = await resolve_owner_names(mock_bot, mock_guild_empty, clubs)
+    assert owner_map_fetched[owner_id] == "FetchedOwner"
 
+    # 2. Test /club list shows username in field name
+    clubs_cog = Clubs(mock_bot)
+    inter = MagicMock(spec=discord.Interaction)
+    inter.guild_id = guild_id
+    inter.guild = mock_guild
+    inter.user = MagicMock()
+    inter.user.id = 111111
+    inter.response = MagicMock()
+    inter.response.send_message = AsyncMock()
 
+    await clubs_cog.club_list.callback(clubs_cog, inter, page=1)
+    inter.response.send_message.assert_called_once()
+    list_embed = inter.response.send_message.call_args[1]["embed"]
+    assert len(list_embed.fields) >= 1
+    # Field name format: 🥇 [APX] Apex Predators (Owner: Destinix)
+    field_title = list_embed.fields[0].name
+    assert f"<@{owner_id}>" not in field_title
+    assert "Owner: Destinix" in field_title
 
+    # 3. Test prefix bb!club list shows username in field name
+    prefix_cog = ClubPrefixCommands(mock_bot)
+    ctx = MagicMock(spec=commands.Context)
+    ctx.guild = mock_guild
+    ctx.author = MagicMock()
+    ctx.author.id = 111111
+    ctx.send = AsyncMock()
+
+    await prefix_cog.prefix_club_list.callback(prefix_cog, ctx, "1")
+    ctx.send.assert_called_once()
+    pref_embed = ctx.send.call_args[1]["embed"]
+    assert f"<@{owner_id}>" not in pref_embed.fields[0].name
+    assert "Owner: Destinix" in pref_embed.fields[0].name
+
+    # 4. Test leaderboard clubs shows username
+    lb_cog = Leaderboard(mock_bot)
+    inter_lb = MagicMock(spec=discord.Interaction)
+    inter_lb.guild_id = guild_id
+    inter_lb.guild = mock_guild
+    inter_lb.response = MagicMock()
+    inter_lb.response.send_message = AsyncMock()
+
+    await lb_cog.leaderboard.callback(lb_cog, inter_lb, category="clubs")
+    inter_lb.response.send_message.assert_called_once()
+    lb_embed = inter_lb.response.send_message.call_args[1]["embed"]
+    assert f"<@{owner_id}>" not in lb_embed.fields[0].value
+    assert "👑 Owner: **Destinix**" in lb_embed.fields[0].value

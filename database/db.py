@@ -94,11 +94,12 @@ class DatabaseManager:
                 except Exception as e:
                     logger.warning("Could not initialize Turso cloud replication: %s. Using local SQLite.", e)
 
-            self._conn = await aiosqlite.connect(self.db_path)
+            self._conn = await aiosqlite.connect(self.db_path, timeout=30.0)
             self._conn.row_factory = aiosqlite.Row
             await self._conn.execute("PRAGMA journal_mode=WAL;")
             await self._conn.execute("PRAGMA foreign_keys=ON;")
             await self._conn.execute("PRAGMA synchronous=NORMAL;")
+            await self._conn.execute("PRAGMA busy_timeout=15000;")
         return self._conn
 
     async def close(self) -> None:

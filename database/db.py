@@ -1450,6 +1450,260 @@ class DatabaseManager:
             msg = f"<@{target_user_id}> has been successfully {action_str} for {role_mention} (Zero data loss: balances, squad, and treasury 100% preserved)."
             return True, msg, club_dict
 
+    async def admin_set_club_owner(
+        self,
+        guild_id: int,
+        club_query: Any,
+        new_owner_id: int,
+        admin_id: int,
+        reason: Optional[str] = None,
+        is_add_action: bool = False,
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Staff/Banker command to assign (add) or transfer (change) Club Owner with zero data loss.
+        Guarantees that former and new owner's personal balances, club treasuries,
+        squad players, and transaction history remain 100% intact.
+        """
+        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=0)
+        if not club:
+            return False, "Club not found. Please provide a valid club role mention, tag, or name.", None
+
+        club_id = club["id"]
+        # Ensure target new owner account exists in DB (balances untouched)
+        await self.get_or_create_user(new_owner_id, guild_id)
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            # Re-fetch latest club record
+            await cur.execute("SELECT * FROM clubs WHERE id = ?;", (club_id,))
+            club_data = await cur.fetchone()
+            if not club_data:
+                return False, "Club record could not be found in database.", None
+
+            old_owner_id = club_data["owner_id"]
+            tag = club_data["tag"]
+            name = club_data["name"]
+
+            # If user is already the owner of this club
+            if new_owner_id == old_owner_id and old_owner_id != 0:
+                return False, f"<@{new_owner_id}> is already the **Club Owner** of **[{tag}] {name}**.", dict(club_data)
+
+            # Check if target user is already the owner of another club in this guild
+            await cur.execute(
+                "SELECT id, tag, name FROM clubs WHERE guild_id = ? AND owner_id = ? AND id != ?;",
+                (guild_id, new_owner_id, club_id),
+            )
+            other_owned_club = await cur.fetchone()
+            if other_owned_club:
+                return (
+                    False,
+                    f"<@{new_owner_id}> is already the owner of another club: **[{other_owned_club['tag']}] {other_owned_club['name']}**. "
+                    f"A user cannot own multiple clubs simultaneously.",
+                    dict(club_data),
+                )
+
+            # Check if target user belongs to another club in this guild
+            await cur.execute(
+                """
+                SELECT c.id, c.tag, c.name, cm.role
+                FROM club_members cm
+                JOIN clubs c ON cm.club_id = c.id
+                WHERE cm.guild_id = ? AND cm.user_id = ? AND cm.club_id != ?;
+                """,
+                (guild_id, new_owner_id, club_id),
+            )
+            other_club = await cur.fetchone()
+            if other_club:
+                return (
+                    False,
+                    f"<@{new_owner_id}> is currently enrolled in another club: **[{other_club['tag']}] {other_club['name']}** (Role: `{other_club['role']}`). "
+                    f"To prevent data conflicts or accidental squad disruption, they must leave or be transferred from their current club before becoming Club Owner here.",
+                    dict(club_data),
+                )
+
+            # Check if target user is already in THIS club
+            await cur.execute(
+                "SELECT * FROM club_members WHERE club_id = ? AND user_id = ?;",
+                (club_id, new_owner_id),
+            )
+            existing_member = await cur.fetchone()
+
+            # Demote former owner to Member in club_members if valid
+            if old_owner_id != 0 and old_owner_id != new_owner_id:
+                await cur.execute(
+                    "UPDATE club_members SET role = 'Member' WHERE club_id = ? AND user_id = ?;",
+                    (club_id, old_owner_id),
+                )
+
+            # Promote or insert new owner in club_members
+            if existing_member:
+                await cur.execute(
+                    "UPDATE club_members SET role = 'Owner' WHERE club_id = ? AND user_id = ?;",
+                    (club_id, new_owner_id),
+                )
+            else:
+                await cur.execute(
+                    """
+                    INSERT INTO club_members (club_id, user_id, guild_id, role)
+                    VALUES (?, ?, ?, 'Owner');
+                    """,
+                    (club_id, new_owner_id, guild_id),
+                )
+
+            # Update owner_id on club
+            await cur.execute(
+                "UPDATE clubs SET owner_id = ? WHERE id = ?;",
+                (new_owner_id, club_id),
+            )
+
+            # Determine action text and audit tx_type
+            if old_owner_id == 0:
+                action_str = "appointed as **Club Owner**"
+                tx_type = "admin_owner_add"
+                memo = f"Admin Owner Assignment: Appointed <@{new_owner_id}> as Owner of [{tag}] {name} by Admin #{admin_id}"
+            else:
+                action_str = f"transferred ownership from <@{old_owner_id}> to <@{new_owner_id}>"
+                tx_type = "admin_owner_change"
+                memo = f"Admin Owner Transfer: Changed Owner of [{tag}] {name} from #{old_owner_id} to #{new_owner_id} by Admin #{admin_id}"
+
+            if reason:
+                memo += f" ({reason})"
+
+            await cur.execute(
+                """
+                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                VALUES (?, ?, ?, 'cash', 0, ?, ?);
+                """,
+                (guild_id, admin_id, new_owner_id, tx_type, memo),
+            )
+            await conn.commit()
+
+            club_dict = dict(club_data)
+            club_dict["owner_id"] = new_owner_id
+            club_dict["former_owner_id"] = old_owner_id
+
+            role_mention = f"<@&{club_dict['role_id']}>" if club_dict.get("role_id") else f"**[{tag}] {name}**"
+            msg = f"Successfully {action_str} for {role_mention} (Zero data loss: balances, squad, and treasury 100% preserved)."
+            return True, msg, club_dict
+
+    async def admin_remove_club_owner(
+        self,
+        guild_id: int,
+        club_query: Any,
+        admin_id: int,
+        reason: Optional[str] = None,
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Staff/Banker command to vacate/remove a club owner with zero data loss.
+        Former owner's balances, club treasury, and squad remain 100% preserved.
+        """
+        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=0)
+        if not club:
+            return False, "Club not found. Please provide a valid club role mention, tag, or name.", None
+
+        club_id = club["id"]
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT * FROM clubs WHERE id = ?;", (club_id,))
+            club_data = await cur.fetchone()
+            if not club_data:
+                return False, "Club record could not be found in database.", None
+
+            old_owner_id = club_data["owner_id"]
+            tag = club_data["tag"]
+            name = club_data["name"]
+
+            if old_owner_id == 0:
+                return False, f"**[{tag}] {name}** currently has no assigned owner.", dict(club_data)
+
+            # Demote former owner to Member in club_members so they keep their membership and player card
+            await cur.execute(
+                "UPDATE club_members SET role = 'Member' WHERE club_id = ? AND user_id = ?;",
+                (club_id, old_owner_id),
+            )
+
+            # Vacate ownership
+            await cur.execute(
+                "UPDATE clubs SET owner_id = 0 WHERE id = ?;",
+                (club_id,),
+            )
+
+            memo = f"Admin Owner Vacate: Removed <@{old_owner_id}> as Owner of [{tag}] {name} by Admin #{admin_id}"
+            if reason:
+                memo += f" ({reason})"
+
+            await cur.execute(
+                """
+                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                VALUES (?, ?, ?, 'cash', 0, 'admin_owner_remove', ?);
+                """,
+                (guild_id, admin_id, old_owner_id, memo),
+            )
+            await conn.commit()
+
+            club_dict = dict(club_data)
+            club_dict["former_owner_id"] = old_owner_id
+            club_dict["owner_id"] = 0
+
+            role_mention = f"<@&{club_dict['role_id']}>" if club_dict.get("role_id") else f"**[{tag}] {name}**"
+            msg = f"<@{old_owner_id}> has been removed as owner of {role_mention} (Ownership is now vacant; treasury and squad 100% preserved)."
+            return True, msg, club_dict
+
+    async def admin_delete_club(
+        self,
+        guild_id: int,
+        club_query: Any,
+        admin_id: int,
+        reason: Optional[str] = None,
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Staff/Banker command to delete/disband a club completely.
+        Ensures members' personal balances are untouched, and squad/club records are cleanly cleaned up.
+        """
+        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=0)
+        if not club:
+            return False, "Club not found. Please provide a valid club role mention, tag, or name.", None
+
+        club_id = club["id"]
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT * FROM clubs WHERE id = ?;", (club_id,))
+            club_data = await cur.fetchone()
+            if not club_data:
+                return False, "Club record could not be found in database.", None
+
+            tag = club_data["tag"]
+            name = club_data["name"]
+            owner_id = club_data["owner_id"]
+
+            # Count members and players for reporting
+            await cur.execute("SELECT COUNT(*) as cnt FROM club_members WHERE club_id = ?;", (club_id,))
+            member_count = (await cur.fetchone())["cnt"]
+            await cur.execute("SELECT COUNT(*) as cnt FROM club_players WHERE club_id = ?;", (club_id,))
+            player_count = (await cur.fetchone())["cnt"]
+
+            # Delete players, members, and the club
+            await cur.execute("DELETE FROM club_players WHERE club_id = ?;", (club_id,))
+            await cur.execute("DELETE FROM club_members WHERE club_id = ?;", (club_id,))
+            await cur.execute("DELETE FROM clubs WHERE id = ?;", (club_id,))
+
+            memo = f"Admin Club Delete: Deleted [{tag}] {name} by Admin #{admin_id} ({member_count} members, {player_count} players removed)"
+            if reason:
+                memo += f" ({reason})"
+
+            await cur.execute(
+                """
+                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                VALUES (?, ?, ?, 'cash', 0, 'admin_club_delete', ?);
+                """,
+                (guild_id, admin_id, owner_id or admin_id, memo),
+            )
+            await conn.commit()
+
+            club_dict = dict(club_data)
+            msg = f"Club **[{tag}] {name}** has been successfully disbanded by staff ({member_count} members, {player_count} squad registrations removed. Personal balances remain 100% intact)."
+            return True, msg, club_dict
+
     async def get_club_transactions(
         self, club_id: int, guild_id: int, limit: int = 10
     ) -> List[Dict[str, Any]]:

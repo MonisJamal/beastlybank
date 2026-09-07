@@ -1980,6 +1980,385 @@ async def test_admin_manager_commands_and_views(db: DatabaseManager):
         assert len(v.children) == 5
 
 
+@pytest.mark.asyncio
+async def test_admin_owner_management_acid(db: DatabaseManager):
+    """Verify admin owner management (add, change, remove) and club deletion with zero data loss."""
+    guild_id = 999999999
+    admin_id = 888888888
+    owner1_id = 901
+    member1_id = 902
+    free_agent_id = 903
+    other_owner_id = 904
+    other_member_id = 905
+
+    # 1. Setup initial user balances and clubs
+    await db.update_balance(owner1_id, guild_id, "cash", 25000, "owner1_seed")
+    await db.update_balance(member1_id, guild_id, "cash", 15000, "member1_seed")
+    await db.update_balance(free_agent_id, guild_id, "cash", 8000, "free_agent_seed")
+    await db.update_balance(other_owner_id, guild_id, "cash", 50000, "other_owner_seed")
+    await db.update_balance(other_member_id, guild_id, "cash", 7000, "other_member_seed")
+
+    # Create Club 1 (Real Madrid)
+    c1_ok, _, club1 = await db.create_club(guild_id, "Madrid FC", "RMA", owner1_id, role_id=888001)
+    assert c1_ok is True
+    # Seed Club 1 treasury directly via banker vault operation
+    await db.update_club_treasury(guild_id, club1["id"], "cash", "set", 100000, admin_id)
+    await db.update_club_treasury(guild_id, club1["id"], "points", "set", 5000, admin_id)
+    await db.update_club_treasury(guild_id, club1["id"], "tokens", "set", 50, admin_id)
+
+    # Enroll member1 into Club 1 with a player card
+    p_add_ok, _, p_data = await db.add_club_player(
+        guild_id=guild_id,
+        club_query=club1["id"],
+        player_name="Ronaldo",
+        position="ST",
+        status="starting",
+        number=7,
+        rating=92,
+        potential=95,
+        user_id=member1_id,
+    )
+    assert p_add_ok is True
+
+    # Create Club 2 (Barca FC)
+    c2_ok, _, club2 = await db.create_club(guild_id, "Barca FC", "BAR", other_owner_id, role_id=888002)
+    assert c2_ok is True
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO club_members (club_id, user_id, guild_id, role) VALUES (?, ?, ?, 'Member');",
+            (club2["id"], other_member_id, guild_id),
+        )
+    await conn.commit()
+
+    # 2. Transfer ownership of Club 1 from owner1 to member1
+    change_ok, change_msg, c1_updated = await db.admin_set_club_owner(
+        guild_id=guild_id,
+        club_query=888001,
+        new_owner_id=member1_id,
+        admin_id=admin_id,
+        reason="Board Decision",
+    )
+    assert change_ok is True
+    assert "transferred ownership" in change_msg
+    assert c1_updated["owner_id"] == member1_id
+
+    # Verify Club 1 state in DB
+    club1_db = await db.get_club_by_name(guild_id, club1["id"])
+    assert club1_db["owner_id"] == member1_id
+    assert club1_db["treasury_cash"] == 100000
+    assert club1_db["treasury_points"] == 5000
+    assert club1_db["treasury_tokens"] == 50
+
+    # Verify member roles in club_members
+    mem1_club = await db.get_club_by_user(guild_id, member1_id)
+    assert mem1_club["user_role"] == "Owner"
+    own1_club = await db.get_club_by_user(guild_id, owner1_id)
+    assert own1_club["user_role"] == "Member"
+
+    # Verify ZERO data loss on personal balances and player cards
+    mem1_user = await db.get_or_create_user(member1_id, guild_id)
+    assert mem1_user["cash"] == 15000
+    own1_user = await db.get_or_create_user(owner1_id, guild_id)
+    assert own1_user["cash"] == 25000
+
+    p_chk_ok, _, p_chk = await db.get_player_info(guild_id, "Ronaldo", club_query=club1["id"])
+    assert p_chk_ok is True
+    assert p_chk["player"]["rating"] == 92
+    assert p_chk["player"]["user_id"] == member1_id
+
+    # 3. Transfer ownership to a Free Agent directly
+    fa_ok, fa_msg, c1_fa = await db.admin_set_club_owner(
+        guild_id=guild_id,
+        club_query=888001,
+        new_owner_id=free_agent_id,
+        admin_id=admin_id,
+        reason="Acquisition",
+    )
+    assert fa_ok is True
+    assert c1_fa["owner_id"] == free_agent_id
+    fa_club = await db.get_club_by_user(guild_id, free_agent_id)
+    assert fa_club["user_role"] == "Owner"
+    fa_user = await db.get_or_create_user(free_agent_id, guild_id)
+    assert fa_user["cash"] == 8000
+
+    # 4. Conflict & Error handling
+    # A. User already owner of this club
+    same_ok, same_msg, _ = await db.admin_set_club_owner(
+        guild_id=guild_id,
+        club_query=888001,
+        new_owner_id=free_agent_id,
+        admin_id=admin_id,
+    )
+    assert same_ok is False
+    assert "already the **Club Owner**" in same_msg
+
+    # B. User already owns another club
+    other_own_ok, other_own_msg, _ = await db.admin_set_club_owner(
+        guild_id=guild_id,
+        club_query=888001,
+        new_owner_id=other_owner_id,
+        admin_id=admin_id,
+    )
+    assert other_own_ok is False
+    assert "already the owner of another club" in other_own_msg
+
+    # C. User enrolled in another club
+    cross_mem_ok, cross_mem_msg, _ = await db.admin_set_club_owner(
+        guild_id=guild_id,
+        club_query=888001,
+        new_owner_id=other_member_id,
+        admin_id=admin_id,
+    )
+    assert cross_mem_ok is False
+    assert "currently enrolled in another club" in cross_mem_msg
+
+    # 5. Remove / Vacate club owner
+    rm_ok, rm_msg, c1_vacant = await db.admin_remove_club_owner(
+        guild_id=guild_id,
+        club_query=888001,
+        admin_id=admin_id,
+        reason="Owner stepped down",
+    )
+    assert rm_ok is True
+    assert c1_vacant["owner_id"] == 0
+    c1_after_rm = await db.get_club_by_name(guild_id, club1["id"])
+    assert c1_after_rm["owner_id"] == 0
+    # Former owner demoted to Member
+    fa_after_rm = await db.get_club_by_user(guild_id, free_agent_id)
+    assert fa_after_rm["user_role"] == "Member"
+
+    # Removing owner when already vacant should fail cleanly
+    rm_again_ok, rm_again_msg, _ = await db.admin_remove_club_owner(
+        guild_id=guild_id,
+        club_query=888001,
+        admin_id=admin_id,
+    )
+    assert rm_again_ok is False
+    assert "currently has no assigned owner" in rm_again_msg
+
+    # 6. Assign (add) owner to a vacant club
+    add_ok, add_msg, c1_reassigned = await db.admin_set_club_owner(
+        guild_id=guild_id,
+        club_query=888001,
+        new_owner_id=owner1_id,
+        admin_id=admin_id,
+        reason="Reappointment",
+        is_add_action=True,
+    )
+    assert add_ok is True
+    assert "appointed as **Club Owner**" in add_msg
+    assert c1_reassigned["owner_id"] == owner1_id
+
+    # 7. Delete / Disband club completely
+    del_ok, del_msg, _ = await db.admin_delete_club(
+        guild_id=guild_id,
+        club_query=888002,
+        admin_id=admin_id,
+        reason="Club dissolved",
+    )
+    assert del_ok is True
+    assert "successfully disbanded" in del_msg
+    # Club 2 should no longer exist
+    c2_lookup = await db.get_club_by_name(guild_id, club2["id"])
+    assert c2_lookup is None
+    # Former owner and member personal balances intact
+    other_own_u = await db.get_or_create_user(other_owner_id, guild_id)
+    assert other_own_u["cash"] == 50000
+    other_mem_u = await db.get_or_create_user(other_member_id, guild_id)
+    assert other_mem_u["cash"] == 7000
+
+    # 8. Check audit logs in transactions table
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT tx_type FROM transactions WHERE tx_type LIKE 'admin_%';")
+        rows = [r["tx_type"] for r in await cur.fetchall()]
+        assert "admin_owner_change" in rows
+        assert "admin_owner_remove" in rows
+        assert "admin_owner_add" in rows
+        assert "admin_club_delete" in rows
+
+
+@pytest.mark.asyncio
+async def test_admin_owner_and_deleteclub_commands(db: DatabaseManager):
+    """Verify slash and prefix commands for owner management and club deletion."""
+    from unittest.mock import AsyncMock
+    from discord.ext import commands
+    from cogs.admin import ManageCurrency, BankAdmin, BankerPrefixCommands
+
+    mock_bot = MagicMock()
+    mock_bot.db = db
+
+    manage_cog = ManageCurrency(mock_bot)
+    bank_cog = BankAdmin(mock_bot)
+    prefix_cog = BankerPrefixCommands(mock_bot)
+
+    guild_id = 999999999
+    admin_user = MagicMock(spec=discord.Member)
+    admin_user.id = 888888888
+    admin_user.mention = "<@888888888>"
+    admin_user.display_name = "AdminBanker"
+
+    target_user = MagicMock(spec=discord.Member)
+    target_user.id = 777777777
+    target_user.mention = "<@777777777>"
+    target_user.display_name = "TargetUser"
+
+    club_role = MagicMock(spec=discord.Role)
+    club_role.id = 888111
+    club_role.name = "[VAL] Valencia CF"
+    club_role.mention = "<@&888111>"
+
+    # 1. /manage owner add
+    inter = MagicMock(spec=discord.Interaction)
+    inter.guild_id = guild_id
+    inter.user = admin_user
+    inter.response = MagicMock()
+    inter.response.send_message = AsyncMock()
+
+    await manage_cog.manage_owner.callback(
+        manage_cog, inter, action="add", club=club_role, user=target_user, reason="Appointing initial owner"
+    )
+    inter.response.send_message.assert_called_once()
+    embed = inter.response.send_message.call_args[1]["embed"]
+    assert "Club Owner Update" in embed.title
+    assert "ADD" in embed.description
+
+    # 2. /manage owner without user when action is add/change
+    inter_fail = MagicMock(spec=discord.Interaction)
+    inter_fail.guild_id = guild_id
+    inter_fail.user = admin_user
+    inter_fail.response = MagicMock()
+    inter_fail.response.send_message = AsyncMock()
+
+    await manage_cog.manage_owner.callback(
+        manage_cog, inter_fail, action="change", club=club_role, user=None
+    )
+    inter_fail.response.send_message.assert_called_once()
+    assert "Missing Target User" in inter_fail.response.send_message.call_args[1]["embed"].title
+
+    # 3. /bank owner change
+    new_user = MagicMock(spec=discord.Member)
+    new_user.id = 666666666
+    new_user.mention = "<@666666666>"
+    new_user.display_name = "NewOwner"
+
+    inter_bank = MagicMock(spec=discord.Interaction)
+    inter_bank.guild_id = guild_id
+    inter_bank.user = admin_user
+    inter_bank.response = MagicMock()
+    inter_bank.response.send_message = AsyncMock()
+
+    await bank_cog.bank_owner.callback(
+        bank_cog, inter_bank, action="change", club=club_role, user=new_user, reason="Transferring club"
+    )
+    inter_bank.response.send_message.assert_called_once()
+    b_embed = inter_bank.response.send_message.call_args[1]["embed"]
+    assert "Owner Transferred" in b_embed.title
+
+    # 4. /manage owner remove
+    inter_rm = MagicMock(spec=discord.Interaction)
+    inter_rm.guild_id = guild_id
+    inter_rm.user = admin_user
+    inter_rm.response = MagicMock()
+    inter_rm.response.send_message = AsyncMock()
+
+    await manage_cog.manage_owner.callback(
+        manage_cog, inter_rm, action="remove", club=club_role, user=None, reason="Vacating club"
+    )
+    inter_rm.response.send_message.assert_called_once()
+    rm_embed = inter_rm.response.send_message.call_args[1]["embed"]
+    assert "Owner Removed" in rm_embed.title
+
+    # 5. Prefix commands: bb!owner add, bb!setowner, bb!removeowner
+    # Setup mock Context
+    mock_guild = MagicMock(spec=discord.Guild)
+    mock_guild.id = guild_id
+
+    ctx = MagicMock(spec=commands.Context)
+    ctx.guild = mock_guild
+    ctx.author = admin_user
+    ctx.send = AsyncMock()
+    ctx.invoked_with = "owner"
+    ctx.message = MagicMock()
+    ctx.message.role_mentions = [club_role]
+    ctx.message.mentions = [target_user]
+
+    await prefix_cog.prefix_owner.callback(prefix_cog, ctx, "add", "<@&888111>", "<@777777777>", "Staff Appointment")
+    ctx.send.assert_called_once()
+    assert "Club Owner Update" in ctx.send.call_args[1]["embed"].title
+
+    # bb!changeowner
+    ctx_ch = MagicMock(spec=commands.Context)
+    ctx_ch.guild = mock_guild
+    ctx_ch.author = admin_user
+    ctx_ch.send = AsyncMock()
+    ctx_ch.invoked_with = "changeowner"
+    ctx_ch.message = MagicMock()
+    ctx_ch.message.role_mentions = [club_role]
+    ctx_ch.message.mentions = [new_user]
+
+    await prefix_cog.prefix_owner.callback(prefix_cog, ctx_ch, "change", "<@&888111>", "<@666666666>", "Swap Owner")
+    ctx_ch.send.assert_called_once()
+    assert "Owner Transferred" in ctx_ch.send.call_args[1]["embed"].title
+
+    # bb!removeowner
+    ctx_rm = MagicMock(spec=commands.Context)
+    ctx_rm.guild = mock_guild
+    ctx_rm.author = admin_user
+    ctx_rm.send = AsyncMock()
+    ctx_rm.invoked_with = "removeowner"
+    ctx_rm.message = MagicMock()
+    ctx_rm.message.role_mentions = [club_role]
+    ctx_rm.message.mentions = []
+
+    await prefix_cog.prefix_removeowner.callback(prefix_cog, ctx_rm, "<@&888111>", "Removing for restructuring")
+    ctx_rm.send.assert_called_once()
+    assert "Owner Removed" in ctx_rm.send.call_args[1]["embed"].title
+
+    # 6. /manage deleteclub and bb!deleteclub
+    inter_del = MagicMock(spec=discord.Interaction)
+    inter_del.guild_id = guild_id
+    inter_del.user = admin_user
+    inter_del.response = MagicMock()
+    inter_del.response.send_message = AsyncMock()
+
+    await manage_cog.manage_deleteclub.callback(
+        manage_cog, inter_del, club=club_role, reason="Club disband"
+    )
+    inter_del.response.send_message.assert_called_once()
+    del_embed = inter_del.response.send_message.call_args[1]["embed"]
+    assert "Club Disbanded" in del_embed.title
+
+    # /bank deleteclub on non-existent club returns error
+    inter_bank_del = MagicMock(spec=discord.Interaction)
+    inter_bank_del.guild_id = guild_id
+    inter_bank_del.user = admin_user
+    inter_bank_del.response = MagicMock()
+    inter_bank_del.response.send_message = AsyncMock()
+
+    # Create another club to delete via bb!deleteclub
+    _, _, del_club = await db.create_club(guild_id, "Delete FC", "DEL", 999111, role_id=888222)
+    del_role = MagicMock(spec=discord.Role)
+    del_role.id = 888222
+    del_role.name = "[DEL] Delete FC"
+    del_role.mention = "<@&888222>"
+
+    ctx_del = MagicMock(spec=commands.Context)
+    ctx_del.guild = mock_guild
+    ctx_del.author = admin_user
+    ctx_del.send = AsyncMock()
+    ctx_del.invoked_with = "deleteclub"
+    ctx_del.message = MagicMock()
+    ctx_del.message.role_mentions = [del_role]
+    ctx_del.message.mentions = []
+
+    await prefix_cog.prefix_deleteclub.callback(prefix_cog, ctx_del, "<@&888222>", "Disbanding club")
+    ctx_del.send.assert_called_once()
+    assert "Club Disbanded" in ctx_del.send.call_args[1]["embed"].title
+
+
+
 
 
 

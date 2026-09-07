@@ -16,6 +16,7 @@ from config import (
     COLOR_BEASTLY_GOLD,
     COLOR_PITCH_GREEN,
     COLOR_SUCCESS,
+    COLOR_ERROR,
     parse_amount,
 )
 from utils.checks import require_beastlyfc, require_banker_or_admin
@@ -304,6 +305,116 @@ class ManageCurrency(commands.GroupCog, name="manage", description="Manage User 
         )
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(
+        name="owner",
+        description="Add, remove, or change Club Owner for any club (Admin only).",
+    )
+    @app_commands.describe(
+        action="Operation: add, remove, or change club owner",
+        club="Target club Discord role",
+        user="Squad member to appoint or transfer ownership to (required for add/change)",
+        reason="Official memo explaining the ownership change",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def manage_owner(
+        self,
+        interaction: discord.Interaction,
+        action: Literal["add", "remove", "change"],
+        club: discord.Role,
+        user: Optional[discord.Member] = None,
+        reason: Optional[str] = "BeastlyBank Staff Operation",
+    ):
+        if action in ("add", "change") and not user:
+            await interaction.response.send_message(
+                embed=error_embed("Missing Target User", f"Please specify a user to appoint as owner when using `{action}`."),
+                ephemeral=True,
+            )
+            return
+
+        memo = reason or "BeastlyBank Staff Operation"
+        if action == "remove":
+            success, msg, target_club = await self.db.admin_remove_club_owner(
+                guild_id=interaction.guild_id,
+                club_query=club,
+                admin_id=interaction.user.id,
+                reason=memo,
+            )
+        else:
+            success, msg, target_club = await self.db.admin_set_club_owner(
+                guild_id=interaction.guild_id,
+                club_query=club,
+                new_owner_id=user.id,
+                admin_id=interaction.user.id,
+                reason=memo,
+                is_add_action=(action == "add"),
+            )
+
+        if not success:
+            await interaction.response.send_message(embed=error_embed("Owner Operation Failed", msg), ephemeral=True)
+            return
+
+        role_label = f"<@&{target_club['role_id']}>" if target_club and target_club.get("role_id") else f"**[{target_club.get('tag', 'FC')}] {target_club.get('name', 'Club')}**"
+        action_title = "Owner Appointed" if action == "add" else ("Owner Transferred" if action == "change" else "Owner Removed")
+        former_owner_txt = f"<@{target_club['former_owner_id']}>" if target_club and target_club.get("former_owner_id") else "*None*"
+        new_owner_txt = f"{user.mention} (`{user.display_name}`)" if user and action != "remove" else "*None (Vacant)*"
+
+        embed = create_beastly_embed(
+            title=f"👑 Club Owner Update • {action_title}",
+            description=(
+                f"Successfully processed ownership update for {role_label}!\n\n"
+                f"• **Action:** `{action.upper()}`\n"
+                f"• **New Owner:** {new_owner_txt}\n"
+                f"• **Former Owner:** {former_owner_txt}\n"
+                f"• **Authorized Staff:** {interaction.user.mention}\n"
+                f"• **Official Memo:** *{memo}*\n"
+                f"• **Data Integrity:** 🛡️ Zero data loss (player balances, cards, and treasury 100% intact)."
+            ),
+            color=COLOR_SUCCESS if action in ("add", "change") else COLOR_BEASTLY_GOLD,
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="deleteclub",
+        description="Disband and delete a club completely (Admin only).",
+    )
+    @app_commands.describe(
+        club="Target club Discord role",
+        reason="Official memo explaining why the club is being deleted",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def manage_deleteclub(
+        self,
+        interaction: discord.Interaction,
+        club: discord.Role,
+        reason: Optional[str] = "BeastlyBank Staff Operation",
+    ):
+        memo = reason or "BeastlyBank Staff Operation"
+        success, msg, target_club = await self.db.admin_delete_club(
+            guild_id=interaction.guild_id,
+            club_query=club,
+            admin_id=interaction.user.id,
+            reason=memo,
+        )
+
+        if not success:
+            await interaction.response.send_message(embed=error_embed("Delete Club Failed", msg), ephemeral=True)
+            return
+
+        embed = create_beastly_embed(
+            title="🗑️ Club Disbanded • Admin Operation",
+            description=(
+                f"{msg}\n\n"
+                f"• **Authorized Staff:** {interaction.user.mention}\n"
+                f"• **Official Memo:** *{memo}*\n"
+                f"• **Member Balances:** 🛡️ Zero data loss (all members retain their full personal balances)."
+            ),
+            color=COLOR_ERROR,
+        )
+        await interaction.response.send_message(embed=embed)
+
+
 
 class ServerSettings(commands.GroupCog, name="settings", description="Manage Server Economy & Shop Settings"):
     """Staff controls for server-wide toggles."""
@@ -486,6 +597,115 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
                 f"• **Data Integrity:** 🛡️ Zero data loss (player balances, cards, and treasury 100% intact)."
             ),
             color=COLOR_SUCCESS if is_manager else COLOR_BEASTLY_GOLD,
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="owner",
+        description="Add, remove, or change Club Owner for any club (Admin only).",
+    )
+    @app_commands.describe(
+        action="Operation: add, remove, or change club owner",
+        club="Target club Discord role",
+        user="Squad member to appoint or transfer ownership to (required for add/change)",
+        reason="Official memo explaining the ownership change",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def bank_owner(
+        self,
+        interaction: discord.Interaction,
+        action: Literal["add", "remove", "change"],
+        club: discord.Role,
+        user: Optional[discord.Member] = None,
+        reason: Optional[str] = "BeastlyBank Staff Operation",
+    ):
+        if action in ("add", "change") and not user:
+            await interaction.response.send_message(
+                embed=error_embed("Missing Target User", f"Please specify a user to appoint as owner when using `{action}`."),
+                ephemeral=True,
+            )
+            return
+
+        memo = reason or "BeastlyBank Staff Operation"
+        if action == "remove":
+            success, msg, target_club = await self.db.admin_remove_club_owner(
+                guild_id=interaction.guild_id,
+                club_query=club,
+                admin_id=interaction.user.id,
+                reason=memo,
+            )
+        else:
+            success, msg, target_club = await self.db.admin_set_club_owner(
+                guild_id=interaction.guild_id,
+                club_query=club,
+                new_owner_id=user.id,
+                admin_id=interaction.user.id,
+                reason=memo,
+                is_add_action=(action == "add"),
+            )
+
+        if not success:
+            await interaction.response.send_message(embed=error_embed("Owner Operation Failed", msg), ephemeral=True)
+            return
+
+        role_label = f"<@&{target_club['role_id']}>" if target_club and target_club.get("role_id") else f"**[{target_club.get('tag', 'FC')}] {target_club.get('name', 'Club')}**"
+        action_title = "Owner Appointed" if action == "add" else ("Owner Transferred" if action == "change" else "Owner Removed")
+        former_owner_txt = f"<@{target_club['former_owner_id']}>" if target_club and target_club.get("former_owner_id") else "*None*"
+        new_owner_txt = f"{user.mention} (`{user.display_name}`)" if user and action != "remove" else "*None (Vacant)*"
+
+        embed = create_beastly_embed(
+            title=f"👑 Club Owner Update • {action_title}",
+            description=(
+                f"Successfully processed ownership update for {role_label}!\n\n"
+                f"• **Action:** `{action.upper()}`\n"
+                f"• **New Owner:** {new_owner_txt}\n"
+                f"• **Former Owner:** {former_owner_txt}\n"
+                f"• **Authorized Staff:** {interaction.user.mention}\n"
+                f"• **Official Memo:** *{memo}*\n"
+                f"• **Data Integrity:** 🛡️ Zero data loss (player balances, cards, and treasury 100% intact)."
+            ),
+            color=COLOR_SUCCESS if action in ("add", "change") else COLOR_BEASTLY_GOLD,
+        )
+        await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="deleteclub",
+        description="Disband and delete a club completely (Admin only).",
+    )
+    @app_commands.describe(
+        club="Target club Discord role",
+        reason="Official memo explaining why the club is being deleted",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def bank_deleteclub(
+        self,
+        interaction: discord.Interaction,
+        club: discord.Role,
+        reason: Optional[str] = "BeastlyBank Staff Operation",
+    ):
+        memo = reason or "BeastlyBank Staff Operation"
+        success, msg, target_club = await self.db.admin_delete_club(
+            guild_id=interaction.guild_id,
+            club_query=club,
+            admin_id=interaction.user.id,
+            reason=memo,
+        )
+
+        if not success:
+            await interaction.response.send_message(embed=error_embed("Delete Club Failed", msg), ephemeral=True)
+            return
+
+        embed = create_beastly_embed(
+            title="🗑️ Club Disbanded • Admin Operation",
+            description=(
+                f"{msg}\n\n"
+                f"• **Authorized Staff:** {interaction.user.mention}\n"
+                f"• **Official Memo:** *{memo}*\n"
+                f"• **Member Balances:** 🛡️ Zero data loss (all members retain their full personal balances)."
+            ),
+            color=COLOR_ERROR,
         )
         await interaction.response.send_message(embed=embed)
 
@@ -824,6 +1044,170 @@ class BankerPrefixCommands(commands.Cog):
             color=COLOR_SUCCESS if is_manager else COLOR_BEASTLY_GOLD,
         )
         await ctx.send(embed=embed)
+
+    @commands.command(name="owner", aliases=["clubowner", "setowner", "changeowner"])
+    @require_banker_or_admin()
+    async def prefix_owner(self, ctx: commands.Context, *args):
+        """
+        bb!owner <add|remove|change> <@club_role> [@user] [reason]
+        e.g. bb!owner change @RealMadrid @NewOwner Official Transfer
+        """
+        await self._handle_owner_prefix(ctx, args)
+
+    @commands.command(name="addowner", aliases=["adminaddowner"])
+    @require_banker_or_admin()
+    async def prefix_addowner(self, ctx: commands.Context, *args):
+        """bb!addowner <@club_role> <@user> [reason]"""
+        await self._handle_owner_prefix(ctx, ("add",) + args)
+
+    @commands.command(name="removeowner", aliases=["adminremoveowner", "vacateowner"])
+    @require_banker_or_admin()
+    async def prefix_removeowner(self, ctx: commands.Context, *args):
+        """bb!removeowner <@club_role> [reason]"""
+        await self._handle_owner_prefix(ctx, ("remove",) + args)
+
+    @commands.command(name="deleteclub", aliases=["disbandclub", "admindeleteclub"])
+    @require_banker_or_admin()
+    async def prefix_deleteclub(self, ctx: commands.Context, *args):
+        """bb!deleteclub <@club_role> [reason]"""
+        await self._handle_deleteclub_prefix(ctx, args)
+
+    async def _handle_owner_prefix(self, ctx: commands.Context, args):
+        if not args and not ctx.message.role_mentions:
+            embed = error_embed(
+                "Invalid Command Usage",
+                "**Usage:** `bb!owner <add|remove|change> <@club_role> [@user] [reason]`\n"
+                "**Examples:**\n"
+                "• `bb!owner add @RealMadrid @User Official Appointment`\n"
+                "• `bb!owner change @RealMadrid @NewUser Ownership Transfer`\n"
+                "• `bb!owner remove @RealMadrid Stepping Down`\n"
+                "*(Or use `bb!addowner @Club @User`, `bb!setowner @Club @User`, `bb!removeowner @Club`)*",
+            )
+            await ctx.send(embed=embed)
+            return
+
+        cur_args = list(args)
+
+        # Detect action
+        action = None
+        for i, a in enumerate(cur_args):
+            low = a.lower().strip()
+            if low in ("change", "transfer", "swap"):
+                action = "change"
+                cur_args.pop(i)
+                break
+            elif low in ("add", "promote", "assign", "set", "+"):
+                action = "add"
+                cur_args.pop(i)
+                break
+            elif low in ("remove", "demote", "vacate", "delete", "rm", "-"):
+                action = "remove"
+                cur_args.pop(i)
+                break
+
+        # Target role
+        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        # Target user
+        target_user = ctx.message.mentions[0] if ctx.message.mentions else None
+
+        # Filter out role and user mentions from args to extract reason
+        filtered_args = []
+        for a in cur_args:
+            if a.startswith("<@&") and a.endswith(">"):
+                continue
+            if (a.startswith("<@!") or a.startswith("<@")) and a.endswith(">"):
+                continue
+            filtered_args.append(a)
+
+        reason = " ".join(filtered_args).strip() or "BeastlyBank Banker Club Operation"
+
+        if not action:
+            action = "remove" if (not target_user and "remove" in ctx.invoked_with.lower()) else ("change" if target_user else "add")
+
+        if not target_role:
+            await ctx.send(embed=error_embed("Missing Club Role", "Please mention the club's Discord role (e.g. `@RealMadrid`)."))
+            return
+
+        if action in ("add", "change") and not target_user:
+            await ctx.send(embed=error_embed("Missing User", f"Please mention the member to appoint or transfer ownership to (e.g. `@User`)."))
+            return
+
+        if action == "remove":
+            success, msg, target_club = await self.db.admin_remove_club_owner(
+                guild_id=ctx.guild.id,
+                club_query=target_role,
+                admin_id=ctx.author.id,
+                reason=reason,
+            )
+        else:
+            success, msg, target_club = await self.db.admin_set_club_owner(
+                guild_id=ctx.guild.id,
+                club_query=target_role,
+                new_owner_id=target_user.id,
+                admin_id=ctx.author.id,
+                reason=reason,
+                is_add_action=(action == "add"),
+            )
+
+        if not success:
+            await ctx.send(embed=error_embed("Operation Failed", msg))
+            return
+
+        role_label = f"<@&{target_club['role_id']}>" if target_club and target_club.get("role_id") else f"**[{target_club.get('tag', 'FC')}] {target_club.get('name', 'Club')}**"
+        action_title = "Owner Appointed" if action == "add" else ("Owner Transferred" if action == "change" else "Owner Removed")
+        former_owner_txt = f"<@{target_club['former_owner_id']}>" if target_club and target_club.get("former_owner_id") else "*None*"
+        new_owner_txt = f"{target_user.mention} (`{target_user.display_name}`)" if target_user and action != "remove" else "*None (Vacant)*"
+
+        embed = create_beastly_embed(
+            title=f"👑 Club Owner Update • {action_title}",
+            description=(
+                f"Successfully processed ownership update for {role_label}!\n\n"
+                f"• **Action:** `{action.upper()}`\n"
+                f"• **New Owner:** {new_owner_txt}\n"
+                f"• **Former Owner:** {former_owner_txt}\n"
+                f"• **Authorized Staff:** {ctx.author.mention}\n"
+                f"• **Official Memo:** *{reason}*\n"
+                f"• **Data Integrity:** 🛡️ Zero data loss (player balances, cards, and treasury 100% intact)."
+            ),
+            color=COLOR_SUCCESS if action in ("add", "change") else COLOR_BEASTLY_GOLD,
+        )
+        await ctx.send(embed=embed)
+
+    async def _handle_deleteclub_prefix(self, ctx: commands.Context, args):
+        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        cur_args = list(args)
+        if target_role:
+            cur_args = [a for a in cur_args if not (a.startswith("<@&") and a.endswith(">"))]
+
+        reason = " ".join(cur_args).strip() or "BeastlyBank Banker Club Operation"
+
+        if not target_role:
+            await ctx.send(embed=error_embed("Missing Club Role", "Please mention the club's Discord role to delete (e.g. `bb!deleteclub @ClubRole [reason]`)."))
+            return
+
+        success, msg, target_club = await self.db.admin_delete_club(
+            guild_id=ctx.guild.id,
+            club_query=target_role,
+            admin_id=ctx.author.id,
+            reason=reason,
+        )
+
+        if not success:
+            await ctx.send(embed=error_embed("Delete Club Failed", msg))
+            return
+
+        embed = create_beastly_embed(
+            title="🗑️ Club Disbanded • Admin Operation",
+            description=(
+                f"{msg}\n\n"
+                f"• **Authorized Staff:** {ctx.author.mention}\n"
+                f"• **Official Memo:** *{reason}*\n"
+                f"• **Member Balances:** 🛡️ Zero data loss (all members retain their full personal balances)."
+            ),
+            color=COLOR_ERROR,
+        )
+        await ctx.send(embed=embed)
+
 
 
 async def setup(bot: commands.Bot):

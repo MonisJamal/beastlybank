@@ -24,8 +24,10 @@ BANKER_ROLE_IDS = [int(r.strip()) for r in _banker_ids_raw if r.strip().isdigit(
 _admin_ids_raw = os.getenv("ADMIN_ROLE_IDS", "").split(",")
 ADMIN_ROLE_IDS = [int(r.strip()) for r in _admin_ids_raw if r.strip().isdigit()]
 
-# Database Path
+# Database Path & Cloud Sync
 DATABASE_PATH = os.getenv("DATABASE_PATH", str(BASE_DIR / "beastlybank.db"))
+TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "").strip().strip("'\"")
+TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip().strip("'\"")
 
 # Brand Identity
 BOT_NAME = "BeastlyBank"

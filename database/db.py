@@ -63,6 +63,37 @@ class DatabaseManager:
 
     async def connect(self) -> aiosqlite.Connection:
         if self._conn is None:
+            from config import TURSO_DATABASE_URL, TURSO_AUTH_TOKEN
+            if TURSO_DATABASE_URL and TURSO_AUTH_TOKEN:
+                try:
+                    import libsql
+                    sync_url = TURSO_DATABASE_URL
+                    if sync_url.startswith("http://"):
+                        sync_url = sync_url.replace("http://", "libsql://")
+                    elif sync_url.startswith("https://"):
+                        sync_url = sync_url.replace("https://", "libsql://")
+
+                    def _turso_connector():
+                        con = libsql.connect(
+                            self.db_path,
+                            sync_url=sync_url,
+                            auth_token=TURSO_AUTH_TOKEN,
+                            sync_interval=30,
+                        )
+                        try:
+                            con.sync()
+                        except Exception as sync_err:
+                            logger.warning("Turso initial sync: %s", sync_err)
+                        return con
+
+                    self._conn = aiosqlite.Connection(connector=_turso_connector, iter_chunk_size=64)
+                    await self._conn
+                    self._conn.row_factory = aiosqlite.Row
+                    logger.info("⚡ Connected to Turso Cloud SQLite database! Replication active.")
+                    return self._conn
+                except Exception as e:
+                    logger.warning("Could not initialize Turso cloud replication: %s. Using local SQLite.", e)
+
             self._conn = await aiosqlite.connect(self.db_path)
             self._conn.row_factory = aiosqlite.Row
             await self._conn.execute("PRAGMA journal_mode=WAL;")

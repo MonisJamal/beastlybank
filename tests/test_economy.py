@@ -5,11 +5,12 @@ Validates multi-currency ACID ledger, transfers, club treasuries, shop, and give
 import os
 import tempfile
 from unittest.mock import MagicMock
+import discord
 import pytest
 import pytest_asyncio
 
 from database.db import DatabaseManager
-from config import parse_amount
+from config import parse_amount, SUPPORTED_FORMATIONS
 from utils.checks import is_beastlyfc_guild_check
 
 
@@ -634,7 +635,9 @@ async def test_summary_system(db: DatabaseManager):
     # 4. Generate all summary embeds
     embed_overview = summary_overview_embed(mock_member, user_data, club)
     assert "BeastlyBank" in embed_overview.title
-    assert any("Normal User Commands" in f.name for f in embed_overview.fields)
+    assert any("Account Summary" in f.name for f in embed_overview.fields)
+    assert any("Quick Shortcuts" in f.name for f in embed_overview.fields)
+    assert all(len(f.value) <= 1024 for f in embed_overview.fields)
 
     embed_finance = summary_finance_embed(mock_member, user_data, club, txs)
     assert "Financial Summary" in embed_finance.title
@@ -1414,7 +1417,7 @@ async def test_announcement_embed(db: DatabaseManager):
     assert "bb!" in combined_text
     assert "Message Content Intent" in combined_text
     assert "26e6" in combined_text
-    assert "18 Supported Formations" in combined_text
+    assert f"{len(SUPPORTED_FORMATIONS)} Supported Formations" in combined_text
     assert "pos1, pos2, pos3, ....." in combined_text
     assert "1–99 OVR" in combined_text
     assert "1–99 POT" in combined_text
@@ -1426,6 +1429,559 @@ async def test_announcement_embed(db: DatabaseManager):
     assert "beastly_announcement_help_btn" in custom_ids
     assert "beastly_announcement_bal_btn" in custom_ids
     assert "beastly_announcement_squad_btn" in custom_ids
+
+
+@pytest.mark.asyncio
+async def test_formation_change_realigns_starters_positions(db: DatabaseManager):
+    """Test that changing club formation adapts starting XI players' positions to the new formation."""
+    guild_id = 999999999
+    club_owner = 12345
+    role_id = 888777666
+
+    # 1. Create club
+    _, _, club = await db.create_club(guild_id, "Tactics FC", "TAC", club_owner, role_id=role_id)
+
+    # 2. Add players for 4-3-3 Balanced
+    # 4-3-3 has: GK, LB, CB, CB, RB, CM, CM, CM, LW, ST, RW
+    players_data = [
+        ("Courtois", "GK", "starting", 1, 90, 90, None),
+        ("Davies", "LB", "starting", 19, 85, 89, "LM"),
+        ("Rudiger", "CB", "starting", 22, 87, 87, None),
+        ("Militao", "CB", "starting", 3, 86, 88, "RB"),
+        ("Carvajal", "RB", "starting", 2, 85, 85, "RWB"),
+        ("Tchouameni", "CM", "starting", 14, 85, 89, "CDM"),
+        ("Valverde", "CM", "starting", 15, 88, 91, "RW, RM"),
+        ("Bellingham", "CM", "starting", 5, 90, 95, "CAM"),
+        ("Vinicius", "LW", "starting", 7, 91, 95, "LM, ST"),
+        ("Mbappe", "ST", "starting", 9, 91, 95, "LW, RW, CF"),
+        ("Rodrygo", "RW", "starting", 11, 86, 91, "RM, LW, CAM"),
+    ]
+
+    for name, pos, status, num, rating, pot, alts in players_data:
+        await db.add_club_player(
+            guild_id=guild_id,
+            club_query=club["id"],
+            player_name=name,
+            position=pos,
+            status=status,
+            number=num,
+            rating=rating,
+            potential=pot,
+            alt_positions=alts,
+        )
+
+    # Verify initial lineup
+    _, _, initial_lineup = await db.get_club_lineup(guild_id, club["id"])
+    assert len(initial_lineup["starting"]) == 11
+
+    # 3. Change formation to 3-5-2 (3 DEF, 5 MID, 2 FWD)
+    # Target slots: GK, CB, CB, CB, LWB, CDM, CDM, RWB, CAM, ST, ST
+    ok, msg = await db.set_club_formation(guild_id, club["id"], "3-5-2")
+    assert ok is True
+    assert "3-5-2" in msg
+
+    _, _, updated_lineup = await db.get_club_lineup(guild_id, club["id"])
+    assert updated_lineup["formation"] == "3-5-2"
+
+    starters_map = {p["player_name"]: p for p in updated_lineup["starting"]}
+    # Player data must remain completely untouched!
+    assert starters_map["Mbappe"]["rating"] == 91
+    assert starters_map["Mbappe"]["potential"] == 95
+    assert starters_map["Mbappe"]["number"] == 9
+
+    # Check that positions are aligned with 3-5-2
+    # In 3-5-2: there are 3 DEF, 5 MID, 2 FWD
+    def_count = sum(1 for p in updated_lineup["starting"] if p["position"] in ("CB", "LB", "RB", "LWB", "RWB") and p["position"] not in ("LM", "RM", "CDM", "CM", "CAM"))
+    # The positions assigned should strictly match 3-5-2 target positions:
+    from config import get_formation_positions
+    expected_352_positions = sorted(get_formation_positions("3-5-2"))
+    actual_positions = sorted([p["position"] for p in updated_lineup["starting"]])
+    assert actual_positions == expected_352_positions
+
+
+@pytest.mark.asyncio
+async def test_switch_lineup_position(db: DatabaseManager):
+    """Test switching a player's position in the lineup without touching other attributes."""
+    guild_id = 999999999
+    club_owner = 12345
+    role_id = 888777666
+
+    _, _, club = await db.create_club(guild_id, "Madrid FC", "RMA", club_owner, role_id=role_id)
+    await db.add_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="Bellingham",
+        position="CM",
+        status="starting",
+        number=5,
+        rating=90,
+        potential=95,
+        alt_positions="CAM, CF",
+    )
+
+    # 1. Switch Bellingham to CAM
+    ok, msg, updated = await db.switch_lineup_position(guild_id, club["id"], "Bellingham", "CAM")
+    assert ok is True
+    assert updated["position"] == "CAM"
+    assert updated["rating"] == 90
+    assert updated["potential"] == 95
+    assert updated["number"] == 5
+    # CAM should be cleaned from alt_positions since it is now primary
+    assert updated["alt_positions"] == "CF"
+
+    # 2. Test invalid position rejection
+    bad_ok, bad_msg, _ = await db.switch_lineup_position(guild_id, club["id"], "Bellingham", "INVALID_POS")
+    assert bad_ok is False
+    assert "Invalid position" in bad_msg
+
+
+@pytest.mark.asyncio
+async def test_help_and_summary_views_and_embeds(db: DatabaseManager):
+    """Verify HelpView, SummaryView, help_system_guide_embed, and active tab states."""
+    from utils.embeds import help_system_guide_embed, summary_commands_embed, summary_overview_embed
+    from utils.views import HelpView, SummaryView
+
+    guild_id = 123456
+    user_id = 654321
+    user_data = await db.get_or_create_user(user_id, guild_id)
+
+    mock_member = MagicMock()
+    mock_member.id = user_id
+    mock_member.display_name = "TestPlayer"
+    mock_member.mention = "<@654321>"
+    mock_member.display_avatar.url = "https://example.com/avatar.png"
+
+    # 1. System guide embed content
+    guide_embed = help_system_guide_embed()
+    assert "Official System Guide & Manual" in guide_embed.title
+    combined = guide_embed.description + " " + " ".join(f.name + " " + f.value for f in guide_embed.fields)
+    assert "Multi-Currency Banking" in combined
+    assert "Free Clubs" in combined
+    assert "Transfer Market" in combined
+    assert "Tactical Squads" in combined
+    assert "37 Formations" in combined
+
+    # 2. Command cheatsheet content
+    cmd_embed = summary_commands_embed()
+    combined_cmd = " ".join(f.name + " " + f.value for f in cmd_embed.fields)
+    assert "/summary" in combined_cmd
+    assert "/help" in combined_cmd
+    assert "/leaderboard" in combined_cmd
+    assert "/giveaway" in combined_cmd
+    assert "/bank announce" not in combined_cmd
+
+    # 3. HelpView tab switching and highlighting
+    help_view = HelpView(db, author=mock_member, active_tab="guide")
+    assert len(help_view.children) == 5
+    guide_btn = next(b for b in help_view.children if b.custom_id == "help_tab_guide")
+    cheat_btn = next(b for b in help_view.children if b.custom_id == "help_tab_cheatsheet")
+    acct_btn = next(b for b in help_view.children if b.custom_id == "help_tab_account")
+    assert guide_btn.style == discord.ButtonStyle.primary
+    assert cheat_btn.style == discord.ButtonStyle.secondary
+    assert acct_btn.style == discord.ButtonStyle.secondary
+
+    # 4. SummaryView tab switching and target inspection
+    sum_view = SummaryView(db, author=mock_member, user_data=user_data, target=mock_member, active_tab="overview")
+    assert len(sum_view.children) == 5
+    overview_btn = next(b for b in sum_view.children if b.custom_id == "sum_tab_overview")
+    finances_btn = next(b for b in sum_view.children if b.custom_id == "sum_tab_finances")
+    assert overview_btn.style == discord.ButtonStyle.primary
+    assert finances_btn.style == discord.ButtonStyle.secondary
+
+
+@pytest.mark.asyncio
+async def test_prefix_switchpos_command(db: DatabaseManager):
+    """Test bb!switchpos prefix command switching position and swapping players."""
+    from unittest.mock import AsyncMock
+    from cogs.squad import SquadCog
+
+    bot = MagicMock()
+    bot.db = db
+    squad_cog = SquadCog(bot)
+
+    guild_id = 999999999
+    club_owner = 12345
+    role_id = 888777666
+    mock_role = MagicMock(spec=discord.Role)
+    mock_role.id = role_id
+    mock_role.mention = f"<@&{role_id}>"
+
+    _, _, club = await db.create_club(guild_id, "Tactics FC", "TAC", club_owner, role_id=role_id)
+    await db.add_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="Rodrygo",
+        position="RW",
+        status="starting",
+        rating=86,
+    )
+    await db.add_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="Vinicius",
+        position="LW",
+        status="starting",
+        rating=91,
+    )
+
+    ctx = MagicMock()
+    ctx.author.id = club_owner
+    ctx.guild.id = guild_id
+    ctx.message.role_mentions = [mock_role]
+    ctx.send = AsyncMock()
+
+    # 1. Switch Rodrygo position to ST via bb!switchpos Rodrygo ST @Role
+    await squad_cog.prefix_switchpos.callback(squad_cog, ctx, "Rodrygo", "ST", mock_role.mention)
+    ctx.send.assert_called_once()
+    assert "Position Switched" in ctx.send.call_args[1]["embed"].title
+    _, _, p_info = await db.get_player_info(guild_id, "Rodrygo", club_query=club["id"])
+    assert p_info["player"]["position"] == "ST"
+    assert p_info["player"]["rating"] == 86
+
+    # 2. Swap Vinicius and Rodrygo via bb!switchpos Vinicius Rodrygo @Role
+    ctx.send.reset_mock()
+    await squad_cog.prefix_switchpos.callback(squad_cog, ctx, "Vinicius", "Rodrygo", mock_role.mention)
+    ctx.send.assert_called_once()
+    assert "Tactical Swap" in ctx.send.call_args[1]["embed"].title
+    _, _, v_info = await db.get_player_info(guild_id, "Vinicius", club_query=club["id"])
+    _, _, r_info = await db.get_player_info(guild_id, "Rodrygo", club_query=club["id"])
+    assert v_info["player"]["position"] == "ST"
+    # 3. Multi-word player switch: bb!switchpos Kylian Mbappe CF @Role
+    await db.add_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="Kylian Mbappe",
+        position="ST",
+        status="starting",
+        rating=91,
+    )
+    ctx.send.reset_mock()
+    # User types "Kylian", "Mbappe", "CF" without quotes
+    await squad_cog.prefix_switchpos.callback(squad_cog, ctx, "Kylian", "Mbappe", "CF", mock_role.mention)
+    ctx.send.assert_called_once()
+    assert "Position Switched" in ctx.send.call_args[1]["embed"].title
+    _, _, k_info = await db.get_player_info(guild_id, "Kylian Mbappe", club_query=club["id"])
+    assert k_info["player"]["position"] == "CF"
+    assert k_info["player"]["rating"] == 91
+
+    # 4. Routing from bb!lineup switch Mbappe ST
+    ctx.send.reset_mock()
+    await squad_cog.prefix_lineup.callback(squad_cog, ctx, "switch", "Mbappe", "ST", mock_role.mention)
+    ctx.send.assert_called_once()
+    assert "Position Switched" in ctx.send.call_args[1]["embed"].title
+    _, _, k_info = await db.get_player_info(guild_id, "Kylian Mbappe", club_query=club["id"])
+    assert k_info["player"]["position"] == "ST"
+
+    # 5. Switching starter to an occupied position auto-swaps the starters!
+    # Mbappe is ST, Vinicius is ST -> switching Mbappe to LW (where Rodrygo is)
+    ctx.send.reset_mock()
+    await squad_cog.prefix_switchpos.callback(squad_cog, ctx, "Mbappe", "LW", mock_role.mention)
+    ctx.send.assert_called_once()
+    assert "Swapped" in ctx.send.call_args[1]["embed"].title or "Position" in ctx.send.call_args[1]["embed"].title
+    _, _, k_info2 = await db.get_player_info(guild_id, "Kylian Mbappe", club_query=club["id"])
+    _, _, r_info2 = await db.get_player_info(guild_id, "Rodrygo", club_query=club["id"])
+    assert k_info2["player"]["position"] == "LW"
+    assert r_info2["player"]["position"] == "ST"
+
+
+@pytest.mark.asyncio
+async def test_embed_1024_limits():
+    """Verify that NO embed field across all summary and help embeds exceeds 1024 chars."""
+    import utils.embeds as emb
+    from unittest.mock import MagicMock
+
+    user = MagicMock()
+    user.id = 123
+    user.display_name = "LongUsernameTest"
+    user.mention = "<@123>"
+    user.display_avatar.url = "https://example.com/avatar.png"
+
+    user_data = {"cash": 100000, "points": 50000, "tokens": 1000}
+    club = {"tag": "TEST", "name": "Test Club", "role_id": 123, "owner_id": 123, "user_role": "Manager"}
+    stats = {
+        "total_cash": 1000000,
+        "total_points": 500000,
+        "total_tokens": 100000,
+        "total_wealth": 2000000,
+        "user_count": 50,
+        "club_count": 8,
+        "richest_user": {"user_id": 123, "cash": 500000},
+        "richest_club": {"name": "Test Club", "tag": "TEST", "treasury_cash": 500000},
+    }
+    txs = [{"id": 1, "sender_id": 123, "receiver_id": 456, "currency": "cash", "amount": 100, "tx_type": "pay", "reason": "test", "created_at": "2026-09-07 00:00:00"}]
+
+    embeds_to_test = [
+        emb.help_system_guide_embed(),
+        emb.summary_overview_embed(user, user_data, club),
+        emb.summary_commands_embed(),
+        emb.summary_squad_embed(),
+        emb.summary_finance_embed(user, user_data, club, txs),
+        emb.summary_economy_embed(stats),
+    ]
+
+    for embed in embeds_to_test:
+        assert len(embed.title) <= 256
+        if embed.description:
+            assert len(embed.description) <= 4096
+        for f in embed.fields:
+            assert len(f.name) <= 256
+            assert len(f.value) <= 1024, f"Field '{f.name}' length {len(f.value)} exceeds 1024!"
+
+
+@pytest.mark.asyncio
+async def test_admin_set_club_manager_database_and_data_preservation(db: DatabaseManager):
+    """Verify admin_set_club_manager adds and removes managers with zero data loss."""
+    guild_id = 1222195412295745536
+    owner_id = 1001
+    member_id = 1002
+    free_agent_id = 1003
+    other_owner_id = 1004
+    admin_id = 9999
+
+    # Set initial balances
+    await db.update_balance(owner_id, guild_id, "cash", 10000, "credit")
+    await db.update_balance(member_id, guild_id, "cash", 5000, "credit")
+    await db.update_balance(member_id, guild_id, "points", 250, "credit")
+    await db.update_balance(free_agent_id, guild_id, "cash", 3000, "credit")
+    await db.update_balance(free_agent_id, guild_id, "tokens", 100, "credit")
+
+    # Create Club 1
+    _, _, club1 = await db.create_club(guild_id, "Kings FC", "KNG", owner_id, role_id=555001)
+    await db.club_deposit(club1["id"], owner_id, guild_id, "cash", 2000)
+
+    # Join member to Club 1
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO club_members (club_id, user_id, guild_id, role) VALUES (?, ?, ?, 'Member');",
+            (club1["id"], member_id, guild_id),
+        )
+        await conn.commit()
+
+    # Also register member as a squad player on pitch
+    await db.add_club_player(
+        guild_id, club1["id"], "MemberStar", "ST", status="starting",
+        number=9, rating=88, potential=92, alt_positions="CF, LW", user_id=member_id
+    )
+
+    # 1. Admin promotes existing member to Manager
+    success, msg, c_data = await db.admin_set_club_manager(
+        guild_id=guild_id, club_query=555001, target_user_id=member_id, is_manager=True, admin_id=admin_id
+    )
+    assert success is True
+    assert "promoted to **Club Manager**" in msg
+
+    # Verify ZERO DATA LOSS for member and club
+    mem_club = await db.get_club_by_user(guild_id, member_id)
+    assert mem_club["user_role"] == "Manager"
+    mem_user = await db.get_or_create_user(member_id, guild_id)
+    assert mem_user["cash"] == 5000
+    assert mem_user["points"] == 250
+    # Club treasury check
+    c1_fresh = await db.get_club_by_name(guild_id, "Kings FC")
+    assert c1_fresh["treasury_cash"] == 2000
+    # Squad player check
+    p_success, _, p_info = await db.get_player_info(guild_id, "MemberStar", club_query=club1["id"])
+    assert p_success is True
+    assert p_info["player"]["rating"] == 88
+    assert p_info["player"]["status"] == "starting"
+
+    # 2. Cannot re-add existing manager
+    dup_success, dup_msg, _ = await db.admin_set_club_manager(
+        guild_id=guild_id, club_query=555001, target_user_id=member_id, is_manager=True, admin_id=admin_id
+    )
+    assert dup_success is False
+    assert "already a **Club Manager**" in dup_msg
+
+    # 3. Cannot demote or re-promote club owner
+    own_success, own_msg, _ = await db.admin_set_club_manager(
+        guild_id=guild_id, club_query=555001, target_user_id=owner_id, is_manager=True, admin_id=admin_id
+    )
+    assert own_success is False
+    assert "already the **Club Owner**" in own_msg
+    own_demote_s, own_demote_m, _ = await db.admin_set_club_manager(
+        guild_id=guild_id, club_query=555001, target_user_id=owner_id, is_manager=False, admin_id=admin_id
+    )
+    assert own_demote_s is False
+    assert "Cannot remove management permissions from the **Club Owner**" in own_demote_m
+
+    # 4. Admin appoints a Free Agent directly as Manager
+    fa_success, fa_msg, _ = await db.admin_set_club_manager(
+        guild_id=guild_id, club_query=555001, target_user_id=free_agent_id, is_manager=True, admin_id=admin_id
+    )
+    assert fa_success is True
+    fa_club = await db.get_club_by_user(guild_id, free_agent_id)
+    assert fa_club["id"] == club1["id"]
+    assert fa_club["user_role"] == "Manager"
+    fa_user = await db.get_or_create_user(free_agent_id, guild_id)
+    assert fa_user["cash"] == 3000
+    assert fa_user["tokens"] == 100
+
+    # 5. Prevent assigning member of another club without transfer
+    _, _, club2 = await db.create_club(guild_id, "Wolves FC", "WLV", other_owner_id, role_id=555002)
+    cross_success, cross_msg, _ = await db.admin_set_club_manager(
+        guild_id=guild_id, club_query=555002, target_user_id=member_id, is_manager=True, admin_id=admin_id
+    )
+    assert cross_success is False
+    assert "currently enrolled in another club" in cross_msg
+
+    # 6. Admin demotes manager back to squad member
+    demote_success, demote_msg, _ = await db.admin_set_club_manager(
+        guild_id=guild_id, club_query=555001, target_user_id=member_id, is_manager=False, admin_id=admin_id
+    )
+    assert demote_success is True
+    assert "demoted from Club Manager to **Squad Member**" in demote_msg
+
+    # Verify zero data loss on demotion
+    mem_club_demoted = await db.get_club_by_user(guild_id, member_id)
+    assert mem_club_demoted["user_role"] == "Member"
+    mem_user_demoted = await db.get_or_create_user(member_id, guild_id)
+    assert mem_user_demoted["cash"] == 5000
+    p_success_dem, _, p_info_dem = await db.get_player_info(guild_id, "MemberStar", club_query=club1["id"])
+    assert p_success_dem is True
+    assert p_info_dem["player"]["rating"] == 88
+
+    # 7. Check audit log in transactions
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        await cur.execute("SELECT * FROM transactions WHERE tx_type = 'admin_manager_change';")
+        rows = await cur.fetchall()
+        assert len(rows) >= 3
+
+
+@pytest.mark.asyncio
+async def test_admin_manager_commands_and_views(db: DatabaseManager):
+    """Verify slash commands /manage manager, /bank manager, /club addmanager and prefix commands."""
+    from unittest.mock import AsyncMock
+    from cogs.admin import ManageCurrency, BankAdmin, BankerPrefixCommands
+    from cogs.clubs import Clubs
+    from cogs.economy import Economy
+    from utils.views import HelpView, SummaryView, AnnouncementView
+
+    guild_id = 1222195412295745536
+    owner_id = 2001
+    member_id = 2002
+    admin_id = 2003
+
+    bot = MagicMock()
+    bot.db = db
+
+    admin_cog = ManageCurrency(bot)
+    bank_cog = BankAdmin(bot)
+    prefix_cog = BankerPrefixCommands(bot)
+    clubs_cog = Clubs(bot)
+    econ_cog = Economy(bot)
+
+    _, _, club = await db.create_club(guild_id, "Titans FC", "TTN", owner_id, role_id=777001)
+
+    # Roles and members mocks
+    mock_role = MagicMock(spec=discord.Role)
+    mock_role.id = 777001
+    mock_role.name = "Titans FC"
+    mock_role.mention = "<@&777001>"
+
+    mock_member = MagicMock(spec=discord.Member)
+    mock_member.id = member_id
+    mock_member.display_name = "TitanStriker"
+    mock_member.mention = "<@2002>"
+
+    mock_admin = MagicMock(spec=discord.Member)
+    mock_admin.id = admin_id
+    mock_admin.display_name = "HeadBanker"
+    mock_admin.mention = "<@2003>"
+    mock_admin.guild_permissions.administrator = True
+
+    # 1. Test /manage manager action:add
+    interaction1 = MagicMock(spec=discord.Interaction)
+    interaction1.guild_id = guild_id
+    interaction1.user = mock_admin
+    interaction1.response = MagicMock()
+    interaction1.response.send_message = AsyncMock()
+
+    await admin_cog.manage_manager.callback(
+        admin_cog, interaction1, action="add", club=mock_role, user=mock_member, reason="Official Appointment"
+    )
+    interaction1.response.send_message.assert_called_once()
+    sent_embed1 = interaction1.response.send_message.call_args[1]["embed"]
+    assert "Club Manager Update" in sent_embed1.title
+    assert "Zero data loss" in sent_embed1.description
+
+    # 2. Test /bank manager action:remove
+    interaction2 = MagicMock(spec=discord.Interaction)
+    interaction2.guild_id = guild_id
+    interaction2.user = mock_admin
+    interaction2.response = MagicMock()
+    interaction2.response.send_message = AsyncMock()
+
+    await bank_cog.bank_manager.callback(
+        bank_cog, interaction2, action="remove", club=mock_role, user=mock_member, reason="Routine Rotation"
+    )
+    interaction2.response.send_message.assert_called_once()
+    sent_embed2 = interaction2.response.send_message.call_args[1]["embed"]
+    assert "Manager Removed" in sent_embed2.title
+
+    # 3. Test /club addmanager with banker override and role
+    interaction3 = MagicMock(spec=discord.Interaction)
+    interaction3.guild_id = guild_id
+    interaction3.user = mock_admin
+    interaction3.response = MagicMock()
+    interaction3.response.send_message = AsyncMock()
+
+    await clubs_cog.club_addmanager.callback(
+        clubs_cog, interaction3, user=mock_member, club=mock_role
+    )
+    interaction3.response.send_message.assert_called_once()
+
+    # 4. Test bb!manager prefix command
+    ctx = MagicMock()
+    ctx.guild.id = guild_id
+    ctx.author = mock_admin
+    ctx.message.role_mentions = [mock_role]
+    ctx.message.mentions = [mock_member]
+    ctx.send = AsyncMock()
+
+    await prefix_cog.prefix_manager.callback(prefix_cog, ctx, "add")
+    ctx.send.assert_called_once()
+
+    # 5. Test AnnouncementView help_btn opening HelpView
+    ann_view = AnnouncementView(db)
+    ann_interaction = MagicMock(spec=discord.Interaction)
+    ann_interaction.user = mock_member
+    ann_interaction.response = MagicMock()
+    ann_interaction.response.send_message = AsyncMock()
+
+    await ann_view.help_btn.callback(ann_interaction)
+    ann_interaction.response.send_message.assert_called_once()
+    ann_args = ann_interaction.response.send_message.call_args[1]
+    assert "Official System Guide & Manual" in ann_args["embed"].title
+    assert isinstance(ann_args["view"], HelpView)
+
+    # 6. Test HelpView on_timeout and SummaryView on_timeout
+    help_v = HelpView(db, author=mock_member)
+    await help_v.on_timeout()
+    assert all(b.disabled for b in help_v.children if isinstance(b, discord.ui.Button))
+
+    sum_v = SummaryView(db, author=mock_member, user_data={"cash": 0})
+    await sum_v.on_timeout()
+    assert all(b.disabled for b in sum_v.children if isinstance(b, discord.ui.Button))
+
+    # 7. Test /help categories routing through HelpView
+    for cat in ("guide", "squad", "cheatsheet", "stats", "overview", "finances"):
+        help_inter = MagicMock(spec=discord.Interaction)
+        help_inter.guild_id = guild_id
+        help_inter.user = mock_member
+        help_inter.response = MagicMock()
+        help_inter.response.send_message = AsyncMock()
+
+        await econ_cog.help_command.callback(econ_cog, help_inter, category=cat)
+        help_inter.response.send_message.assert_called_once()
+        v = help_inter.response.send_message.call_args[1]["view"]
+        assert isinstance(v, HelpView)
+        assert len(v.children) == 5
+
+
+
+
 
 
 

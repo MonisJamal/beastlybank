@@ -84,8 +84,90 @@ class GiveawayView(discord.ui.View):
         await interaction.response.send_message(f"✅ {message}", ephemeral=True)
 
 
+class HelpView(discord.ui.View):
+    """Interactive tabs view for the official BeastlyBank /help command."""
+
+    def __init__(
+        self,
+        db_manager,
+        author: Optional[discord.Member] = None,
+        active_tab: str = "guide",
+        timeout: float = 180.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.db = db_manager
+        self.author = author
+        self.active_tab = active_tab
+        self._sync_button_styles()
+
+    def _sync_button_styles(self):
+        """Highlight the currently active tab button and dim others."""
+        target_tab = self.active_tab
+        if target_tab in ("overview", "finances", "profile"):
+            target_tab = "account"
+
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                if child.custom_id == f"help_tab_{target_tab}":
+                    child.style = discord.ButtonStyle.primary
+                else:
+                    child.style = discord.ButtonStyle.secondary
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        # Help is a shared guide — anyone in the server can browse the reference manual
+        return True
+
+    async def on_timeout(self):
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+
+    @discord.ui.button(label="System Guide", style=discord.ButtonStyle.primary, emoji="📖", custom_id="help_tab_guide")
+    async def guide_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from utils.embeds import help_system_guide_embed
+        self.active_tab = "guide"
+        self._sync_button_styles()
+        embed = help_system_guide_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Cheatsheet", style=discord.ButtonStyle.secondary, emoji="📋", custom_id="help_tab_cheatsheet")
+    async def cheatsheet_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from utils.embeds import summary_commands_embed
+        self.active_tab = "cheatsheet"
+        self._sync_button_styles()
+        embed = summary_commands_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Squad & Lineups", style=discord.ButtonStyle.secondary, emoji="⚽", custom_id="help_tab_squad")
+    async def squad_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from utils.embeds import summary_squad_embed
+        self.active_tab = "squad"
+        self._sync_button_styles()
+        embed = summary_squad_embed()
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Account Summary", style=discord.ButtonStyle.secondary, emoji="👤", custom_id="help_tab_account")
+    async def account_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from utils.embeds import summary_overview_embed
+        self.active_tab = "account"
+        self._sync_button_styles()
+        user_data = await self.db.get_or_create_user(interaction.user.id, interaction.guild_id)
+        club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+        embed = summary_overview_embed(interaction.user, user_data, club)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Server Stats", style=discord.ButtonStyle.secondary, emoji="🌐", custom_id="help_tab_stats")
+    async def stats_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from utils.embeds import summary_economy_embed
+        self.active_tab = "stats"
+        self._sync_button_styles()
+        stats = await self.db.get_economy_stats(interaction.guild_id)
+        embed = summary_economy_embed(stats)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+
 class SummaryView(discord.ui.View):
-    """Interactive tabs view for BeastlyBank summary."""
+    """Interactive tabs view for BeastlyBank account summary and personal profile."""
 
     def __init__(
         self,
@@ -93,53 +175,84 @@ class SummaryView(discord.ui.View):
         author: discord.Member,
         user_data: Dict[str, Any],
         club: Optional[Dict[str, Any]] = None,
+        target: Optional[discord.Member] = None,
+        active_tab: str = "overview",
         timeout: float = 180.0,
     ):
         super().__init__(timeout=timeout)
         self.db = db_manager
         self.author = author
+        self.target = target or author
         self.user_data = user_data
         self.club = club
+        self.active_tab = active_tab
+        self._sync_button_styles()
+
+    def _sync_button_styles(self):
+        """Highlight active tab button and dim other tabs."""
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                if child.custom_id == f"sum_tab_{self.active_tab}":
+                    child.style = discord.ButtonStyle.primary
+                else:
+                    child.style = discord.ButtonStyle.secondary
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         if interaction.user.id != self.author.id:
             await interaction.response.send_message(
-                "❌ You cannot control someone else's summary menu! Run `/summary` to view your own.",
+                "❌ You cannot control someone else's summary menu! Run `/summary` to view your own profile.",
                 ephemeral=True,
             )
             return False
         return True
 
-    @discord.ui.button(label="Overview", style=discord.ButtonStyle.primary, emoji="📋")
+    async def on_timeout(self):
+        for child in self.children:
+            if isinstance(child, discord.ui.Button):
+                child.disabled = True
+
+    @discord.ui.button(label="Overview", style=discord.ButtonStyle.primary, emoji="👤", custom_id="sum_tab_overview")
     async def overview_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         from utils.embeds import summary_overview_embed
-        embed = summary_overview_embed(self.author, self.user_data, self.club)
+        self.active_tab = "overview"
+        self._sync_button_styles()
+        latest_user = await self.db.get_or_create_user(self.target.id, interaction.guild_id)
+        latest_club = await self.db.get_club_by_user(interaction.guild_id, self.target.id)
+        embed = summary_overview_embed(self.target, latest_user, latest_club)
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Squad & Lineup", style=discord.ButtonStyle.success, emoji="⚽")
+    @discord.ui.button(label="Finances", style=discord.ButtonStyle.secondary, emoji="💰", custom_id="sum_tab_finances")
+    async def finances_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from utils.embeds import summary_finance_embed
+        self.active_tab = "finances"
+        self._sync_button_styles()
+        latest_user = await self.db.get_or_create_user(self.target.id, interaction.guild_id)
+        latest_club = await self.db.get_club_by_user(interaction.guild_id, self.target.id)
+        txs = await self.db.get_transactions(self.target.id, interaction.guild_id, limit=4)
+        embed = summary_finance_embed(self.target, latest_user, latest_club, txs)
+        await interaction.response.edit_message(embed=embed, view=self)
+
+    @discord.ui.button(label="Squad Guide", style=discord.ButtonStyle.secondary, emoji="⚽", custom_id="sum_tab_squad")
     async def squad_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         from utils.embeds import summary_squad_embed
+        self.active_tab = "squad"
+        self._sync_button_styles()
         embed = summary_squad_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Cheatsheet", style=discord.ButtonStyle.secondary, emoji="📖")
+    @discord.ui.button(label="Cheatsheet", style=discord.ButtonStyle.secondary, emoji="📖", custom_id="sum_tab_cheatsheet")
     async def cheatsheet_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         from utils.embeds import summary_commands_embed
+        self.active_tab = "cheatsheet"
+        self._sync_button_styles()
         embed = summary_commands_embed()
         await interaction.response.edit_message(embed=embed, view=self)
 
-    @discord.ui.button(label="Finances", style=discord.ButtonStyle.secondary, emoji="💰")
-    async def finances_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from utils.embeds import summary_finance_embed
-        latest_user = await self.db.get_or_create_user(self.author.id, interaction.guild_id)
-        latest_club = await self.db.get_club_by_user(interaction.guild_id, self.author.id)
-        txs = await self.db.get_transactions(self.author.id, interaction.guild_id, limit=4)
-        embed = summary_finance_embed(self.author, latest_user, latest_club, txs)
-        await interaction.response.edit_message(embed=embed, view=self)
-
-    @discord.ui.button(label="Stats", style=discord.ButtonStyle.secondary, emoji="🌐")
+    @discord.ui.button(label="Stats", style=discord.ButtonStyle.secondary, emoji="🌐", custom_id="sum_tab_stats")
     async def economy_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         from utils.embeds import summary_economy_embed
+        self.active_tab = "stats"
+        self._sync_button_styles()
         stats = await self.db.get_economy_stats(interaction.guild_id)
         embed = summary_economy_embed(stats)
         await interaction.response.edit_message(embed=embed, view=self)
@@ -159,11 +272,9 @@ class AnnouncementView(discord.ui.View):
         emoji="📖",
     )
     async def help_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        from utils.embeds import summary_overview_embed
-        user_data = await self.db.get_or_create_user(interaction.user.id, interaction.guild_id)
-        club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
-        embed = summary_overview_embed(interaction.user, user_data, club)
-        view = SummaryView(self.db, interaction.user, user_data, club)
+        from utils.embeds import help_system_guide_embed
+        embed = help_system_guide_embed()
+        view = HelpView(self.db, author=interaction.user, active_tab="guide")
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @discord.ui.button(

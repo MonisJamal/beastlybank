@@ -600,6 +600,86 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         embed = success_embed("Tactical Swap", msg)
         await send_msg(interaction, embed=embed)
 
+    @player_group.command(name="switchpos", description="Switch a player's tactical position in the lineup.")
+    @app_commands.describe(
+        player="Player name or Discord mention",
+        position="Target tactical position (e.g. GK, CB, LB, RB, CDM, CM, CAM, LM, RM, LW, RW, ST, CF)",
+        club="Target club role (defaults to your club)",
+    )
+    async def slash_player_switchpos(
+        self,
+        interaction: discord.Interaction,
+        player: str,
+        position: str,
+        club: Optional[discord.Role] = None,
+    ):
+        await interaction.response.defer()
+        if club:
+            target_club = await self.db.get_or_create_club_from_role(
+                interaction.guild_id, club, default_owner_id=interaction.user.id
+            )
+        else:
+            target_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+
+        if not target_club:
+            await send_msg(
+                interaction,
+                embed=error_embed("Club Not Found", "You must belong to a club or specify a club role."),
+                ephemeral=True,
+            )
+            return
+
+        has_perm, perm_msg = await check_squad_permission(
+            self.db, interaction.guild_id, interaction.user, target_club
+        )
+        if not has_perm:
+            await send_msg(interaction, embed=error_embed("Permission Denied", perm_msg), ephemeral=True)
+            return
+
+        success, msg, _ = await self.db.switch_lineup_position(
+            guild_id=interaction.guild_id,
+            club_query=club if club else target_club["id"],
+            player_query=player,
+            new_position=position,
+            default_owner_id=interaction.user.id,
+        )
+        if not success:
+            await send_msg(interaction, embed=error_embed("Switch Position Failed", msg), ephemeral=True)
+            return
+
+        embed = success_embed("Position Switched", msg)
+        await send_msg(interaction, embed=embed)
+
+    @app_commands.command(name="switchpos", description="Switch a player's tactical position in the lineup.")
+    @app_commands.describe(
+        player="Player name or Discord mention",
+        position="Target tactical position (e.g. GK, CB, LB, RB, CDM, CM, CAM, LM, RM, LW, RW, ST, CF)",
+        club="Target club role (defaults to your club)",
+    )
+    async def slash_switchpos(
+        self,
+        interaction: discord.Interaction,
+        player: str,
+        position: str,
+        club: Optional[discord.Role] = None,
+    ):
+        await self.slash_player_switchpos(interaction, player, position, club)
+
+    @app_commands.command(name="switch", description="Switch a player's tactical position in the lineup.")
+    @app_commands.describe(
+        player="Player name or Discord mention",
+        position="Target tactical position (e.g. GK, CB, LB, RB, CDM, CM, CAM, LM, RM, LW, RW, ST, CF)",
+        club="Target club role (defaults to your club)",
+    )
+    async def slash_switch(
+        self,
+        interaction: discord.Interaction,
+        player: str,
+        position: str,
+        club: Optional[discord.Role] = None,
+    ):
+        await self.slash_player_switchpos(interaction, player, position, club)
+
     # ==========================================
     # PREFIX COMMANDS (bb!)
     # ==========================================
@@ -608,8 +688,13 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
     async def prefix_lineup(self, ctx: commands.Context, *args):
         """
         View tactical pitch lineup and bench for a club.
-        Usage: bb!lineup [@club_role or club_name]
+        Usage:
+          bb!lineup [@club_role or club_name]
+          bb!lineup switch <player> <position>
         """
+        if args and args[0].lower() in ("switch", "switchpos", "setpos", "swap"):
+            return await self.prefix_switchpos.callback(self, ctx, *args)
+
         target_club = None
         if ctx.message.role_mentions:
             target_club = await self.db.get_or_create_club_from_role(
@@ -1174,6 +1259,141 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
 
         embed = success_embed("Tactical Swap", msg)
         await ctx.send(embed=embed)
+
+    @commands.command(name="switchpos", aliases=["switch", "setpos"])
+    async def prefix_switchpos(self, ctx: commands.Context, *args):
+        """
+        Switch a player's position or swap positions between two players in the lineup.
+        Usage:
+          bb!switchpos <player> <new_position> [@club_role]
+          bb!switchpos <player1> <player2> [@club_role]
+        Examples:
+          bb!switchpos Mbappe ST @RealMadrid
+          bb!switchpos Vinicius Rodrygo @RealMadrid
+        """
+        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        clean_args = [a.strip() for a in args if a.strip() and not (a.startswith("<@&") and a.endswith(">"))]
+
+        # Strip leading command/subcommand words if user typed e.g. "bb!lineup switch ...", "bb!switchpos position ..."
+        while clean_args and clean_args[0].lower() in ("switch", "switchpos", "setpos", "position", "pos"):
+            clean_args.pop(0)
+        while clean_args and clean_args[0].lower() in ("position", "pos"):
+            clean_args.pop(0)
+
+        if not clean_args:
+            await ctx.send(
+                embed=error_embed(
+                    "Missing Parameters",
+                    "**Usage:**\n"
+                    "• Switch position: `bb!switchpos <player> <new_position> [@club_role]`\n"
+                    "• Swap 2 players: `bb!switchpos <player1> <player2> [@club_role]`\n"
+                    f"*Supported Positions:* {', '.join(VALID_POSITIONS)}",
+                )
+            )
+            return
+
+        if target_role:
+            target_club = await self.db.get_or_create_club_from_role(
+                ctx.guild.id, target_role, default_owner_id=ctx.author.id
+            )
+        else:
+            target_club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+
+        if not target_club:
+            await ctx.send(embed=error_embed("Club Not Found", "You must belong to a club or mention a club role."))
+            return
+
+        has_perm, perm_msg = await check_squad_permission(
+            self.db, ctx.guild.id, ctx.author, target_club
+        )
+        if not has_perm:
+            await ctx.send(embed=error_embed("Permission Denied", perm_msg))
+            return
+
+        # Case 1: Last token is a valid position (e.g. `Kylian Mbappe LW` or `Mbappe to LW`)
+        if clean_args[-1].upper() in VALID_POSITIONS and len(clean_args) >= 2:
+            target_pos = clean_args[-1].upper()
+            player_tokens = clean_args[:-1]
+            if player_tokens and player_tokens[-1].lower() == "to":
+                player_tokens = player_tokens[:-1]
+            player_query = " ".join(player_tokens).strip()
+
+            success, msg, _ = await self.db.switch_lineup_position(
+                guild_id=ctx.guild.id,
+                club_query=target_role if target_role else target_club["id"],
+                player_query=player_query,
+                new_position=target_pos,
+                default_owner_id=ctx.author.id,
+            )
+            if not success:
+                await ctx.send(embed=error_embed("Switch Position Failed", msg))
+                return
+            await ctx.send(embed=success_embed("Position Switched", msg))
+            return
+
+        # Case 2: First token is a valid position (e.g. `LW Kylian Mbappe`)
+        if clean_args[0].upper() in VALID_POSITIONS and len(clean_args) >= 2:
+            target_pos = clean_args[0].upper()
+            player_query = " ".join(clean_args[1:]).strip()
+
+            success, msg, _ = await self.db.switch_lineup_position(
+                guild_id=ctx.guild.id,
+                club_query=target_role if target_role else target_club["id"],
+                player_query=player_query,
+                new_position=target_pos,
+                default_owner_id=ctx.author.id,
+            )
+            if not success:
+                await ctx.send(embed=error_embed("Switch Position Failed", msg))
+                return
+            await ctx.send(embed=success_embed("Position Switched", msg))
+            return
+
+        # Case 3: Swapping 2 players
+        raw_text = " ".join(clean_args)
+        p1 = None
+        p2 = None
+        if "," in raw_text:
+            parts = [p.strip() for p in raw_text.split(",") if p.strip()]
+            if len(parts) >= 2:
+                p1, p2 = parts[0], parts[1]
+        elif " and " in raw_text.lower():
+            idx = raw_text.lower().find(" and ")
+            p1, p2 = raw_text[:idx].strip(), raw_text[idx + 5:].strip()
+        elif " with " in raw_text.lower():
+            idx = raw_text.lower().find(" with ")
+            p1, p2 = raw_text[:idx].strip(), raw_text[idx + 6:].strip()
+        elif " for " in raw_text.lower():
+            idx = raw_text.lower().find(" for ")
+            p1, p2 = raw_text[:idx].strip(), raw_text[idx + 5:].strip()
+        elif len(clean_args) == 2:
+            p1, p2 = clean_args[0], clean_args[1]
+
+        if p1 and p2:
+            success, msg = await self.db.swap_club_players(
+                guild_id=ctx.guild.id,
+                club_query=target_role if target_role else target_club["id"],
+                player1_name=p1,
+                player2_name=p2,
+                default_owner_id=ctx.author.id,
+            )
+            if not success:
+                await ctx.send(embed=error_embed("Swap Failed", msg))
+                return
+            await ctx.send(embed=success_embed("Tactical Swap", msg))
+            return
+
+        await ctx.send(
+            embed=error_embed(
+                "Invalid Format",
+                "Could not determine player or target position.\n\n"
+                "**Usage Examples:**\n"
+                "• `bb!switchpos Kylian Mbappe LW`\n"
+                "• `bb!switchpos Mbappe ST @ClubRole`\n"
+                "• `bb!switchpos Mbappe Vinicius` *(swap two players)*\n"
+                f"*Valid Positions:* {', '.join(VALID_POSITIONS)}",
+            )
+        )
 
 
 async def setup(bot: commands.Bot):

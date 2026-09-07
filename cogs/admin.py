@@ -253,6 +253,57 @@ class ManageCurrency(commands.GroupCog, name="manage", description="Manage User 
         )
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(
+        name="manager",
+        description="Add or remove a Club Manager for any club (BeastlyBank Banker command).",
+    )
+    @app_commands.describe(
+        action="Appoint or remove manager role (add or remove)",
+        club="Target club Discord role",
+        user="Squad member to promote or demote",
+        reason="Official memo explaining the appointment or demotion",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def manage_manager(
+        self,
+        interaction: discord.Interaction,
+        action: Literal["add", "remove"],
+        club: discord.Role,
+        user: discord.Member,
+        reason: Optional[str] = "BeastlyBank Staff Operation",
+    ):
+        is_manager = (action == "add")
+        success, msg, target_club = await self.db.admin_set_club_manager(
+            guild_id=interaction.guild_id,
+            club_query=club,
+            target_user_id=user.id,
+            is_manager=is_manager,
+            admin_id=interaction.user.id,
+            reason=reason or "BeastlyBank Staff Operation",
+        )
+
+        if not success:
+            await interaction.response.send_message(embed=error_embed("Manager Operation Failed", msg), ephemeral=True)
+            return
+
+        role_label = f"<@&{target_club['role_id']}>" if target_club and target_club.get("role_id") else f"**[{target_club.get('tag', 'FC')}] {target_club.get('name', 'Club')}**"
+        action_title = "Manager Appointed" if is_manager else "Manager Removed"
+
+        embed = create_beastly_embed(
+            title=f"👔 Club Manager Update • {action_title}",
+            description=(
+                f"Successfully updated club management roster for {role_label}!\n\n"
+                f"• **Target Member:** {user.mention} (`{user.display_name}`)\n"
+                f"• **New Club Status:** {'⭐ **Club Manager**' if is_manager else '⚽ **Squad Member**'}\n"
+                f"• **Authorized Banker:** {interaction.user.mention}\n"
+                f"• **Official Memo:** *{reason}*\n"
+                f"• **Data Integrity:** 🛡️ Zero data loss (player balances, cards, and treasury 100% intact)."
+            ),
+            color=COLOR_SUCCESS if is_manager else COLOR_BEASTLY_GOLD,
+        )
+        await interaction.response.send_message(embed=embed)
+
 
 class ServerSettings(commands.GroupCog, name="settings", description="Manage Server Economy & Shop Settings"):
     """Staff controls for server-wide toggles."""
@@ -387,6 +438,57 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
         embed.set_footer(text=f"Audited by {interaction.user.display_name} • BeastlyBank Security")
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(
+        name="manager",
+        description="Add or remove a Club Manager for any club (BeastlyBank Banker command).",
+    )
+    @app_commands.describe(
+        action="Appoint or remove manager role (add or remove)",
+        club="Target club Discord role",
+        user="Squad member to promote or demote",
+        reason="Official memo explaining the appointment or demotion",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def bank_manager(
+        self,
+        interaction: discord.Interaction,
+        action: Literal["add", "remove"],
+        club: discord.Role,
+        user: discord.Member,
+        reason: Optional[str] = "BeastlyBank Staff Operation",
+    ):
+        is_manager = (action == "add")
+        success, msg, target_club = await self.db.admin_set_club_manager(
+            guild_id=interaction.guild_id,
+            club_query=club,
+            target_user_id=user.id,
+            is_manager=is_manager,
+            admin_id=interaction.user.id,
+            reason=reason or "BeastlyBank Staff Operation",
+        )
+
+        if not success:
+            await interaction.response.send_message(embed=error_embed("Manager Operation Failed", msg), ephemeral=True)
+            return
+
+        role_label = f"<@&{target_club['role_id']}>" if target_club and target_club.get("role_id") else f"**[{target_club.get('tag', 'FC')}] {target_club.get('name', 'Club')}**"
+        action_title = "Manager Appointed" if is_manager else "Manager Removed"
+
+        embed = create_beastly_embed(
+            title=f"👔 Club Manager Update • {action_title}",
+            description=(
+                f"Successfully updated club management roster for {role_label}!\n\n"
+                f"• **Target Member:** {user.mention} (`{user.display_name}`)\n"
+                f"• **New Club Status:** {'⭐ **Club Manager**' if is_manager else '⚽ **Squad Member**'}\n"
+                f"• **Authorized Banker:** {interaction.user.mention}\n"
+                f"• **Official Memo:** *{reason}*\n"
+                f"• **Data Integrity:** 🛡️ Zero data loss (player balances, cards, and treasury 100% intact)."
+            ),
+            color=COLOR_SUCCESS if is_manager else COLOR_BEASTLY_GOLD,
+        )
+        await interaction.response.send_message(embed=embed)
+
 
 class BankerPrefixCommands(commands.Cog):
     """Prefix commands for BeastlyBank Bankers and Admins."""
@@ -512,6 +614,115 @@ class BankerPrefixCommands(commands.Cog):
                 f"• **Official Memo:** *{reason}*"
             ),
             color=COLOR_SUCCESS if action == "add" else COLOR_BEASTLY_GOLD,
+        )
+        await ctx.send(embed=embed)
+
+    @commands.command(name="manager", aliases=["clubmanager", "setmanager"])
+    @require_banker_or_admin()
+    async def prefix_manager(self, ctx: commands.Context, *args):
+        """
+        bb!manager <add|remove> <@club_role> <@user> [reason]
+        e.g. bb!manager add @RealMadrid @User Official Appointment
+        """
+        await self._handle_manager_prefix(ctx, args)
+
+    @commands.command(name="addmanager", aliases=["adminaddmanager"])
+    @require_banker_or_admin()
+    async def prefix_addmanager(self, ctx: commands.Context, *args):
+        """
+        bb!addmanager <@club_role> <@user> [reason]
+        """
+        await self._handle_manager_prefix(ctx, ("add",) + args)
+
+    @commands.command(name="removemanager", aliases=["adminremovemanager"])
+    @require_banker_or_admin()
+    async def prefix_removemanager(self, ctx: commands.Context, *args):
+        """
+        bb!removemanager <@club_role> <@user> [reason]
+        """
+        await self._handle_manager_prefix(ctx, ("remove",) + args)
+
+    async def _handle_manager_prefix(self, ctx: commands.Context, args):
+        if len(args) < 2 and not (ctx.message.role_mentions and ctx.message.mentions):
+            embed = error_embed(
+                "Invalid Command Usage",
+                "**Usage:** `bb!manager <add|remove> <@club_role> <@user> [reason]`\n"
+                "**Example:** `bb!manager add @RealMadrid @Member Official Appointment`\n"
+                "*(Or use `bb!addmanager @ClubRole @User` / `bb!removemanager @ClubRole @User`)*",
+            )
+            await ctx.send(embed=embed)
+            return
+
+        cur_args = list(args)
+
+        # Detect action
+        action = None
+        for i, a in enumerate(cur_args):
+            low = a.lower().strip()
+            if low in ("add", "promote", "assign", "set", "+"):
+                action = "add"
+                cur_args.pop(i)
+                break
+            elif low in ("remove", "demote", "delete", "rm", "-"):
+                action = "remove"
+                cur_args.pop(i)
+                break
+
+        if not action:
+            action = "add"
+
+        # Target role
+        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        # Target user
+        target_user = ctx.message.mentions[0] if ctx.message.mentions else None
+
+        # Filter out mentions from args to get reason
+        filtered_args = []
+        for a in cur_args:
+            if a.startswith("<@&") and a.endswith(">"):
+                continue
+            if (a.startswith("<@!") or a.startswith("<@")) and a.endswith(">"):
+                continue
+            filtered_args.append(a)
+
+        reason = " ".join(filtered_args).strip() or "BeastlyBank Banker Club Operation"
+
+        if not target_role:
+            await ctx.send(embed=error_embed("Missing Club Role", "Please mention the club's Discord role (e.g. `@RealMadrid`)."))
+            return
+
+        if not target_user:
+            await ctx.send(embed=error_embed("Missing User", "Please mention the member to add or remove as manager (e.g. `@User`)."))
+            return
+
+        is_manager = (action == "add")
+        success, msg, target_club = await self.db.admin_set_club_manager(
+            guild_id=ctx.guild.id,
+            club_query=target_role,
+            target_user_id=target_user.id,
+            is_manager=is_manager,
+            admin_id=ctx.author.id,
+            reason=reason,
+        )
+
+        if not success:
+            await ctx.send(embed=error_embed("Operation Failed", msg))
+            return
+
+        role_label = f"<@&{target_club['role_id']}>" if target_club and target_club.get("role_id") else f"**[{target_club.get('tag', 'FC')}] {target_club.get('name', 'Club')}**"
+        action_title = "Manager Appointed" if is_manager else "Manager Removed"
+
+        embed = create_beastly_embed(
+            title=f"👔 Club Manager Update • {action_title}",
+            description=(
+                f"Successfully updated club management roster for {role_label}!\n\n"
+                f"• **Target Member:** {target_user.mention} (`{target_user.display_name}`)\n"
+                f"• **New Club Status:** {'⭐ **Club Manager**' if is_manager else '⚽ **Squad Member**'}\n"
+                f"• **Authorized Banker:** {ctx.author.mention}\n"
+                f"• **Official Memo:** *{reason}*\n"
+                f"• **Data Integrity:** 🛡️ Zero data loss (player balances, cards, and treasury 100% intact)."
+            ),
+            color=COLOR_SUCCESS if is_manager else COLOR_BEASTLY_GOLD,
         )
         await ctx.send(embed=embed)
 

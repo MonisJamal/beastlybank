@@ -475,28 +475,64 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
 
     @app_commands.command(
         name="addmanager",
-        description="Promote a squad member to Club Manager (Owner only).",
+        description="Promote a squad member to Club Manager (Owner only, or Bankers/Admins).",
     )
-    @app_commands.describe(user="The squad member to promote to Manager")
+    @app_commands.describe(
+        user="The squad member to promote to Manager",
+        club="Optional club role (required for Bankers/Admins managing other clubs)",
+    )
     @require_beastlyfc()
     async def club_addmanager(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
+        club: Optional[discord.Role] = None,
     ):
-        user_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+        is_banker = is_banker_or_admin(interaction.user)
+        if club:
+            if is_banker:
+                success, msg, _ = await self.db.admin_set_club_manager(
+                    guild_id=interaction.guild_id,
+                    club_query=club,
+                    target_user_id=user.id,
+                    is_manager=True,
+                    admin_id=interaction.user.id,
+                    reason=f"Staff promotion by {interaction.user}",
+                )
+                if not success:
+                    await interaction.response.send_message(embed=error_embed("Action Failed", msg), ephemeral=True)
+                    return
+                embed = success_embed("Manager Promoted", msg)
+                await interaction.response.send_message(embed=embed)
+                return
+            else:
+                user_club = await self.db.get_or_create_club_from_role(interaction.guild_id, club, default_owner_id=interaction.user.id)
+        else:
+            user_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+
         if not user_club:
+            target_msg = f"for role {club.mention}" if club else "You are not in a club! Bankers can specify `club: @role`."
             await interaction.response.send_message(
-                embed=error_embed("No Club", "You are not in a club!"), ephemeral=True
+                embed=error_embed("No Club", target_msg), ephemeral=True
             )
             return
 
-        success, msg = await self.db.set_club_manager(
-            club_id=user_club["id"],
-            owner_id=interaction.user.id,
-            target_user_id=user.id,
-            is_manager=True,
-        )
+        if is_banker:
+            success, msg, _ = await self.db.admin_set_club_manager(
+                guild_id=interaction.guild_id,
+                club_query=user_club["id"],
+                target_user_id=user.id,
+                is_manager=True,
+                admin_id=interaction.user.id,
+                reason=f"Staff promotion by {interaction.user}",
+            )
+        else:
+            success, msg = await self.db.set_club_manager(
+                club_id=user_club["id"],
+                owner_id=interaction.user.id,
+                target_user_id=user.id,
+                is_manager=True,
+            )
 
         if not success:
             await interaction.response.send_message(
@@ -509,28 +545,64 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
 
     @app_commands.command(
         name="removemanager",
-        description="Demote a Club Manager back to normal squad member (Owner only).",
+        description="Demote a Club Manager back to normal squad member (Owner only, or Bankers/Admins).",
     )
-    @app_commands.describe(user="The manager to demote")
+    @app_commands.describe(
+        user="The manager to demote",
+        club="Optional club role (required for Bankers/Admins managing other clubs)",
+    )
     @require_beastlyfc()
     async def club_removemanager(
         self,
         interaction: discord.Interaction,
         user: discord.Member,
+        club: Optional[discord.Role] = None,
     ):
-        user_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+        is_banker = is_banker_or_admin(interaction.user)
+        if club:
+            if is_banker:
+                success, msg, _ = await self.db.admin_set_club_manager(
+                    guild_id=interaction.guild_id,
+                    club_query=club,
+                    target_user_id=user.id,
+                    is_manager=False,
+                    admin_id=interaction.user.id,
+                    reason=f"Staff demotion by {interaction.user}",
+                )
+                if not success:
+                    await interaction.response.send_message(embed=error_embed("Action Failed", msg), ephemeral=True)
+                    return
+                embed = success_embed("Manager Demoted", msg)
+                await interaction.response.send_message(embed=embed)
+                return
+            else:
+                user_club = await self.db.get_or_create_club_from_role(interaction.guild_id, club, default_owner_id=interaction.user.id)
+        else:
+            user_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+
         if not user_club:
+            target_msg = f"for role {club.mention}" if club else "You are not in a club! Bankers can specify `club: @role`."
             await interaction.response.send_message(
-                embed=error_embed("No Club", "You are not in a club!"), ephemeral=True
+                embed=error_embed("No Club", target_msg), ephemeral=True
             )
             return
 
-        success, msg = await self.db.set_club_manager(
-            club_id=user_club["id"],
-            owner_id=interaction.user.id,
-            target_user_id=user.id,
-            is_manager=False,
-        )
+        if is_banker:
+            success, msg, _ = await self.db.admin_set_club_manager(
+                guild_id=interaction.guild_id,
+                club_query=user_club["id"],
+                target_user_id=user.id,
+                is_manager=False,
+                admin_id=interaction.user.id,
+                reason=f"Staff demotion by {interaction.user}",
+            )
+        else:
+            success, msg = await self.db.set_club_manager(
+                club_id=user_club["id"],
+                owner_id=interaction.user.id,
+                target_user_id=user.id,
+                is_manager=False,
+            )
 
         if not success:
             await interaction.response.send_message(

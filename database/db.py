@@ -8,7 +8,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 import aiosqlite
 
-from config import DEFAULT_FORMATION, SUPPORTED_FORMATIONS, VALID_POSITIONS
+from config import (
+    DEFAULT_FORMATION,
+    SUPPORTED_FORMATIONS,
+    VALID_POSITIONS,
+    POSITION_CATEGORIES,
+    get_formation_positions,
+)
 
 logger = logging.getLogger("BeastlyBank.DB")
 
@@ -847,13 +853,13 @@ class DatabaseManager:
         if hasattr(query, "id") and hasattr(query, "name"):
             role_id = query.id
             role_name = str(query.name).strip()
-        elif isinstance(query, str):
-            clean = query.strip()
+        elif isinstance(query, (int, str)):
+            clean = str(query).strip()
             if clean.startswith("<@&") and clean.endswith(">"):
                 raw = clean.strip("<@&>")
                 if raw.isdigit():
                     role_id = int(raw)
-            elif clean.isdigit() and len(clean) >= 15:
+            elif clean.isdigit():
                 role_id = int(clean)
 
         if not role_name and not role_id and isinstance(query, str):
@@ -932,15 +938,22 @@ class DatabaseManager:
             m = re.search(r"<@&(\d+)>", q)
             if m:
                 role_id = int(m.group(1))
-            elif q.isdigit() and len(q) >= 15:
+            elif q.isdigit():
                 role_id = int(q)
 
         conn = await self.connect()
         async with conn.cursor() as cur:
-            # 0. If integer ID < 1000000000, match by database primary key
-            if isinstance(query, int) and query < 1000000000:
+            # 0. If integer ID, match by database primary key or role_id
+            if isinstance(query, int):
                 await cur.execute(
                     "SELECT * FROM clubs WHERE guild_id = ? AND id = ?;",
+                    (guild_id, query),
+                )
+                row = await cur.fetchone()
+                if row:
+                    return dict(row)
+                await cur.execute(
+                    "SELECT * FROM clubs WHERE guild_id = ? AND role_id = ?;",
                     (guild_id, query),
                 )
                 row = await cur.fetchone()
@@ -1251,16 +1264,16 @@ class DatabaseManager:
             }
 
     async def set_club_manager(
-        self, club_id: int, owner_id: int, target_user_id: int, is_manager: bool
+        self, club_id: int, owner_id: int, target_user_id: int, is_manager: bool, is_admin: bool = False
     ) -> Tuple[bool, str]:
-        """Promote or demote a club member to/from Manager role (Owner only)."""
+        """Promote or demote a club member to/from Manager role (Owner or Admin)."""
         conn = await self.connect()
         async with conn.cursor() as cur:
             await cur.execute("SELECT owner_id, tag, name FROM clubs WHERE id = ?;", (club_id,))
             club = await cur.fetchone()
             if not club:
                 return False, "Club not found."
-            if club["owner_id"] != owner_id:
+            if not is_admin and club["owner_id"] != owner_id:
                 return False, "Only the Club Owner can assign or remove Club Managers."
 
             if target_user_id == owner_id:
@@ -1282,6 +1295,128 @@ class DatabaseManager:
             await conn.commit()
             action = "promoted to **Club Manager**" if is_manager else "returned to **Squad Member**"
             return True, f"<@{target_user_id}> has been {action} for **[{club['tag']}] {club['name']}**."
+
+    async def admin_set_club_manager(
+        self,
+        guild_id: int,
+        club_query: Any,
+        target_user_id: int,
+        is_manager: bool,
+        admin_id: int,
+        reason: Optional[str] = None,
+    ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+        """
+        Staff/Banker command to assign or remove Club Managers with zero data loss.
+        Guarantees that user currency balances, club treasuries, squad players,
+        and transaction history remain 100% intact.
+        """
+        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=admin_id)
+        if not club:
+            return False, "Club not found. Please provide a valid club role mention, tag, or name.", None
+
+        club_id = club["id"]
+        # Ensure target user account exists in DB (balances untouched)
+        await self.get_or_create_user(target_user_id, guild_id)
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            # Re-fetch latest club record
+            await cur.execute("SELECT * FROM clubs WHERE id = ?;", (club_id,))
+            club_data = await cur.fetchone()
+            if not club_data:
+                return False, "Club record could not be found in database.", None
+
+            owner_id = club_data["owner_id"]
+            tag = club_data["tag"]
+            name = club_data["name"]
+
+            # Owner check
+            if target_user_id == owner_id:
+                if is_manager:
+                    return False, f"<@{target_user_id}> is already the **Club Owner** of **[{tag}] {name}** (Owners already possess full managerial authority).", dict(club_data)
+                else:
+                    return False, f"Cannot remove management permissions from the **Club Owner** (<@{target_user_id}>)! Club ownership must be transferred, not demoted.", dict(club_data)
+
+            # Check target's membership in THIS club
+            await cur.execute(
+                "SELECT * FROM club_members WHERE club_id = ? AND user_id = ?;",
+                (club_id, target_user_id),
+            )
+            member = await cur.fetchone()
+
+            if is_manager:
+                # ADDING / APPOINTING MANAGER
+                if member:
+                    current_role = member["role"]
+                    if current_role == "Manager":
+                        return False, f"<@{target_user_id}> is already a **Club Manager** for **[{tag}] {name}**.", dict(club_data)
+                    # Promote existing member to Manager (keeps join date, player attributes, etc.)
+                    await cur.execute(
+                        "UPDATE club_members SET role = 'Manager' WHERE club_id = ? AND user_id = ?;",
+                        (club_id, target_user_id),
+                    )
+                else:
+                    # Target is not currently in this club. Check if they belong to another club in this guild.
+                    await cur.execute(
+                        """
+                        SELECT c.id, c.tag, c.name, cm.role
+                        FROM club_members cm
+                        JOIN clubs c ON cm.club_id = c.id
+                        WHERE cm.guild_id = ? AND cm.user_id = ?;
+                        """,
+                        (guild_id, target_user_id),
+                    )
+                    other_club = await cur.fetchone()
+                    if other_club:
+                        return (
+                            False,
+                            f"<@{target_user_id}> is currently enrolled in another club: **[{other_club['tag']}] {other_club['name']}** (Role: `{other_club['role']}`). "
+                            f"To prevent data conflicts or accidental loss, they must leave or be transferred from their current club before being appointed as Manager here.",
+                            dict(club_data),
+                        )
+                    # Free agent: enroll into this club directly as Manager
+                    await cur.execute(
+                        """
+                        INSERT INTO club_members (club_id, user_id, guild_id, role)
+                        VALUES (?, ?, ?, 'Manager');
+                        """,
+                        (club_id, target_user_id, guild_id),
+                    )
+
+                action_str = "promoted to **Club Manager**"
+            else:
+                # REMOVING / DEMOTING MANAGER
+                if not member:
+                    return False, f"<@{target_user_id}> is not a member of **[{tag}] {name}**.", dict(club_data)
+
+                current_role = member["role"]
+                if current_role != "Manager":
+                    return False, f"<@{target_user_id}> is not currently a Club Manager for **[{tag}] {name}** (Current role: `{current_role}`).", dict(club_data)
+
+                # Demote back to Member without touching anything else
+                await cur.execute(
+                    "UPDATE club_members SET role = 'Member' WHERE club_id = ? AND user_id = ?;",
+                    (club_id, target_user_id),
+                )
+                action_str = "demoted from Club Manager to **Squad Member**"
+
+            # Log administrative action to transaction audit log
+            memo = f"Admin Manager Update: {action_str} in [{tag}] {name} by Admin #{admin_id}"
+            if reason:
+                memo += f" ({reason})"
+            await cur.execute(
+                """
+                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                VALUES (?, ?, ?, 'cash', 0, 'admin_manager_change', ?);
+                """,
+                (guild_id, admin_id, target_user_id, memo),
+            )
+            await conn.commit()
+
+            club_dict = dict(club_data)
+            role_mention = f"<@&{club_dict['role_id']}>" if club_dict.get("role_id") else f"**[{tag}] {name}**"
+            msg = f"<@{target_user_id}> has been successfully {action_str} for {role_mention} (Zero data loss: balances, squad, and treasury 100% preserved)."
+            return True, msg, club_dict
 
     async def get_club_transactions(
         self, club_id: int, guild_id: int, limit: int = 10
@@ -2095,7 +2230,7 @@ class DatabaseManager:
         formation: str,
         default_owner_id: int = 0,
     ) -> Tuple[bool, str]:
-        """Set tactical formation for a club."""
+        """Set tactical formation for a club and adapt starting XI positions to match new formation slots."""
         form = formation.strip().lower()
         matched = None
         for k in SUPPORTED_FORMATIONS:
@@ -2112,15 +2247,249 @@ class DatabaseManager:
             return False, f"Club {club_label} not found."
 
         conn = await self.connect()
+        reassigned = []
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE clubs SET formation = ? WHERE id = ?;",
                 (matched, club["id"]),
             )
+
+            # Fetch starting players to align with the new formation's tactical slots
+            await cur.execute(
+                "SELECT * FROM club_players WHERE club_id = ? AND status = 'starting' ORDER BY id ASC;",
+                (club["id"],),
+            )
+            starters = [dict(r) for r in await cur.fetchall()]
+
+            if starters:
+                target_slots = get_formation_positions(matched)
+                available_slots = list(target_slots)
+                assigned_players = {}  # player_id -> new_pos
+                unassigned_players = []
+
+                # Phase 1: Keep players whose current position is directly in available slots
+                for p in starters:
+                    pos = (p.get("position") or "").upper()
+                    if pos in available_slots:
+                        assigned_players[p["id"]] = pos
+                        available_slots.remove(pos)
+                    else:
+                        unassigned_players.append(p)
+
+                # Phase 2: Match unassigned players using their alternate positions
+                still_unassigned = []
+                for p in unassigned_players:
+                    alts_str = p.get("alt_positions") or ""
+                    alts = [a.strip().upper() for a in alts_str.replace(";", ",").replace("/", ",").split(",") if a.strip()]
+                    matched_alt = None
+                    for alt in alts:
+                        if alt in available_slots:
+                            matched_alt = alt
+                            break
+                    if matched_alt:
+                        assigned_players[p["id"]] = matched_alt
+                        available_slots.remove(matched_alt)
+                    else:
+                        still_unassigned.append(p)
+
+                # Phase 3: Match remaining players by tactical category (Defense, Midfield, Attack, GK)
+                final_unassigned = []
+                for p in still_unassigned:
+                    current_cat = POSITION_CATEGORIES.get((p.get("position") or "").upper())
+                    cat_match = None
+                    for slot in available_slots:
+                        if POSITION_CATEGORIES.get(slot) == current_cat:
+                            cat_match = slot
+                            break
+                    if cat_match:
+                        assigned_players[p["id"]] = cat_match
+                        available_slots.remove(cat_match)
+                    else:
+                        final_unassigned.append(p)
+
+                # Phase 4: Assign any remaining available slots
+                for p in final_unassigned:
+                    if available_slots:
+                        slot = available_slots.pop(0)
+                        assigned_players[p["id"]] = slot
+
+                # Apply updates to database for players whose position changed
+                for p in starters:
+                    new_pos = assigned_players.get(p["id"])
+                    if new_pos and new_pos != p.get("position"):
+                        # Clean new position from alt_positions if present
+                        alt_clean = normalize_alt_positions(p.get("alt_positions"), primary_pos=new_pos)
+                        await cur.execute(
+                            "UPDATE club_players SET position = ?, alt_positions = ? WHERE id = ?;",
+                            (new_pos, alt_clean, p["id"]),
+                        )
+                        reassigned.append(f"• **{p['player_name']}**: `{p.get('position', '??')}` ➔ **`{new_pos}`**")
+
             await conn.commit()
 
         form_meta = SUPPORTED_FORMATIONS[matched]
-        return True, f"Formation for **[{club['tag']}] {club['name']}** set to **{matched}** — {form_meta['desc']}."
+        msg = f"Formation for **[{club['tag']}] {club['name']}** set to **{matched}** — {form_meta['desc']}."
+        if reassigned:
+            msg += f"\n\n📋 **Tactical Realignment Applied ({len(reassigned)} players updated):**\n" + "\n".join(reassigned[:11])
+        elif starters:
+            msg += f"\n\n✅ Starting XI positions already match **{matched}** requirements."
+        return True, msg
+
+    async def _resolve_club_player(self, cur, club_id: int, query: str) -> Optional[Dict[str, Any]]:
+        """
+        Fuzzy and exact resolver for a player in a club.
+        Matches by:
+        1. Discord mention / user_id
+        2. Exact case-insensitive player_name
+        3. Word match (e.g. 'Mbappe' matches 'Kylian Mbappe')
+        4. Substring / prefix match
+        """
+        p_name = str(query).strip().strip("'\"")
+        if not p_name:
+            return None
+
+        # 1. Check mention or raw numeric id
+        uid = None
+        if p_name.startswith("<@") and p_name.endswith(">"):
+            r = p_name.strip("<@!>")
+            if r.isdigit():
+                uid = int(r)
+        elif p_name.isdigit() and len(p_name) >= 15:
+            uid = int(p_name)
+
+        if uid:
+            await cur.execute(
+                "SELECT * FROM club_players WHERE club_id = ? AND (user_id = ? OR LOWER(player_name) = LOWER(?));",
+                (club_id, uid, p_name),
+            )
+            row = await cur.fetchone()
+            if row:
+                return dict(row)
+
+        # 2. Exact case-insensitive match
+        await cur.execute(
+            "SELECT * FROM club_players WHERE club_id = ? AND LOWER(player_name) = LOWER(?);",
+            (club_id, p_name),
+        )
+        row = await cur.fetchone()
+        if row:
+            return dict(row)
+
+        # 3. Word match / substring in club squad
+        await cur.execute(
+            "SELECT * FROM club_players WHERE club_id = ?;",
+            (club_id,),
+        )
+        all_players = [dict(r) for r in await cur.fetchall()]
+        q_low = p_name.lower()
+
+        # Check if q_low is one of the individual words in player_name (e.g. 'mbappe' in ['kylian', 'mbappe'])
+        word_matches = [
+            p for p in all_players
+            if q_low in [w.lower() for w in p["player_name"].split()]
+        ]
+        if len(word_matches) == 1:
+            return word_matches[0]
+
+        # Check substring match
+        sub_matches = [
+            p for p in all_players
+            if q_low in p["player_name"].lower()
+        ]
+        if len(sub_matches) == 1:
+            return sub_matches[0]
+        elif len(sub_matches) > 1:
+            # Prefer prefix match if unique
+            pref_matches = [p for p in sub_matches if p["player_name"].lower().startswith(q_low)]
+            if len(pref_matches) == 1:
+                return pref_matches[0]
+
+        return None
+
+    async def switch_lineup_position(
+        self,
+        guild_id: int,
+        club_query: Any,
+        player_query: str,
+        new_position: str,
+        default_owner_id: int = 0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Switch or change a player's position in a club lineup without losing any user data.
+        All stats, rating, potential, number, and attributes remain strictly untouched.
+        If another starting player currently occupies the target position, their positions
+        are automatically swapped tactically so the XI remains balanced.
+        """
+        p_name = str(player_query).strip()
+        pos = str(new_position).strip().upper()
+        if not p_name:
+            return False, "Player name or mention must be specified.", {}
+        if pos not in VALID_POSITIONS:
+            return False, f"Invalid position '{new_position}'. Supported positions: {', '.join(VALID_POSITIONS)}.", {}
+
+        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=default_owner_id)
+        if not club:
+            club_label = club_query.mention if hasattr(club_query, "mention") else str(club_query)
+            return False, f"Club {club_label} not found.", {}
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            player = await self._resolve_club_player(cur, club["id"], p_name)
+            if not player:
+                return False, f"Player **{p_name}** not found in **[{club['tag']}] {club['name']}** squad.", {}
+
+            old_pos = player.get("position", "??")
+            if old_pos == pos:
+                return True, f"Player **{player['player_name']}** is already positioned as **{pos}**.", player
+
+            # If the player is a starter, check if another starter already holds this position to swap them
+            if player.get("status") == "starting":
+                await cur.execute(
+                    "SELECT * FROM club_players WHERE club_id = ? AND status = 'starting' AND position = ? AND id != ?;",
+                    (club["id"], pos, player["id"]),
+                )
+                occupant = await cur.fetchone()
+                if occupant:
+                    occupant = dict(occupant)
+                    # Swap positions between the two starters
+                    await cur.execute(
+                        "UPDATE club_players SET position = ? WHERE id = ?;",
+                        (old_pos, occupant["id"]),
+                    )
+                    await cur.execute(
+                        "UPDATE club_players SET position = ? WHERE id = ?;",
+                        (pos, player["id"]),
+                    )
+                    await conn.commit()
+                    player["position"] = pos
+                    return True, (
+                        f"🔁 **Lineup Positions Swapped!**\n"
+                        f"• **{player['player_name']}**: `{old_pos}` ➔ **`{pos}`**\n"
+                        f"• **{occupant['player_name']}**: `{pos}` ➔ **`{old_pos}`**\n"
+                        f"• Club: **[{club['tag']}] {club['name']}**\n"
+                        f"*(Lineup tactical positions updated, all user data & stats preserved)*"
+                    ), player
+
+            # Clean new primary position from alternate positions if it was listed there
+            alt_pos = normalize_alt_positions(player.get("alt_positions"), primary_pos=pos)
+
+            await cur.execute(
+                "UPDATE club_players SET position = ?, alt_positions = ? WHERE id = ?;",
+                (pos, alt_pos, player["id"]),
+            )
+            await conn.commit()
+
+            player["position"] = pos
+            player["alt_positions"] = alt_pos
+            return True, (
+                f"🔁 **Position Switched!**\n"
+                f"• Player: **{player['player_name']}**\n"
+                f"• Position: `{old_pos}` ➔ **`{pos}`**\n"
+                f"• Status: `{player['status'].capitalize()}`\n"
+                f"• Club: **[{club['tag']}] {club['name']}**\n"
+                f"*(Attributes rating [{player.get('rating', 75)} OVR], potential [{player.get('potential', 80)} POT] preserved)*"
+            ), player
+
 
     async def get_club_lineup(
         self,
@@ -2287,42 +2656,13 @@ class DatabaseManager:
             club_label = club_query.mention if hasattr(club_query, "mention") else str(club_query)
             return False, f"Club {club_label} not found."
 
-        def parse_uid(s):
-            if s.startswith("<@") and s.endswith(">"):
-                r = s.strip("<@!>")
-                return int(r) if r.isdigit() else None
-            return int(s) if s.isdigit() and len(s) >= 15 else None
-
-        u1 = parse_uid(p1_name)
-        u2 = parse_uid(p2_name)
-
         conn = await self.connect()
         async with conn.cursor() as cur:
-            if u1:
-                await cur.execute(
-                    "SELECT * FROM club_players WHERE club_id = ? AND (user_id = ? OR LOWER(player_name) = LOWER(?));",
-                    (club["id"], u1, p1_name),
-                )
-            else:
-                await cur.execute(
-                    "SELECT * FROM club_players WHERE club_id = ? AND LOWER(player_name) = LOWER(?);",
-                    (club["id"], p1_name),
-                )
-            p1 = await cur.fetchone()
+            p1 = await self._resolve_club_player(cur, club["id"], p1_name)
             if not p1:
                 return False, f"Player **{p1_name}** was not found in **[{club['tag']}] {club['name']}** squad."
 
-            if u2:
-                await cur.execute(
-                    "SELECT * FROM club_players WHERE club_id = ? AND (user_id = ? OR LOWER(player_name) = LOWER(?));",
-                    (club["id"], u2, p2_name),
-                )
-            else:
-                await cur.execute(
-                    "SELECT * FROM club_players WHERE club_id = ? AND LOWER(player_name) = LOWER(?);",
-                    (club["id"], p2_name),
-                )
-            p2 = await cur.fetchone()
+            p2 = await self._resolve_club_player(cur, club["id"], p2_name)
             if not p2:
                 return False, f"Player **{p2_name}** was not found in **[{club['tag']}] {club['name']}** squad."
 

@@ -27,8 +27,9 @@ from utils.embeds import (
     summary_commands_embed,
     summary_economy_embed,
     summary_squad_embed,
+    help_system_guide_embed,
 )
-from utils.views import PaginationView, SummaryView
+from utils.views import PaginationView, SummaryView, HelpView
 
 
 class Economy(commands.Cog):
@@ -194,7 +195,7 @@ class Economy(commands.Cog):
 
     @app_commands.command(
         name="summary",
-        description="View a simple, clear summary of BeastlyBank commands and your account status.",
+        description="View your personal account and financial profile summary.",
     )
     @app_commands.describe(
         user="Optional member to view their financial summary (defaults to yourself)",
@@ -216,16 +217,9 @@ class Economy(commands.Cog):
         user_data = await self.db.get_or_create_user(target.id, interaction.guild_id)
         club = await self.db.get_club_by_user(interaction.guild_id, target.id)
 
-        # If inspecting someone else, show their financial statement
-        if user and user.id != interaction.user.id:
-            txs = await self.db.get_transactions(target.id, interaction.guild_id, limit=4)
-            embed = summary_finance_embed(target, user_data, club, txs)
-            await interaction.response.send_message(embed=embed)
-            return
-
-        # Main overview summary with interactive buttons
+        # Overview summary with interactive buttons
         embed = summary_overview_embed(target, user_data, club)
-        view = SummaryView(self.db, target, user_data, club)
+        view = SummaryView(self.db, author=interaction.user, user_data=user_data, club=club, target=target)
         await interaction.response.send_message(embed=embed, view=view)
 
     @app_commands.command(
@@ -233,34 +227,45 @@ class Economy(commands.Cog):
         description="View the interactive guide, cheatsheet, and full command reference for BeastlyBank.",
     )
     @app_commands.describe(
-        category="Specific section to view (overview, squad, cheatsheet, finances, stats)",
+        category="Specific section to view (guide, squad, cheatsheet, stats, overview, finances)",
     )
     @require_beastlyfc()
     async def help_command(
         self,
         interaction: discord.Interaction,
-        category: Optional[Literal["overview", "squad", "cheatsheet", "finances", "stats"]] = "overview",
+        category: Optional[Literal["guide", "overview", "squad", "cheatsheet", "finances", "stats"]] = "guide",
     ):
-        """Interactive command guide and cheatsheet."""
-        user_data = await self.db.get_or_create_user(interaction.user.id, interaction.guild_id)
-        club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
-        view = SummaryView(self.db, interaction.user, user_data, club)
-
-        cat = (category or "overview").lower().strip()
-        if cat == "squad":
+        """Interactive command guide, cheatsheet, and account overview."""
+        cat = (category or "guide").lower().strip()
+        active_tab = "guide"
+        if cat in ("squad", "lineup", "formation", "player", "players"):
             embed = summary_squad_embed()
-        elif cat == "cheatsheet":
+            active_tab = "squad"
+        elif cat in ("cheatsheet", "commands", "cmds", "cmd"):
             embed = summary_commands_embed()
-        elif cat == "finances":
-            txs = await self.db.get_transactions(interaction.user.id, interaction.guild_id, limit=4)
-            embed = summary_finance_embed(interaction.user, user_data, club, txs)
-        elif cat == "stats":
+            active_tab = "cheatsheet"
+        elif cat in ("stats", "economy", "server"):
             stats = await self.db.get_economy_stats(interaction.guild_id)
             embed = summary_economy_embed(stats)
-        else:
+            active_tab = "stats"
+        elif cat in ("finances", "finance"):
+            user_data = await self.db.get_or_create_user(interaction.user.id, interaction.guild_id)
+            club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+            txs = await self.db.get_transactions(interaction.user.id, interaction.guild_id, limit=4)
+            embed = summary_finance_embed(interaction.user, user_data, club, txs)
+            active_tab = "account"
+        elif cat in ("overview", "account", "profile"):
+            user_data = await self.db.get_or_create_user(interaction.user.id, interaction.guild_id)
+            club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
             embed = summary_overview_embed(interaction.user, user_data, club)
+            active_tab = "account"
+        else:
+            embed = help_system_guide_embed()
+            active_tab = "guide"
 
+        view = HelpView(self.db, author=interaction.user, active_tab=active_tab)
         await interaction.response.send_message(embed=embed, view=view)
+
 
     # ------------------ Prefix Commands (bb!) ------------------ #
 
@@ -351,36 +356,41 @@ class Economy(commands.Cog):
             return
         user_data = await self.db.get_or_create_user(target.id, ctx.guild.id)
         club = await self.db.get_club_by_user(ctx.guild.id, target.id)
-        if user and user.id != ctx.author.id:
-            txs = await self.db.get_transactions(target.id, ctx.guild.id, limit=4)
-            embed = summary_finance_embed(target, user_data, club, txs)
-            await ctx.send(embed=embed)
-            return
         embed = summary_overview_embed(target, user_data, club)
-        view = SummaryView(self.db, target, user_data, club)
+        view = SummaryView(self.db, author=ctx.author, user_data=user_data, club=club, target=target)
         await ctx.send(embed=embed, view=view)
 
     @commands.command(name="help", aliases=["guide"])
     async def prefix_help(self, ctx: commands.Context, category: Optional[str] = None):
-        """bb!help [category: overview|squad|cheatsheet|finances|stats]"""
-        user_data = await self.db.get_or_create_user(ctx.author.id, ctx.guild.id)
-        club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
-        view = SummaryView(self.db, ctx.author, user_data, club)
-
-        cat = (category or "overview").lower().strip()
+        """bb!help [category: guide|squad|cheatsheet|stats|account]"""
+        cat = (category or "guide").lower().strip()
+        active_tab = "guide"
         if cat in ("squad", "lineup", "formation", "player", "players"):
             embed = summary_squad_embed()
+            active_tab = "squad"
         elif cat in ("cheatsheet", "commands", "cmds", "cmd"):
             embed = summary_commands_embed()
-        elif cat in ("finances", "finance", "myfinances", "balance", "bal"):
-            txs = await self.db.get_transactions(ctx.author.id, ctx.guild.id, limit=4)
-            embed = summary_finance_embed(ctx.author, user_data, club, txs)
+            active_tab = "cheatsheet"
         elif cat in ("stats", "economy", "server"):
             stats = await self.db.get_economy_stats(ctx.guild.id)
             embed = summary_economy_embed(stats)
-        else:
+            active_tab = "stats"
+        elif cat in ("finances", "finance", "myfinances", "balance", "bal"):
+            user_data = await self.db.get_or_create_user(ctx.author.id, ctx.guild.id)
+            club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+            txs = await self.db.get_transactions(ctx.author.id, ctx.guild.id, limit=4)
+            embed = summary_finance_embed(ctx.author, user_data, club, txs)
+            active_tab = "account"
+        elif cat in ("overview", "account", "profile"):
+            user_data = await self.db.get_or_create_user(ctx.author.id, ctx.guild.id)
+            club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
             embed = summary_overview_embed(ctx.author, user_data, club)
+            active_tab = "account"
+        else:
+            embed = help_system_guide_embed()
+            active_tab = "guide"
 
+        view = HelpView(self.db, author=ctx.author, active_tab=active_tab)
         await ctx.send(embed=embed, view=view)
 
     @commands.command(name="transactions", aliases=["txs"])

@@ -68,6 +68,15 @@ async def upload_database_backup(
         return None
 
     try:
+        # Flush all uncheckpointed Write-Ahead Log (WAL) pages directly into the .db file
+        if hasattr(bot, "db"):
+            try:
+                conn = await bot.db.connect()
+                await conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                await conn.commit()
+            except Exception as cp_err:
+                logger.warning("WAL checkpoint warning: %s", cp_err)
+
         channel = bot.get_channel(BACKUP_CHANNEL_ID)
         if not channel:
             channel = await bot.fetch_channel(BACKUP_CHANNEL_ID)

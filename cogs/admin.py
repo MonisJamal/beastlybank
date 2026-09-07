@@ -489,6 +489,35 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
         )
         await interaction.response.send_message(embed=embed)
 
+    @app_commands.command(
+        name="backup",
+        description="Save and backup the BeastlyBank database to the cloud backup channel.",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def bank_backup(self, interaction: discord.Interaction):
+        from utils.backup import upload_database_backup
+        from config import BACKUP_CHANNEL_ID
+        if not BACKUP_CHANNEL_ID:
+            await interaction.response.send_message(
+                embed=error_embed("Backup Not Configured", "Set `BACKUP_CHANNEL_ID` in your environment variables."),
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        msg = await upload_database_backup(self.bot, reason=f"Manual backup by {interaction.user.display_name}")
+        if msg:
+            await interaction.followup.send(
+                embed=success_embed("Database Backup Saved", f"Successfully saved and uploaded latest snapshot to <#{BACKUP_CHANNEL_ID}>!"),
+                ephemeral=True
+            )
+        else:
+            await interaction.followup.send(
+                embed=error_embed("Backup Failed", "Could not upload snapshot. Please check bot permissions in the backup channel."),
+                ephemeral=True
+            )
+
 
 class BankerPrefixCommands(commands.Cog):
     """Prefix commands for BeastlyBank Bankers and Admins."""

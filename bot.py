@@ -38,6 +38,7 @@ COGS = [
     "cogs.giveaways",
     "cogs.leaderboard",
     "cogs.admin",
+    "utils.backup",
 ]
 
 
@@ -111,6 +112,10 @@ class BeastlyBankBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         """Initialize database, persistent views, and load cogs."""
+        # Cloud persistence: attempt to restore latest database from Discord backup channel
+        from utils.backup import restore_database_from_discord
+        await restore_database_from_discord(self)
+
         logger.info("Initializing BeastlyBank database...")
         await self.db.init_db()
 

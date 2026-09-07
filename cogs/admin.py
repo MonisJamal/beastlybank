@@ -518,6 +518,76 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
                 ephemeral=True
             )
 
+    @app_commands.command(
+        name="restore",
+        description="Restore BeastlyBank database from an attached backup file (Admin/Banker only).",
+    )
+    @app_commands.describe(
+        backup_file="Attach the beastlybank.db backup file to restore",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def bank_restore(self, interaction: discord.Interaction, backup_file: discord.Attachment):
+        if not (backup_file.filename.endswith(".db") or backup_file.filename.endswith(".sqlite")):
+            await interaction.response.send_message(
+                embed=error_embed("Invalid File", "Attached file must be a SQLite database (`.db` or `.sqlite`)."),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+        try:
+            data = await backup_file.read()
+            if len(data) < 100:
+                await interaction.followup.send(embed=error_embed("Invalid File", "Attached file is empty or invalid."), ephemeral=True)
+                return
+
+            import tempfile, sqlite3, os
+            from pathlib import Path
+            from config import DATABASE_PATH
+            from utils.backup import upload_database_backup
+
+            with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+
+            try:
+                test_con = sqlite3.connect(tmp_path)
+                cur = test_con.cursor()
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
+                tables = [t[0] for t in cur.fetchall()]
+                test_con.close()
+                if "users" not in tables and "clubs" not in tables:
+                    await interaction.followup.send(
+                        embed=error_embed("Corrupt Database", "Attached file is missing required tables (`users` or `clubs`)."),
+                        ephemeral=True,
+                    )
+                    return
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
+            if hasattr(self.bot, "db"):
+                await self.bot.db.close()
+
+            target = Path(DATABASE_PATH)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "wb") as f:
+                f.write(data)
+
+            await self.bot.db.init_db()
+            await upload_database_backup(self.bot, reason=f"Restored via /bank restore by {interaction.user.display_name}")
+
+            await interaction.followup.send(
+                embed=success_embed(
+                    "Database Restored Successfully",
+                    f"Successfully restored database with **{len(tables)} tables**!\nA fresh cloud checkpoint has been saved to the backup channel."
+                ),
+                ephemeral=True,
+            )
+        except Exception as e:
+            await interaction.followup.send(embed=error_embed("Restore Failed", f"An error occurred: `{e}`"), ephemeral=True)
+
 
 class BankerPrefixCommands(commands.Cog):
     """Prefix commands for BeastlyBank Bankers and Admins."""

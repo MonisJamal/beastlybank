@@ -195,6 +195,68 @@ class BackupCog(commands.Cog):
         else:
             await ctx.send("❌ Failed to create database backup. Check bot permissions in backup channel.")
 
+    @commands.command(name="restore", aliases=["dbrestore", "loaddb"])
+    async def prefix_restore(self, ctx: commands.Context):
+        """bb!restore - Attach a beastlybank.db backup file to restore it directly."""
+        from utils.checks import is_banker_or_admin
+        if not is_banker_or_admin(ctx.author):
+            await ctx.send("❌ Only Server Admins and Bankers can restore the database.")
+            return
+
+        att = ctx.message.attachments[0] if ctx.message.attachments else None
+        if not att:
+            await ctx.send("❌ Please attach the `beastlybank.db` backup file to your message (download it from the backup channel and attach it with `bb!restore`).")
+            return
+
+        if not (att.filename.endswith(".db") or att.filename.endswith(".sqlite")):
+            await ctx.send("❌ Attached file must be a SQLite database (`.db` or `.sqlite`).")
+            return
+
+        try:
+            data = await att.read()
+            if len(data) < 100:
+                await ctx.send("❌ The attached file is empty or invalid.")
+                return
+
+            import tempfile, sqlite3
+            with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
+                tmp.write(data)
+                tmp_path = tmp.name
+
+            try:
+                test_con = sqlite3.connect(tmp_path)
+                cur = test_con.cursor()
+                cur.execute("SELECT name FROM sqlite_master WHERE type='table';")
+                tables = [t[0] for t in cur.fetchall()]
+                test_con.close()
+                if "users" not in tables and "clubs" not in tables:
+                    await ctx.send("❌ Attached file does not appear to be a valid BeastlyBank database (missing `users`/`clubs` tables).")
+                    return
+            finally:
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
+            # Close current DB connection safely
+            if hasattr(self.bot, "db"):
+                await self.bot.db.close()
+
+            # Replace local database file
+            target = Path(DATABASE_PATH)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "wb") as f:
+                f.write(data)
+
+            # Re-initialize DB
+            await self.bot.db.init_db()
+
+            # Upload fresh backup confirming restored state
+            await upload_database_backup(self.bot, reason=f"Restored from manual file by {ctx.author.display_name}")
+
+            await ctx.send(f"✅ **Database Restored Successfully!** Active ledger loaded with {len(tables)} tables. A new cloud snapshot has been created.")
+        except Exception as e:
+            logger.error("Restore failed: %s", e)
+            await ctx.send(f"❌ Failed to restore database: `{e}`")
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(BackupCog(bot))

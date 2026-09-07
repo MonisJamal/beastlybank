@@ -18,6 +18,7 @@ from config import BACKUP_CHANNEL_ID, DATABASE_PATH, BOT_NAME
 logger = logging.getLogger("BeastlyBank.Backup")
 
 _last_backup_mtime: float = 0.0
+_last_backup_timestamp: float = time.time()
 
 
 async def restore_database_from_discord(bot: commands.Bot) -> bool:
@@ -111,9 +112,26 @@ async def upload_database_backup(
         file = discord.File(str(db_path), filename="beastlybank.db")
         msg = await channel.send(embed=embed, file=file)
 
-        global _last_backup_mtime
-        _last_backup_mtime = db_path.stat().st_mtime
+        global _last_backup_mtime, _last_backup_timestamp
+        _last_backup_mtime = max(db_path.stat().st_mtime, (Path(str(DATABASE_PATH) + "-wal").stat().st_mtime if Path(str(DATABASE_PATH) + "-wal").exists() else 0))
+        _last_backup_timestamp = time.time()
         logger.info("💾 Successfully uploaded database backup to Discord (%s).", reason)
+
+        # Prune older backup messages to keep channel clean (keep newest 5)
+        try:
+            bot_msgs = []
+            async for old_msg in channel.history(limit=25):
+                if old_msg.author == bot.user and old_msg.attachments:
+                    bot_msgs.append(old_msg)
+            if len(bot_msgs) > 5:
+                for old in bot_msgs[5:]:
+                    try:
+                        await old.delete()
+                    except Exception:
+                        pass
+        except Exception as prune_err:
+            logger.debug("Old backup prune: %s", prune_err)
+
         return msg
     except Exception as e:
         logger.warning("Failed to upload database backup to Discord: %s", e)
@@ -132,17 +150,28 @@ class BackupCog(commands.Cog):
         if self.auto_backup_loop.is_running():
             self.auto_backup_loop.cancel()
 
-    @tasks.loop(minutes=3)
+    @tasks.loop(seconds=60)
     async def auto_backup_loop(self):
-        """Periodically backup database if it has been updated."""
-        global _last_backup_mtime
+        """Check for database modifications every 60s and backup if changed or on 10-min heartbeat."""
+        global _last_backup_mtime, _last_backup_timestamp
         db_path = Path(DATABASE_PATH)
+        wal_path = Path(str(DATABASE_PATH) + "-wal")
         if not db_path.exists():
             return
 
-        current_mtime = db_path.stat().st_mtime
-        if current_mtime > _last_backup_mtime:
-            await upload_database_backup(self.bot, reason="Automated Periodic Sync")
+        now = time.time()
+        mtime_main = db_path.stat().st_mtime
+        mtime_wal = wal_path.stat().st_mtime if wal_path.exists() else 0
+        wal_size = wal_path.stat().st_size if wal_path.exists() else 0
+
+        current_max_mtime = max(mtime_main, mtime_wal)
+        has_new_data = (wal_size > 0) or (current_max_mtime > _last_backup_mtime)
+        time_elapsed = now - _last_backup_timestamp
+        is_heartbeat = (time_elapsed >= 600)  # 10 minutes heartbeat
+
+        if has_new_data or is_heartbeat:
+            reason = "Live Data Change" if has_new_data else "Scheduled 10-Min Heartbeat"
+            await upload_database_backup(self.bot, reason=reason)
 
     @auto_backup_loop.before_loop
     async def before_backup_loop(self):

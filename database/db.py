@@ -1726,7 +1726,7 @@ class DatabaseManager:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
-    async def get_club_leaderboard(self, guild_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+    async def get_club_leaderboard(self, guild_id: int, limit: int = 100) -> List[Dict[str, Any]]:
         """Get clubs ranked by total treasury wealth."""
         conn = await self.connect()
         async with conn.cursor() as cur:

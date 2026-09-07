@@ -14,13 +14,14 @@ class PaginationView(discord.ui.View):
         embed_generator: Callable[[int], discord.Embed],
         total_pages: int,
         author_id: int,
+        current_page: int = 1,
         timeout: float = 120.0,
     ):
         super().__init__(timeout=timeout)
         self.embed_generator = embed_generator
         self.total_pages = max(1, total_pages)
         self.author_id = author_id
-        self.current_page = 1
+        self.current_page = max(1, min(current_page, self.total_pages))
         self._update_buttons()
 
     def _update_buttons(self) -> None:
@@ -50,6 +51,10 @@ class PaginationView(discord.ui.View):
             self._update_buttons()
             embed = self.embed_generator(self.current_page)
             await interaction.response.edit_message(embed=embed, view=self)
+
+    async def on_timeout(self) -> None:
+        self.prev_button.disabled = True
+        self.next_button.disabled = True
 
 
 class GiveawayView(discord.ui.View):

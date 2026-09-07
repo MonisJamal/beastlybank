@@ -2358,6 +2358,150 @@ async def test_admin_owner_and_deleteclub_commands(db: DatabaseManager):
     assert "Club Disbanded" in ctx_del.send.call_args[1]["embed"].title
 
 
+@pytest.mark.asyncio
+async def test_club_list_pagination(db: DatabaseManager):
+    """Verify club list displays all clubs across multiple pages with 10 per page and interactive view."""
+    from unittest.mock import AsyncMock
+    from discord.ext import commands
+    from cogs.clubs import Clubs, ClubPrefixCommands
+    from utils.views import PaginationView
+
+    guild_id = 999999999
+    user_id = 123456789
+    mock_bot = MagicMock()
+    mock_bot.db = db
+
+    clubs_cog = Clubs(mock_bot)
+    prefix_cog = ClubPrefixCommands(mock_bot)
+
+    # 1. Test empty state
+    inter_empty = MagicMock(spec=discord.Interaction)
+    inter_empty.guild_id = guild_id
+    inter_empty.user = MagicMock()
+    inter_empty.user.id = user_id
+    inter_empty.response = MagicMock()
+    inter_empty.response.send_message = AsyncMock()
+
+    await clubs_cog.club_list.callback(clubs_cog, inter_empty)
+    inter_empty.response.send_message.assert_called_once()
+    empty_embed = inter_empty.response.send_message.call_args[1]["embed"]
+    assert "No clubs have registered" in empty_embed.description
+
+    # 2. Register 14 clubs (Page 1 = 10 clubs, Page 2 = 4 clubs)
+    for i in range(1, 15):
+        tag = f"C{i:02d}"
+        name = f"Club {i:02d}"
+        owner_id = 1000 + i
+        role_id = 50000 + i
+        await db.create_club(guild_id, name, tag, owner_id, role_id=role_id)
+        # Give varying wealth so ranking is distinct
+        await db.update_club_treasury(guild_id, role_id, "cash", "set", (15 - i) * 10000, 888888888)
+
+    all_clubs = await db.get_club_leaderboard(guild_id, limit=200)
+    assert len(all_clubs) == 14
+
+    # 3. Test slash command /club list (default page 1)
+    inter_p1 = MagicMock(spec=discord.Interaction)
+    inter_p1.guild_id = guild_id
+    inter_p1.user = MagicMock()
+    inter_p1.user.id = user_id
+    inter_p1.response = MagicMock()
+    inter_p1.response.send_message = AsyncMock()
+
+    await clubs_cog.club_list.callback(clubs_cog, inter_p1, page=1)
+    inter_p1.response.send_message.assert_called_once()
+    embed_p1 = inter_p1.response.send_message.call_args[1]["embed"]
+    view_p1 = inter_p1.response.send_message.call_args[1]["view"]
+
+    assert len(embed_p1.fields) == 10
+    assert "Showing clubs 1–10 of 14 registered clubs" in embed_p1.description
+    assert "Page 1 of 2" in embed_p1.footer.text
+    assert isinstance(view_p1, PaginationView)
+    assert view_p1.total_pages == 2
+    assert view_p1.current_page == 1
+    assert view_p1.prev_button.disabled is True
+    assert view_p1.next_button.disabled is False
+
+    # 4. Test slash command /club list page=2
+    inter_p2 = MagicMock(spec=discord.Interaction)
+    inter_p2.guild_id = guild_id
+    inter_p2.user = MagicMock()
+    inter_p2.user.id = user_id
+    inter_p2.response = MagicMock()
+    inter_p2.response.send_message = AsyncMock()
+
+    await clubs_cog.club_list.callback(clubs_cog, inter_p2, page=2)
+    inter_p2.response.send_message.assert_called_once()
+    embed_p2 = inter_p2.response.send_message.call_args[1]["embed"]
+    view_p2 = inter_p2.response.send_message.call_args[1]["view"]
+
+    assert len(embed_p2.fields) == 4
+    assert "Showing clubs 11–14 of 14 registered clubs" in embed_p2.description
+    assert "Page 2 of 2" in embed_p2.footer.text
+    assert view_p2.current_page == 2
+    assert view_p2.prev_button.disabled is False
+    assert view_p2.next_button.disabled is True
+
+    # 5. Test button interaction on PaginationView
+    button_inter = MagicMock(spec=discord.Interaction)
+    button_inter.user = MagicMock()
+    button_inter.user.id = user_id
+    button_inter.response = MagicMock()
+    button_inter.response.edit_message = AsyncMock()
+
+    # Click Next on Page 1 View
+    await view_p1.next_button.callback(button_inter)
+    assert view_p1.current_page == 2
+    button_inter.response.edit_message.assert_called_once()
+    next_embed = button_inter.response.edit_message.call_args[1]["embed"]
+    assert "Page 2 of 2" in next_embed.footer.text
+    assert view_p1.prev_button.disabled is False
+    assert view_p1.next_button.disabled is True
+
+    # Click Previous on Page 2 View
+    button_inter.response.edit_message.reset_mock()
+    await view_p1.prev_button.callback(button_inter)
+    assert view_p1.current_page == 1
+    button_inter.response.edit_message.assert_called_once()
+    prev_embed = button_inter.response.edit_message.call_args[1]["embed"]
+    assert "Page 1 of 2" in prev_embed.footer.text
+    assert view_p1.prev_button.disabled is True
+    assert view_p1.next_button.disabled is False
+
+    # 6. Test prefix command bb!club list and bb!clubs
+    mock_guild = MagicMock(spec=discord.Guild)
+    mock_guild.id = guild_id
+    ctx_pref = MagicMock(spec=commands.Context)
+    ctx_pref.guild = mock_guild
+    ctx_pref.author = MagicMock()
+    ctx_pref.author.id = user_id
+    ctx_pref.send = AsyncMock()
+
+    # Default prefix call
+    await prefix_cog.prefix_club_list.callback(prefix_cog, ctx_pref)
+    ctx_pref.send.assert_called_once()
+    pref_embed1 = ctx_pref.send.call_args[1]["embed"]
+    assert len(pref_embed1.fields) == 10
+    assert "Page 1 of 2" in pref_embed1.footer.text
+
+    # Page 2 call: bb!club list 2
+    ctx_pref.send.reset_mock()
+    await prefix_cog.prefix_club_list.callback(prefix_cog, ctx_pref, "2")
+    ctx_pref.send.assert_called_once()
+    pref_embed2 = ctx_pref.send.call_args[1]["embed"]
+    assert len(pref_embed2.fields) == 4
+    assert "Page 2 of 2" in pref_embed2.footer.text
+
+    # Standalone command bb!clubs 2
+    ctx_pref.send.reset_mock()
+    await prefix_cog.prefix_standalone_clubs.callback(prefix_cog, ctx_pref, "page", "2")
+    ctx_pref.send.assert_called_once()
+    pref_embed3 = ctx_pref.send.call_args[1]["embed"]
+    assert len(pref_embed3.fields) == 4
+    assert "Page 2 of 2" in pref_embed3.footer.text
+
+
+
 
 
 

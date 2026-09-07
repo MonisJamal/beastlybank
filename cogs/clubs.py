@@ -17,6 +17,7 @@ from utils.embeds import (
     error_embed,
     success_embed,
 )
+from utils.views import PaginationView
 
 
 
@@ -440,38 +441,77 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
 
     @app_commands.command(
         name="list",
-        description="View the wealthiest BeastlyFC Club Treasuries leaderboard.",
+        description="View the wealthiest BeastlyFC Club Treasuries leaderboard (with multi-page navigation).",
+    )
+    @app_commands.describe(
+        page="Page number of clubs to view (10 clubs per page)",
     )
     @require_beastlyfc()
-    async def club_list(self, interaction: discord.Interaction):
-        clubs = await self.db.get_club_leaderboard(interaction.guild_id, limit=10)
-
-        embed = create_beastly_embed(
-            title="🏟️ BeastlyFC Club Treasuries Leaderboard",
-            description="Ranking of all registered clubs by total treasury assets:\n━━━━━━━━━━━━━━━━━━━━━━",
-            color=COLOR_BEASTLY_GOLD,
-        )
+    async def club_list(self, interaction: discord.Interaction, page: Optional[int] = 1):
+        clubs = await self.db.get_club_leaderboard(interaction.guild_id, limit=200)
 
         if not clubs:
-            embed.description += "\n*No clubs have registered with BeastlyBank yet. Be the first with `/club create`!*"
+            embed = create_beastly_embed(
+                title="🏟️ BeastlyFC Club Treasuries Leaderboard",
+                description=(
+                    "Ranking of all registered clubs by total treasury assets:\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "*No clubs have registered with BeastlyBank yet. Be the first with `/club create`!*"
+                ),
+                color=COLOR_BEASTLY_GOLD,
+            )
             await interaction.response.send_message(embed=embed)
             return
 
-        medals = ["🥇", "🥈", "🥉"]
-        for idx, c in enumerate(clubs, start=1):
-            rank_str = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
-            embed.add_field(
-                name=f"{rank_str} [{c['tag']}] {c['name']} (Owner: <@{c['owner_id']}>)",
-                value=(
-                    f"👥 Squad: **{c.get('member_count', 1)}** | "
-                    f"💵 Cash: `{c['treasury_cash']:,}` | "
-                    f"⭐ Points: `{c['treasury_points']:,}` | "
-                    f"🎟️ Tokens: `{c['treasury_tokens']:,}`"
+        per_page = 10
+        total_pages = max(1, (len(clubs) + per_page - 1) // per_page)
+        target_page = max(1, min(page or 1, total_pages))
+
+        def make_page_embed(p: int) -> discord.Embed:
+            p = max(1, min(p, total_pages))
+            start_idx = (p - 1) * per_page
+            page_clubs = clubs[start_idx : start_idx + per_page]
+
+            embed = create_beastly_embed(
+                title="🏟️ BeastlyFC Club Treasuries Leaderboard",
+                description=(
+                    f"Ranking of all registered clubs by total treasury assets:\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"*Showing clubs {start_idx + 1}–{start_idx + len(page_clubs)} of {len(clubs)} registered clubs*"
                 ),
-                inline=False,
+                color=COLOR_BEASTLY_GOLD,
             )
 
-        await interaction.response.send_message(embed=embed)
+            medals = ["🥇", "🥈", "🥉"]
+            for idx, c in enumerate(page_clubs, start=start_idx + 1):
+                rank_str = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
+                owner_str = f"<@{c['owner_id']}>" if c.get("owner_id") else "*Vacant*"
+                embed.add_field(
+                    name=f"{rank_str} [{c['tag']}] {c['name']} (Owner: {owner_str})",
+                    value=(
+                        f"👥 Squad: **{c.get('member_count', 1)}** | "
+                        f"💵 Cash: `{c['treasury_cash']:,}` | "
+                        f"⭐ Points: `{c['treasury_points']:,}` | "
+                        f"🎟️ Tokens: `{c['treasury_tokens']:,}`"
+                    ),
+                    inline=False,
+                )
+            embed.set_footer(text=f"Page {p} of {total_pages} • BeastlyFC Bank")
+            return embed
+
+        initial_embed = make_page_embed(target_page)
+
+        if total_pages <= 1:
+            await interaction.response.send_message(embed=initial_embed)
+            return
+
+        view = PaginationView(
+            embed_generator=make_page_embed,
+            total_pages=total_pages,
+            author_id=interaction.user.id,
+            current_page=target_page,
+        )
+        await interaction.response.send_message(embed=initial_embed, view=view)
 
     @app_commands.command(
         name="addmanager",
@@ -1156,34 +1196,87 @@ class ClubPrefixCommands(commands.Cog):
         )
         await ctx.send(embed=embed)
 
-    @prefix_club.command(name="list")
-    async def prefix_club_list(self, ctx: commands.Context):
-        """bb!club list"""
-        clubs = await self.db.get_club_leaderboard(ctx.guild.id, limit=10)
-        embed = create_beastly_embed(
-            title="🏟️ BeastlyFC Club Treasuries Leaderboard",
-            description="Ranking of all registered clubs by total treasury assets:\n━━━━━━━━━━━━━━━━━━━━━━",
-            color=COLOR_BEASTLY_GOLD,
-        )
+    @prefix_club.command(name="list", aliases=["all", "leaderboard", "ranking", "lb"])
+    async def prefix_club_list(self, ctx: commands.Context, *args):
+        """bb!club list [page]"""
+        await self._handle_club_list_prefix(ctx, args)
+
+    @commands.command(name="clubs", aliases=["clublist"])
+    async def prefix_standalone_clubs(self, ctx: commands.Context, *args):
+        """bb!clubs [page] / bb!clublist [page]"""
+        await self._handle_club_list_prefix(ctx, args)
+
+    async def _handle_club_list_prefix(self, ctx: commands.Context, args):
+        target_page = 1
+        for a in args:
+            clean = a.lower().replace("page", "").replace("p", "").strip()
+            if clean.isdigit():
+                target_page = max(1, int(clean))
+                break
+
+        clubs = await self.db.get_club_leaderboard(ctx.guild.id, limit=200)
         if not clubs:
-            embed.description += "\n*No clubs have registered with BeastlyBank yet. Be the first with `bb!club create`!*"
+            embed = create_beastly_embed(
+                title="🏟️ BeastlyFC Club Treasuries Leaderboard",
+                description=(
+                    "Ranking of all registered clubs by total treasury assets:\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "*No clubs have registered with BeastlyBank yet. Be the first with `bb!club create`!*"
+                ),
+                color=COLOR_BEASTLY_GOLD,
+            )
             await ctx.send(embed=embed)
             return
 
-        medals = ["🥇", "🥈", "🥉"]
-        for idx, c in enumerate(clubs, start=1):
-            rank_str = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
-            embed.add_field(
-                name=f"{rank_str} [{c['tag']}] {c['name']} (Owner: <@{c['owner_id']}>)",
-                value=(
-                    f"👥 Squad: **{c.get('member_count', 1)}** | "
-                    f"💵 Cash: `{c['treasury_cash']:,}` | "
-                    f"⭐ Points: `{c['treasury_points']:,}` | "
-                    f"🎟️ Tokens: `{c['treasury_tokens']:,}`"
+        per_page = 10
+        total_pages = max(1, (len(clubs) + per_page - 1) // per_page)
+        target_page = max(1, min(target_page, total_pages))
+
+        def make_page_embed(p: int) -> discord.Embed:
+            p = max(1, min(p, total_pages))
+            start_idx = (p - 1) * per_page
+            page_clubs = clubs[start_idx : start_idx + per_page]
+
+            embed = create_beastly_embed(
+                title="🏟️ BeastlyFC Club Treasuries Leaderboard",
+                description=(
+                    f"Ranking of all registered clubs by total treasury assets:\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"*Showing clubs {start_idx + 1}–{start_idx + len(page_clubs)} of {len(clubs)} registered clubs*"
                 ),
-                inline=False,
+                color=COLOR_BEASTLY_GOLD,
             )
-        await ctx.send(embed=embed)
+
+            medals = ["🥇", "🥈", "🥉"]
+            for idx, c in enumerate(page_clubs, start=start_idx + 1):
+                rank_str = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
+                owner_str = f"<@{c['owner_id']}>" if c.get("owner_id") else "*Vacant*"
+                embed.add_field(
+                    name=f"{rank_str} [{c['tag']}] {c['name']} (Owner: {owner_str})",
+                    value=(
+                        f"👥 Squad: **{c.get('member_count', 1)}** | "
+                        f"💵 Cash: `{c['treasury_cash']:,}` | "
+                        f"⭐ Points: `{c['treasury_points']:,}` | "
+                        f"🎟️ Tokens: `{c['treasury_tokens']:,}`"
+                    ),
+                    inline=False,
+                )
+            embed.set_footer(text=f"Page {p} of {total_pages} • BeastlyFC Bank")
+            return embed
+
+        initial_embed = make_page_embed(target_page)
+
+        if total_pages <= 1:
+            await ctx.send(embed=initial_embed)
+            return
+
+        view = PaginationView(
+            embed_generator=make_page_embed,
+            total_pages=total_pages,
+            author_id=ctx.author.id,
+            current_page=target_page,
+        )
+        await ctx.send(embed=initial_embed, view=view)
 
 
 async def setup(bot: commands.Bot):

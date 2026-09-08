@@ -811,6 +811,86 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
     ):
         await execute_transfer(self.db, interaction, player, from_club, to_club, amount)
 
+    @app_commands.command(
+        name="setbranding",
+        description="Customize your club's matchday lineup card colors, slogans, and chant.",
+    )
+    @app_commands.describe(
+        club="Club role to update (defaults to your own club)",
+        kit_primary="Primary kit hex color (e.g. #DA291C)",
+        kit_secondary="Secondary kit/accent hex color (e.g. #FFFFFF)",
+        slogan_1="Tactical motto line 1 (e.g. LEAD. ADAPT. WIN.)",
+        slogan_2="Tactical motto line 2 (e.g. UNITED IS THE WAY.)",
+        chant="Club chant/motto at the bottom (e.g. GLORY GLORY MAN UNITED.)",
+        logo_url="Direct image URL for club crest",
+    )
+    @require_beastlyfc()
+    async def slash_club_setbranding(
+        self,
+        interaction: discord.Interaction,
+        club: Optional[discord.Role] = None,
+        kit_primary: Optional[str] = None,
+        kit_secondary: Optional[str] = None,
+        slogan_1: Optional[str] = None,
+        slogan_2: Optional[str] = None,
+        chant: Optional[str] = None,
+        logo_url: Optional[str] = None,
+    ):
+        await interaction.response.defer()
+        if club:
+            target_club = await self.db.get_or_create_club_from_role(
+                interaction.guild_id, club, default_owner_id=interaction.user.id
+            )
+        else:
+            target_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+
+        if not target_club:
+            await send_msg(
+                interaction,
+                embed=error_embed("Club Not Found", "You must belong to a club or mention a club role."),
+                ephemeral=True,
+            )
+            return
+
+        is_owner = target_club.get("owner_id") == interaction.user.id
+        can_admin = await is_banker_or_admin(interaction)
+        if not is_owner and not can_admin:
+            await send_msg(
+                interaction,
+                embed=error_embed("Permission Denied", "Only the club owner or server administrators can edit club branding."),
+                ephemeral=True,
+            )
+            return
+
+        success, msg, updated = await self.db.set_club_branding(
+            guild_id=interaction.guild_id,
+            club_query=target_club["id"],
+            kit_primary=kit_primary,
+            kit_secondary=kit_secondary,
+            logo_url=logo_url,
+            slogan_1=slogan_1,
+            slogan_2=slogan_2,
+            chant=chant,
+        )
+
+        if not success:
+            await send_msg(interaction, embed=error_embed("Branding Update Failed", msg), ephemeral=True)
+            return
+
+        embed = success_embed(
+            "Club Branding Updated!",
+            (
+                f"Successfully customized matchday branding for **[{updated['tag']}] {updated['name']}**:\n\n"
+                f"• **Primary Kit Color:** `{updated.get('kit_primary') or 'Default'}`\n"
+                f"• **Secondary Kit Color:** `{updated.get('kit_secondary') or 'Default'}`\n"
+                f"• **Tactical Motto 1:** `{updated.get('slogan_1') or 'Default'}`\n"
+                f"• **Tactical Motto 2:** `{updated.get('slogan_2') or 'Default'}`\n"
+                f"• **Footer Chant:** `{updated.get('chant') or 'Default'}`\n\n"
+                f"Run `/lineupcard` to preview your club's new matchday card!"
+            ),
+        )
+        await send_msg(interaction, embed=embed)
+
 
 class TransferMarket(commands.Cog):
     """Top-level transfer commands for BeastlyFC transfer market (/transfer and bb!transfer)."""
@@ -1443,6 +1523,76 @@ class ClubPrefixCommands(commands.Cog):
     async def prefix_standalone_roster(self, ctx: commands.Context, *args):
         """bb!roster [@role_or_club_name] [page]"""
         await self.prefix_club_roster(ctx, *args)
+
+    @commands.command(name="setbranding", aliases=["clubbranding", "branding"])
+    async def prefix_club_setbranding(self, ctx: commands.Context, *, args: str = ""):
+        """
+        Customize your club's matchday branding.
+        Usage: bb!setbranding <kit_primary> | <kit_secondary> | <slogan_1> | <slogan_2> | <chant> [@role]
+        Example: bb!setbranding #DA291C | #FFFFFF | LEAD. ADAPT. WIN. | UNITED IS THE WAY. | GLORY GLORY MAN UNITED. @United
+        """
+        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        clean_content = ctx.message.content
+        if target_role:
+            clean_content = clean_content.replace(target_role.mention, "").strip()
+
+        parts = clean_content.split(" ", 1)
+        raw_args = parts[1] if len(parts) > 1 else ""
+        fields = [f.strip() for f in raw_args.split("|")]
+
+        if not fields or not fields[0]:
+            await send_msg(
+                ctx,
+                embed=error_embed(
+                    "Missing Information",
+                    "**Usage:** `bb!setbranding <primary_color> | [secondary_color] | [motto_1] | [motto_2] | [chant] [@club_role]`\n"
+                    "**Example:** `bb!setbranding #DA291C | #FFFFFF | LEAD. ADAPT. WIN. | UNITED IS THE WAY. | GLORY GLORY MAN UNITED. @United`"
+                )
+            )
+            return
+
+        kit_primary = fields[0] if len(fields) > 0 and fields[0] else None
+        kit_secondary = fields[1] if len(fields) > 1 and fields[1] else None
+        slogan_1 = fields[2] if len(fields) > 2 and fields[2] else None
+        slogan_2 = fields[3] if len(fields) > 3 and fields[3] else None
+        chant = fields[4] if len(fields) > 4 and fields[4] else None
+
+        if target_role:
+            target_club = await self.db.get_or_create_club_from_role(
+                ctx.guild.id, target_role, default_owner_id=ctx.author.id
+            )
+        else:
+            target_club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+
+        if not target_club:
+            await send_msg(ctx, embed=error_embed("Club Not Found", "You must belong to a club or mention a club role."))
+            return
+
+        is_owner = target_club.get("owner_id") == ctx.author.id
+        can_admin = await is_banker_or_admin(ctx)
+        if not is_owner and not can_admin:
+            await send_msg(ctx, embed=error_embed("Permission Denied", "Only club owners or server administrators can edit branding."))
+            return
+
+        success, msg, updated = await self.db.set_club_branding(
+            guild_id=ctx.guild.id,
+            club_query=target_club["id"],
+            kit_primary=kit_primary,
+            kit_secondary=kit_secondary,
+            slogan_1=slogan_1,
+            slogan_2=slogan_2,
+            chant=chant,
+        )
+        if not success:
+            await send_msg(ctx, embed=error_embed("Branding Update Failed", msg))
+            return
+
+        embed = success_embed(
+            "Club Branding Updated!",
+            f"Successfully updated matchday branding for **[{updated['tag']}] {updated['name']}**.\n"
+            f"Use `/lineupcard` or `bb!lineupimage` to preview!"
+        )
+        await send_msg(ctx, embed=embed)
 
 
 async def setup(bot: commands.Bot):

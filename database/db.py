@@ -378,6 +378,12 @@ class DatabaseManager:
                 "ALTER TABLE club_players ADD COLUMN rating INTEGER DEFAULT 75;",
                 "ALTER TABLE club_players ADD COLUMN potential INTEGER DEFAULT 80;",
                 "ALTER TABLE club_players ADD COLUMN alt_positions TEXT DEFAULT NULL;",
+                "ALTER TABLE clubs ADD COLUMN logo_url TEXT DEFAULT NULL;",
+                "ALTER TABLE clubs ADD COLUMN kit_primary TEXT DEFAULT NULL;",
+                "ALTER TABLE clubs ADD COLUMN kit_secondary TEXT DEFAULT NULL;",
+                "ALTER TABLE clubs ADD COLUMN slogan_1 TEXT DEFAULT NULL;",
+                "ALTER TABLE clubs ADD COLUMN slogan_2 TEXT DEFAULT NULL;",
+                "ALTER TABLE clubs ADD COLUMN chant TEXT DEFAULT NULL;",
             ]:
                 try:
                     await cur.execute(col_stmt)
@@ -2668,6 +2674,60 @@ class DatabaseManager:
         elif starters:
             msg += f"\n\n✅ Starting XI positions already match **{matched}** requirements."
         return True, msg
+
+    async def set_club_branding(
+        self,
+        guild_id: int,
+        club_query: Any,
+        kit_primary: Optional[str] = None,
+        kit_secondary: Optional[str] = None,
+        logo_url: Optional[str] = None,
+        slogan_1: Optional[str] = None,
+        slogan_2: Optional[str] = None,
+        chant: Optional[str] = None,
+        default_owner_id: int = 0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """Update branding settings (kit colors, slogans, logo, chant) for a club."""
+        if isinstance(club_query, dict) and "id" in club_query:
+            club = club_query
+        else:
+            club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=default_owner_id)
+        if not club:
+            club_label = club_query.mention if hasattr(club_query, "mention") else str(club_query)
+            return False, f"Club {club_label} not found.", {}
+
+        updates = []
+        params = []
+        if kit_primary is not None:
+            updates.append("kit_primary = ?")
+            params.append(kit_primary)
+        if kit_secondary is not None:
+            updates.append("kit_secondary = ?")
+            params.append(kit_secondary)
+        if logo_url is not None:
+            updates.append("logo_url = ?")
+            params.append(logo_url)
+        if slogan_1 is not None:
+            updates.append("slogan_1 = ?")
+            params.append(slogan_1)
+        if slogan_2 is not None:
+            updates.append("slogan_2 = ?")
+            params.append(slogan_2)
+        if chant is not None:
+            updates.append("chant = ?")
+            params.append(chant)
+
+        if not updates:
+            return False, "No branding fields provided to update.", club
+
+        params.append(club["id"])
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(f"UPDATE clubs SET {', '.join(updates)} WHERE id = ?;", tuple(params))
+            await cur.execute("SELECT * FROM clubs WHERE id = ?;", (club["id"],))
+            updated = await cur.fetchone()
+            await conn.commit()
+            return True, f"Branding updated for **[{club['tag']}] {club['name']}**.", dict(updated) if updated else club
 
     async def _resolve_club_player(self, cur, club_id: int, query: str) -> Optional[Dict[str, Any]]:
         """

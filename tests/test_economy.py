@@ -3390,6 +3390,85 @@ async def test_lineup_image_generation_and_commands(db: DatabaseManager):
     assert ctx.send.call_args[1]["file"].filename == "lineup.png"
 
 
+@pytest.mark.asyncio
+async def test_adaptive_club_branding_and_lineup_card(db: DatabaseManager):
+    """Verify adaptive club presets, custom theme generation, and database branding persistence."""
+    from utils.lineup_image import get_club_theme, generate_lineup_image
+
+    # 1. Preset Verification: Manchester United
+    mu_theme = get_club_theme("Manchester United")
+    assert mu_theme["mascot"] == "devil"
+    assert mu_theme["primary"] == "#DA291C"
+    assert "GLORY GLORY MAN UNITED" in mu_theme["chant"]
+
+    # 2. Preset Verification: Real Madrid
+    rm_theme = get_club_theme("Real Madrid CF")
+    assert rm_theme["mascot"] == "crown"
+    assert rm_theme["primary"] == "#FFFFFF"
+    assert "HALA MADRID" in rm_theme["slogan_2"]
+
+    # 3. Preset Verification: Arsenal
+    afc_theme = get_club_theme("Arsenal")
+    assert afc_theme["mascot"] == "cannon"
+    assert afc_theme["primary"] == "#EF0107"
+
+    # 4. Custom Server Club Theme with Role Color
+    custom_theme = get_club_theme("Shadow Dragons", role_color="#7C3AED")
+    assert custom_theme["primary"] == "#7C3AED"
+    assert custom_theme["mascot"] == "crest"
+    assert "SHADOW DRAGONS" in custom_theme["chant"]
+
+    # 5. Database Club Branding Persistence
+    guild_id = 888999111
+    owner_id = 998877
+    ok, _, club_data = await db.create_club(guild_id, "Red Devils Fan Club", "RDFC", owner_id=owner_id)
+    assert ok is True
+    club_id = club_data["id"]
+
+    # Update branding via db method
+    b_ok, b_msg, updated = await db.set_club_branding(
+        guild_id=guild_id,
+        club_query=club_id,
+        kit_primary="#990000",
+        kit_secondary="#FFD700",
+        slogan_1="FEAR NO ONE.",
+        slogan_2="RED DEVILS FOREVER.",
+        chant="WE SHALL REIGN SUPREME!",
+    )
+    assert b_ok is True
+    assert updated["kit_primary"] == "#990000"
+    assert updated["slogan_1"] == "FEAR NO ONE."
+
+    # Retrieve lineup and verify branding fields included
+    l_ok, _, l_data = await db.get_club_lineup(guild_id, club_id)
+    assert l_ok is True
+    retrieved_club = l_data["club"]
+    assert retrieved_club["kit_primary"] == "#990000"
+    assert retrieved_club["kit_secondary"] == "#FFD700"
+
+    # 6. Generate Matchday Card with Starting 11 and Bench
+    starters = [
+        {"player_name": f"Starter {i}", "number": i, "position": "ST", "rating": 80 + i}
+        for i in range(1, 12)
+    ]
+    bench = [
+        {"player_name": f"Sub {i}", "number": 11 + i, "position": "SUB", "rating": 75}
+        for i in range(1, 8)
+    ]
+    buf = generate_lineup_image(
+        team_name="Red Devils Fan Club",
+        manager_name="Monis",
+        formation_name="3-4-1-2 / 3-5-2",
+        starting_players=starters,
+        bench_players=bench,
+        custom_branding=retrieved_club,
+    )
+    img_data = buf.getvalue()
+    assert img_data.startswith(b"\x89PNG\r\n\x1a\n")
+    assert len(img_data) > 30000, "Full card with bench must be high resolution"
+
+
+
 
 
 

@@ -229,15 +229,40 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         club_info = data["club"]
         formation = data["formation"]
         starting_players = data["starting"]
+        bench_players = data.get("bench") or []
 
         if view == "image":
-            # Resolve manager display name
+            # Resolve manager display name and avatar
             manager_name = "Club Manager"
+            manager_avatar_bytes = None
             owner_id = club_info.get("owner_id")
             if owner_id and interaction.guild:
                 member = interaction.guild.get_member(owner_id)
                 if member:
                     manager_name = member.display_name
+                    try:
+                        manager_avatar_bytes = await member.display_avatar.read()
+                    except Exception:
+                        pass
+
+            # Resolve role color
+            role_color = None
+            if club and hasattr(club, "color") and club.color.value != 0:
+                role_color = f"#{club.color.value:06x}"
+            elif club_info.get("role_id") and interaction.guild:
+                guild_role = interaction.guild.get_role(club_info["role_id"])
+                if guild_role and guild_role.color.value != 0:
+                    role_color = f"#{guild_role.color.value:06x}"
+
+            # Custom branding fields from database
+            custom_branding = {
+                "kit_primary": club_info.get("kit_primary"),
+                "kit_secondary": club_info.get("kit_secondary"),
+                "slogan_1": club_info.get("slogan_1"),
+                "slogan_2": club_info.get("slogan_2"),
+                "chant": club_info.get("chant"),
+                "logo_url": club_info.get("logo_url"),
+            }
 
             team_name = f"[{club_info['tag']}] {club_info['name']}" if club_info.get("tag") else club_info.get("name", "Beastly FC")
 
@@ -246,6 +271,10 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 manager_name=manager_name,
                 formation_name=formation,
                 starting_players=starting_players,
+                bench_players=bench_players,
+                role_color=role_color,
+                custom_branding=custom_branding,
+                manager_avatar_bytes=manager_avatar_bytes,
             )
             file = discord.File(fp=buf, filename="lineup.png")
             await send_msg(interaction, file=file)
@@ -280,12 +309,13 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
     ):
         await self._handle_lineup(interaction, club=club, view="image")
 
-    @app_commands.command(name="customlineup", description="Generate a custom clean matchday Starting 11 pitch image on the fly.")
+    @app_commands.command(name="customlineup", description="Generate a custom clean matchday Starting 11 & Bench image on the fly.")
     @app_commands.describe(
-        team="Team or club name (e.g. Real Madrid CF)",
-        manager="Manager name (e.g. Carlo Ancelotti)",
-        formation="Formation (e.g. 4-3-3 Balanced, 4-2-3-1 Wide)",
-        players="Optional comma-separated player names",
+        team="Team or club name (e.g. Manchester United, Real Madrid, Arsenal)",
+        manager="Manager name (e.g. Carlo Ancelotti, Erik ten Hag)",
+        formation="Formation (e.g. 3-4-1-2 / 3-5-2, 4-3-3 Balanced)",
+        players="Optional comma-separated starting 11 player names",
+        bench="Optional comma-separated bench player names",
     )
     @app_commands.autocomplete(formation=formation_autocomplete)
     async def slash_custom_lineup(
@@ -295,6 +325,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         manager: str,
         formation: str,
         players: Optional[str] = None,
+        bench: Optional[str] = None,
     ):
         await interaction.response.defer()
         player_list = []
@@ -308,11 +339,30 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                     "rating": None,
                 })
 
+        bench_list = []
+        if bench:
+            bench_names = [p.strip() for p in bench.split(",") if p.strip()]
+            for idx, b_name in enumerate(bench_names[:10], start=12):
+                bench_list.append({
+                    "player_name": b_name,
+                    "number": idx,
+                    "position": "SUB",
+                    "rating": None,
+                })
+
+        manager_avatar_bytes = None
+        try:
+            manager_avatar_bytes = await interaction.user.display_avatar.read()
+        except Exception:
+            pass
+
         buf = generate_lineup_image(
             team_name=team,
             manager_name=manager,
             formation_name=formation,
             starting_players=player_list,
+            bench_players=bench_list,
+            manager_avatar_bytes=manager_avatar_bytes,
         )
         file = discord.File(fp=buf, filename="lineup.png")
         await send_msg(interaction, file=file)
@@ -863,13 +913,36 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         club_info = data["club"]
         formation = data["formation"]
         starting_players = data["starting"]
+        bench_players = data.get("bench") or []
 
         manager_name = "Club Manager"
+        manager_avatar_bytes = None
         owner_id = club_info.get("owner_id")
         if owner_id and ctx.guild:
             member = ctx.guild.get_member(owner_id)
             if member:
                 manager_name = member.display_name
+                try:
+                    manager_avatar_bytes = await member.display_avatar.read()
+                except Exception:
+                    pass
+
+        role_color = None
+        if ctx.message.role_mentions and ctx.message.role_mentions[0].color.value != 0:
+            role_color = f"#{ctx.message.role_mentions[0].color.value:06x}"
+        elif club_info.get("role_id") and ctx.guild:
+            gr = ctx.guild.get_role(club_info["role_id"])
+            if gr and gr.color.value != 0:
+                role_color = f"#{gr.color.value:06x}"
+
+        custom_branding = {
+            "kit_primary": club_info.get("kit_primary"),
+            "kit_secondary": club_info.get("kit_secondary"),
+            "slogan_1": club_info.get("slogan_1"),
+            "slogan_2": club_info.get("slogan_2"),
+            "chant": club_info.get("chant"),
+            "logo_url": club_info.get("logo_url"),
+        }
 
         team_name = f"[{club_info['tag']}] {club_info['name']}" if club_info.get("tag") else club_info.get("name", "Beastly FC")
 
@@ -878,6 +951,10 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             manager_name=manager_name,
             formation_name=formation,
             starting_players=starting_players,
+            bench_players=bench_players,
+            role_color=role_color,
+            custom_branding=custom_branding,
+            manager_avatar_bytes=manager_avatar_bytes,
         )
         file = discord.File(fp=buf, filename="lineup.png")
         await ctx.send(file=file)
@@ -886,8 +963,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
     async def prefix_custom_lineup(self, ctx: commands.Context, *, args: str = ""):
         """
         Generate a custom Starting 11 pitch image.
-        Usage: bb!customlineup <team> | <manager> | <formation> | [players]
-        Example: bb!customlineup Real Madrid | Carlo Ancelotti | 4-3-3 Balanced | Mbappe, Vini, Bellingham
+        Usage: bb!customlineup <team> | <manager> | <formation> | [players] | [bench]
+        Example: bb!customlineup Manchester United | Desti | 3-4-1-2 / 3-5-2 | Benzema, Schick, Marmoush | Zirkzee, Delap
         """
         parts = [p.strip() for p in args.split("|")] if args else []
         if len(parts) < 3:
@@ -895,8 +972,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 embed=error_embed(
                     "Missing Information",
                     "Please provide team, manager, and formation separated by `|`.\n"
-                    "**Usage:** `bb!customlineup <Team Name> | <Manager Name> | <Formation> | [Players...]`\n"
-                    "**Example:** `bb!customlineup Real Madrid | Carlo Ancelotti | 4-3-3 Balanced | Courtois, Mendy, Rudiger, Militao, Carvajal, Tchouameni, Bellingham, Valverde, Vini, Mbappe, Rodrygo`"
+                    "**Usage:** `bb!customlineup <Team Name> | <Manager Name> | <Formation> | [Players...] | [Bench...]`\n"
+                    "**Example:** `bb!customlineup Manchester United | Desti | 3-4-1-2 / 3-5-2 | Benzema, Schick, Marmoush, Kerkez, Barrios, Zaire-Emery, Greenwood, Martinez, Maldini, Alaba, Svilar`"
                 )
             )
             return
@@ -915,11 +992,30 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                     "rating": None,
                 })
 
+        bench_list = []
+        if len(parts) >= 5 and parts[4]:
+            raw_bench = [p.strip() for p in parts[4].split(",") if p.strip()]
+            for idx, b_name in enumerate(raw_bench[:10], start=12):
+                bench_list.append({
+                    "player_name": b_name,
+                    "number": idx,
+                    "position": "SUB",
+                    "rating": None,
+                })
+
+        manager_avatar_bytes = None
+        try:
+            manager_avatar_bytes = await ctx.author.display_avatar.read()
+        except Exception:
+            pass
+
         buf = generate_lineup_image(
             team_name=team,
             manager_name=manager,
             formation_name=formation,
             starting_players=player_list,
+            bench_players=bench_list,
+            manager_avatar_bytes=manager_avatar_bytes,
         )
         file = discord.File(fp=buf, filename="lineup.png")
         await ctx.send(file=file)

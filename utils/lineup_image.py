@@ -9,7 +9,7 @@ import os
 from typing import Any, Dict, List, Optional, Tuple
 from PIL import Image, ImageDraw, ImageFont
 
-from config import SUPPORTED_FORMATIONS, DEFAULT_FORMATION
+from config import SUPPORTED_FORMATIONS, DEFAULT_FORMATION, POSITION_CATEGORIES
 
 
 def get_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
@@ -36,151 +36,300 @@ def get_font(size: int, bold: bool = False) -> ImageFont.ImageFont:
         return ImageFont.load_default()
 
 
+# Complete, mathematically exact tactical coordinates for all 37 formations.
+# Every single position is placed in its authentic football pitch position.
+EXACT_FORMATION_COORDS: Dict[str, List[Tuple[str, float, float]]] = {
+    # ── 3-Back ──
+    "3-1-4-2": [
+        ("GK", 0.50, 0.90),
+        ("CB", 0.26, 0.78), ("CB", 0.50, 0.79), ("CB", 0.74, 0.78),
+        ("CDM", 0.50, 0.64),
+        ("LM", 0.14, 0.48), ("CM", 0.38, 0.48), ("CM", 0.62, 0.48), ("RM", 0.86, 0.48),
+        ("ST", 0.36, 0.16), ("ST", 0.64, 0.16),
+    ],
+    "3-2-4-1": [
+        ("GK", 0.50, 0.90),
+        ("CB", 0.26, 0.78), ("CB", 0.50, 0.79), ("CB", 0.74, 0.78),
+        ("CDM", 0.36, 0.64), ("CDM", 0.64, 0.64),
+        ("LM", 0.14, 0.44), ("CAM", 0.38, 0.35), ("CAM", 0.62, 0.35), ("RM", 0.86, 0.44),
+        ("ST", 0.50, 0.16),
+    ],
+    "3-4-1-2": [
+        ("GK", 0.50, 0.90),
+        ("CB", 0.26, 0.78), ("CB", 0.50, 0.79), ("CB", 0.74, 0.78),
+        ("LM", 0.14, 0.52), ("CM", 0.38, 0.52), ("CM", 0.62, 0.52), ("RM", 0.86, 0.52),
+        ("CAM", 0.50, 0.35),
+        ("ST", 0.36, 0.16), ("ST", 0.64, 0.16),
+    ],
+    "3-4-2-1": [
+        ("GK", 0.50, 0.90),
+        ("CB", 0.26, 0.78), ("CB", 0.50, 0.79), ("CB", 0.74, 0.78),
+        ("LM", 0.14, 0.52), ("CM", 0.38, 0.52), ("CM", 0.62, 0.52), ("RM", 0.86, 0.52),
+        ("CF", 0.33, 0.32), ("CF", 0.67, 0.32),
+        ("ST", 0.50, 0.16),
+    ],
+    "3-4-3 Diamond": [
+        ("GK", 0.50, 0.90),
+        ("CB", 0.26, 0.78), ("CB", 0.50, 0.79), ("CB", 0.74, 0.78),
+        ("CDM", 0.50, 0.64),
+        ("LM", 0.14, 0.48), ("RM", 0.86, 0.48),
+        ("CAM", 0.50, 0.36),
+        ("LW", 0.17, 0.22), ("ST", 0.50, 0.16), ("RW", 0.83, 0.22),
+    ],
+    "3-4-3 Flat": [
+        ("GK", 0.50, 0.90),
+        ("CB", 0.26, 0.78), ("CB", 0.50, 0.79), ("CB", 0.74, 0.78),
+        ("LM", 0.14, 0.50), ("CM", 0.38, 0.50), ("CM", 0.62, 0.50), ("RM", 0.86, 0.50),
+        ("LW", 0.17, 0.22), ("ST", 0.50, 0.16), ("RW", 0.83, 0.22),
+    ],
+    "3-5-1-1": [
+        ("GK", 0.50, 0.90),
+        ("CB", 0.26, 0.78), ("CB", 0.50, 0.79), ("CB", 0.74, 0.78),
+        ("CDM", 0.50, 0.64),
+        ("LM", 0.14, 0.48), ("CM", 0.38, 0.48), ("CM", 0.62, 0.48), ("RM", 0.86, 0.48),
+        ("CAM", 0.50, 0.33),
+        ("ST", 0.50, 0.16),
+    ],
+    "3-5-2": [
+        ("GK", 0.50, 0.90),
+        ("CB", 0.26, 0.78), ("CB", 0.50, 0.79), ("CB", 0.74, 0.78),
+        ("LWB", 0.12, 0.56), ("CDM", 0.37, 0.64), ("CDM", 0.63, 0.64), ("RWB", 0.88, 0.56),
+        ("CAM", 0.50, 0.36),
+        ("ST", 0.36, 0.16), ("ST", 0.64, 0.16),
+    ],
+
+    # ── 4-Back ──
+    "4-1-2-1-2 Narrow": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CDM", 0.50, 0.64),
+        ("CM", 0.34, 0.49), ("CM", 0.66, 0.49),
+        ("CAM", 0.50, 0.35),
+        ("ST", 0.36, 0.16), ("ST", 0.64, 0.16),
+    ],
+    "4-1-2-1-2 Wide": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CDM", 0.50, 0.64),
+        ("LM", 0.14, 0.46), ("RM", 0.86, 0.46),
+        ("CAM", 0.50, 0.35),
+        ("ST", 0.36, 0.16), ("ST", 0.64, 0.16),
+    ],
+    "4-1-3-2": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CDM", 0.50, 0.64),
+        ("LM", 0.14, 0.46), ("CM", 0.50, 0.46), ("RM", 0.86, 0.46),
+        ("ST", 0.36, 0.16), ("ST", 0.64, 0.16),
+    ],
+    "4-1-3-2 Attacking": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CDM", 0.50, 0.64),
+        ("CAM", 0.24, 0.38), ("CAM", 0.50, 0.36), ("CAM", 0.76, 0.38),
+        ("ST", 0.36, 0.16), ("ST", 0.64, 0.16),
+    ],
+    "4-1-4-1": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CDM", 0.50, 0.64),
+        ("LM", 0.14, 0.46), ("CM", 0.38, 0.46), ("CM", 0.62, 0.46), ("RM", 0.86, 0.46),
+        ("ST", 0.50, 0.16),
+    ],
+    "4-2-2-2": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CDM", 0.36, 0.63), ("CDM", 0.64, 0.63),
+        ("CAM", 0.26, 0.38), ("CAM", 0.74, 0.38),
+        ("ST", 0.36, 0.16), ("ST", 0.64, 0.16),
+    ],
+    "4-2-3-1 Attack": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CDM", 0.36, 0.64), ("CDM", 0.64, 0.64),
+        ("CAM", 0.24, 0.38), ("CAM", 0.50, 0.34), ("CAM", 0.76, 0.38),
+        ("ST", 0.50, 0.16),
+    ],
+    "4-2-3-1 Narrow": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CDM", 0.36, 0.64), ("CDM", 0.64, 0.64),
+        ("CAM", 0.26, 0.38), ("CAM", 0.50, 0.34), ("CAM", 0.74, 0.38),
+        ("ST", 0.50, 0.16),
+    ],
+    "4-2-3-1 Wide": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CDM", 0.36, 0.64), ("CDM", 0.64, 0.64),
+        ("LM", 0.14, 0.40), ("CAM", 0.50, 0.34), ("RM", 0.86, 0.40),
+        ("ST", 0.50, 0.16),
+    ],
+    "4-2-4": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CM", 0.36, 0.50), ("CM", 0.64, 0.50),
+        ("LW", 0.14, 0.22), ("ST", 0.38, 0.16), ("ST", 0.62, 0.16), ("RW", 0.86, 0.22),
+    ],
+    "4-3-1-2": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CM", 0.26, 0.52), ("CM", 0.50, 0.54), ("CM", 0.74, 0.52),
+        ("CAM", 0.50, 0.35),
+        ("ST", 0.36, 0.16), ("ST", 0.64, 0.16),
+    ],
+    "4-3-2-1": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CM", 0.26, 0.54), ("CM", 0.50, 0.56), ("CM", 0.74, 0.54),
+        ("CF", 0.33, 0.32), ("CF", 0.67, 0.32),
+        ("ST", 0.50, 0.16),
+    ],
+    "4-3-3 Attack": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CM", 0.34, 0.52), ("CM", 0.66, 0.52),
+        ("CAM", 0.50, 0.36),
+        ("LW", 0.17, 0.22), ("ST", 0.50, 0.16), ("RW", 0.83, 0.22),
+    ],
+    "4-3-3 Balanced": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CM", 0.26, 0.48), ("CM", 0.50, 0.50), ("CM", 0.74, 0.48),
+        ("LW", 0.17, 0.22), ("ST", 0.50, 0.16), ("RW", 0.83, 0.22),
+    ],
+    "4-3-3 Defend": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CDM", 0.36, 0.63), ("CDM", 0.64, 0.63),
+        ("CM", 0.50, 0.46),
+        ("LW", 0.17, 0.22), ("ST", 0.50, 0.16), ("RW", 0.83, 0.22),
+    ],
+    "4-3-3 False 9": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CDM", 0.50, 0.64),
+        ("CM", 0.34, 0.48), ("CM", 0.66, 0.48),
+        ("LW", 0.17, 0.22), ("CF", 0.50, 0.22), ("RW", 0.83, 0.22),
+    ],
+    "4-3-3 Flat": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CM", 0.26, 0.48), ("CM", 0.50, 0.48), ("CM", 0.74, 0.48),
+        ("LW", 0.17, 0.22), ("ST", 0.50, 0.16), ("RW", 0.83, 0.22),
+    ],
+    "4-3-3 Holding": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CDM", 0.50, 0.64),
+        ("CM", 0.32, 0.46), ("CM", 0.68, 0.46),
+        ("LW", 0.17, 0.22), ("ST", 0.50, 0.16), ("RW", 0.83, 0.22),
+    ],
+    "4-4-1-1 Attack": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("LM", 0.14, 0.48), ("CM", 0.38, 0.52), ("CM", 0.62, 0.52), ("RM", 0.86, 0.48),
+        ("CAM", 0.50, 0.33),
+        ("ST", 0.50, 0.16),
+    ],
+    "4-4-1-1 Midfield": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("LM", 0.14, 0.48), ("CM", 0.38, 0.48), ("CM", 0.62, 0.48), ("RM", 0.86, 0.48),
+        ("CAM", 0.50, 0.32),
+        ("ST", 0.50, 0.16),
+    ],
+    "4-4-2 Flat": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("LM", 0.14, 0.46), ("CM", 0.38, 0.46), ("CM", 0.62, 0.46), ("RM", 0.86, 0.46),
+        ("ST", 0.36, 0.16), ("ST", 0.64, 0.16),
+    ],
+    "4-4-2 Holding": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("LM", 0.14, 0.48), ("CDM", 0.36, 0.62), ("CDM", 0.64, 0.62), ("RM", 0.86, 0.48),
+        ("ST", 0.36, 0.16), ("ST", 0.64, 0.16),
+    ],
+    "4-5-1 Attack": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("LM", 0.14, 0.40), ("CM", 0.50, 0.56), ("CAM", 0.34, 0.36), ("CAM", 0.66, 0.36), ("RM", 0.86, 0.40),
+        ("ST", 0.50, 0.16),
+    ],
+    "4-5-1 Flat": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("LM", 0.13, 0.46), ("CM", 0.31, 0.48), ("CM", 0.50, 0.48), ("CM", 0.69, 0.48), ("RM", 0.87, 0.46),
+        ("ST", 0.50, 0.16),
+    ],
+
+    # ── 5-Back ──
+    "5-2-1-2": [
+        ("GK", 0.50, 0.90),
+        ("LWB", 0.12, 0.68), ("CB", 0.31, 0.78), ("CB", 0.50, 0.79), ("CB", 0.69, 0.78), ("RWB", 0.88, 0.68),
+        ("CM", 0.36, 0.50), ("CM", 0.64, 0.50),
+        ("CAM", 0.50, 0.34),
+        ("ST", 0.36, 0.16), ("ST", 0.64, 0.16),
+    ],
+    "5-2-3": [
+        ("GK", 0.50, 0.90),
+        ("LWB", 0.12, 0.68), ("CB", 0.31, 0.78), ("CB", 0.50, 0.79), ("CB", 0.69, 0.78), ("RWB", 0.88, 0.68),
+        ("CM", 0.36, 0.48), ("CM", 0.64, 0.48),
+        ("LW", 0.17, 0.22), ("ST", 0.50, 0.16), ("RW", 0.83, 0.22),
+    ],
+    "5-3-2": [
+        ("GK", 0.50, 0.90),
+        ("LWB", 0.12, 0.68), ("CB", 0.31, 0.78), ("CB", 0.50, 0.79), ("CB", 0.69, 0.78), ("RWB", 0.88, 0.68),
+        ("CM", 0.28, 0.48), ("CM", 0.50, 0.48), ("CM", 0.72, 0.48),
+        ("ST", 0.36, 0.16), ("ST", 0.64, 0.16),
+    ],
+    "5-4-1 Diamond": [
+        ("GK", 0.50, 0.90),
+        ("LWB", 0.12, 0.68), ("CB", 0.31, 0.78), ("CB", 0.50, 0.79), ("CB", 0.69, 0.78), ("RWB", 0.88, 0.68),
+        ("CDM", 0.50, 0.60),
+        ("LM", 0.15, 0.46), ("RM", 0.85, 0.46),
+        ("CAM", 0.50, 0.33),
+        ("ST", 0.50, 0.16),
+    ],
+    "5-4-1 Flat": [
+        ("GK", 0.50, 0.90),
+        ("LWB", 0.12, 0.68), ("CB", 0.31, 0.78), ("CB", 0.50, 0.79), ("CB", 0.69, 0.78), ("RWB", 0.88, 0.68),
+        ("LM", 0.15, 0.48), ("CM", 0.38, 0.48), ("CM", 0.62, 0.48), ("RM", 0.85, 0.48),
+        ("ST", 0.50, 0.16),
+    ],
+}
+
+
 def compute_formation_coords(formation_name: str) -> List[Tuple[str, float, float]]:
-    """
-    Calculate normalized (x, y) pitch coordinates for all 11 player positions.
-    (0.0, 0.0) is top-left, (1.0, 1.0) is bottom-right.
-    GK is at the bottom goal, attacking forwards are at the top.
-    """
-    data = SUPPORTED_FORMATIONS.get(formation_name)
-    if not data:
-        data = SUPPORTED_FORMATIONS.get(DEFAULT_FORMATION, list(SUPPORTED_FORMATIONS.values())[0])
+    """Return the exact 11 tactical coordinates for the given formation."""
+    if formation_name in EXACT_FORMATION_COORDS:
+        return EXACT_FORMATION_COORDS[formation_name]
 
-    d_count = data["def"]
-    m_count = data["mid"]
-    f_count = data["fwd"]
-    positions = data["positions"]
+    # Try case-insensitive lookup
+    for k, v in EXACT_FORMATION_COORDS.items():
+        if k.lower() == formation_name.lower():
+            return v
 
-    coords: List[Tuple[str, float, float]] = []
-
-    # 0: Goalkeeper (Anchored in bottom goal area)
-    coords.append((positions[0], 0.50, 0.90))
-
-    # 1..1+d: Defenders
-    defs = positions[1 : 1 + d_count]
-    if d_count == 3:
-        xs = [0.26, 0.50, 0.74]
-        for p, x in zip(defs, xs):
-            coords.append((p, x, 0.78))
-    elif d_count == 4:
-        xs = [0.15, 0.38, 0.62, 0.85]
-        ys = [0.75, 0.78, 0.78, 0.75]
-        for p, x, y in zip(defs, xs, ys):
-            coords.append((p, x, y))
-    elif d_count == 5:
-        xs = [0.12, 0.31, 0.50, 0.69, 0.88]
-        ys = [0.70, 0.78, 0.79, 0.78, 0.70]
-        for p, x, y in zip(defs, xs, ys):
-            coords.append((p, x, y))
-    else:
-        step = 1.0 / (d_count + 1)
-        for idx, p in enumerate(defs, start=1):
-            coords.append((p, idx * step, 0.78))
-
-    # Midfielders: positions[1+d_count : 1+d_count+m_count]
-    mids = positions[1 + d_count : 1 + d_count + m_count]
-    cdms = [p for p in mids if p == "CDM"]
-    cams = [p for p in mids if p == "CAM"]
-    flats = [p for p in mids if p not in ("CDM", "CAM")]
-
-    # Map CDMs (Defensive pivot line)
-    cdm_coords: List[Tuple[str, float, float]] = []
-    if len(cdms) == 1:
-        cdm_coords = [(cdms[0], 0.50, 0.62)]
-    elif len(cdms) == 2:
-        cdm_coords = [(cdms[0], 0.37, 0.62), (cdms[1], 0.63, 0.62)]
-    elif len(cdms) >= 3:
-        step = 0.60 / (len(cdms) - 1) if len(cdms) > 1 else 0
-        cdm_coords = [(p, 0.20 + idx * step, 0.62) for idx, p in enumerate(cdms)]
-
-    # Map Central & Wide Midfielders (LM, CM, RM, LWB, RWB)
-    flat_coords: List[Tuple[str, float, float]] = []
-    n_flat = len(flats)
-    if n_flat == 1:
-        flat_coords = [(flats[0], 0.50, 0.48)]
-    elif n_flat == 2:
-        flat_coords = [(flats[0], 0.36, 0.48), (flats[1], 0.64, 0.48)]
-    elif n_flat == 3:
-        flat_coords = [(flats[0], 0.24, 0.48), (flats[1], 0.50, 0.48), (flats[2], 0.76, 0.48)]
-    elif n_flat == 4:
-        flat_coords = [(flats[0], 0.15, 0.48), (flats[1], 0.38, 0.48), (flats[2], 0.62, 0.48), (flats[3], 0.85, 0.48)]
-    elif n_flat == 5:
-        flat_coords = [(flats[0], 0.13, 0.48), (flats[1], 0.31, 0.48), (flats[2], 0.50, 0.48), (flats[3], 0.69, 0.48), (flats[4], 0.87, 0.48)]
-    elif n_flat >= 6:
-        step = 0.76 / (n_flat - 1) if n_flat > 1 else 0
-        flat_coords = [(p, 0.12 + idx * step, 0.48) for idx, p in enumerate(flats)]
-
-    # Map CAMs (Advanced playmakers)
-    cam_coords: List[Tuple[str, float, float]] = []
-    n_cam = len(cams)
-    if n_cam == 1:
-        cam_coords = [(cams[0], 0.50, 0.34)]
-    elif n_cam == 2:
-        cam_coords = [(cams[0], 0.34, 0.34), (cams[1], 0.66, 0.34)]
-    elif n_cam >= 3:
-        cam_coords = [(cams[0], 0.24, 0.34), (cams[1], 0.50, 0.34), (cams[2], 0.76, 0.34)]
-
-    # Merge midfield coords preserving original order
-    mid_pool = list(cdm_coords + flat_coords + cam_coords)
-    for p in mids:
-        found = False
-        for idx, (cp, cx, cy) in enumerate(mid_pool):
-            if cp == p:
-                coords.append((cp, cx, cy))
-                mid_pool.pop(idx)
-                found = True
-                break
-        if not found:
-            coords.append((p, 0.50, 0.48))
-
-    # Forwards: positions[1+d_count+m_count : 11]
-    fwds = positions[1 + d_count + m_count : 11]
-    if len(fwds) == 1:
-        coords.append((fwds[0], 0.50, 0.16))
-    elif len(fwds) == 2:
-        coords.append((fwds[0], 0.36, 0.16))
-        coords.append((fwds[1], 0.64, 0.16))
-    elif len(fwds) == 3:
-        if fwds in (["LW", "ST", "RW"], ["LW", "CF", "RW"]):
-            coords.append((fwds[0], 0.17, 0.22))
-            coords.append((fwds[1], 0.50, 0.16))
-            coords.append((fwds[2], 0.83, 0.22))
-        elif fwds == ["CF", "CF", "ST"]:
-            coords.append((fwds[0], 0.33, 0.25))
-            coords.append((fwds[1], 0.67, 0.25))
-            coords.append((fwds[2], 0.50, 0.16))
-        else:
-            coords.append((fwds[0], 0.24, 0.18))
-            coords.append((fwds[1], 0.50, 0.16))
-            coords.append((fwds[2], 0.76, 0.18))
-    elif len(fwds) == 4:
-        coords.append((fwds[0], 0.14, 0.22))
-        coords.append((fwds[1], 0.38, 0.16))
-        coords.append((fwds[2], 0.62, 0.16))
-        coords.append((fwds[3], 0.86, 0.22))
-    else:
-        for idx, p in enumerate(fwds):
-            step = 0.60 / (len(fwds) - 1) if len(fwds) > 1 else 0
-            coords.append((p, 0.20 + idx * step, 0.16))
-
-    return coords[:11]
+    return EXACT_FORMATION_COORDS[DEFAULT_FORMATION]
 
 
 def draw_pitch_markings(draw: ImageDraw.ImageDraw, px0: int, py0: int, px1: int, py1: int) -> None:
-    """Render minimal, elegant football pitch geometry."""
+    """Render minimal, attractive modern football pitch geometry."""
     pitch_w = px1 - px0
     pitch_h = py1 - py0
     center_x = px0 + pitch_w // 2
     mid_y = py0 + pitch_h // 2
 
-    # Outer boundary border
-    line_color = "#386641"  # Subtle emerald pitch line
+    # Clean vibrant emerald lines
+    line_color = "#34d399"
+
+    # Outer pitch boundary
     draw.rectangle([px0 + 20, py0 + 20, px1 - 20, py1 - 20], outline=line_color, width=2)
 
     # Halfway line
     draw.line([(px0 + 20, mid_y), (px1 - 20, mid_y)], fill=line_color, width=2)
 
-    # Center circle & spot
+    # Center circle (r = 90 px) & center spot
     r_circle = 90
     draw.ellipse([center_x - r_circle, mid_y - r_circle, center_x + r_circle, mid_y + r_circle], outline=line_color, width=2)
     draw.ellipse([center_x - 4, mid_y - 4, center_x + 4, mid_y + 4], fill=line_color)
@@ -203,8 +352,16 @@ def draw_pitch_markings(draw: ImageDraw.ImageDraw, px0: int, py0: int, px1: int,
     # Bottom 6-yard box
     draw.rectangle([center_x - s_box_w // 2, py1 - 20 - s_box_h, center_x + s_box_w // 2, py1 - 20], outline=line_color, width=2)
 
-    # Bottom penalty spot
+    # Penalty spots
+    draw.ellipse([center_x - 4, py0 + 20 + 120 - 4, center_x + 4, py0 + 20 + 120 + 4], fill=line_color)
     draw.ellipse([center_x - 4, py1 - 20 - 120 - 4, center_x + 4, py1 - 20 - 120 + 4], fill=line_color)
+
+    # Corner arcs
+    r_c = 20
+    draw.arc([px0 + 20 - r_c, py0 + 20 - r_c, px0 + 20 + r_c, py0 + 20 + r_c], 0, 90, fill=line_color, width=2)
+    draw.arc([px1 - 20 - r_c, py0 + 20 - r_c, px1 - 20 + r_c, py0 + 20 + r_c], 90, 180, fill=line_color, width=2)
+    draw.arc([px0 + 20 - r_c, py1 - 20 - r_c, px0 + 20 + r_c, py1 - 20 + r_c], 270, 360, fill=line_color, width=2)
+    draw.arc([px1 - 20 - r_c, py1 - 20 - r_c, px1 - 20 + r_c, py1 - 20 + r_c], 180, 270, fill=line_color, width=2)
 
 
 def draw_player_badge(
@@ -220,7 +377,7 @@ def draw_player_badge(
     font_name: Optional[ImageFont.ImageFont] = None,
     font_pos: Optional[ImageFont.ImageFont] = None,
 ) -> None:
-    """Draw a clean, minimalist player jersey badge and name pill on the pitch."""
+    """Draw a clean, minimalist yet attractive player jersey badge and name pill on the pitch."""
     if font_num is None:
         font_num = get_font(18, bold=True)
     if font_name is None:
@@ -230,8 +387,8 @@ def draw_player_badge(
 
     r = 24
     if is_vacant:
-        # Vacant / Unassigned slot
-        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="#0a1510", outline="#334155", width=2)
+        # Vacant slot with subtle outline
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="#07110a", outline="#334155", width=2)
         draw.text((cx, cy), position, fill="#64748B", font=font_pos, anchor="mm")
 
         pill_w, pill_h = 110, 28
@@ -242,20 +399,20 @@ def draw_player_badge(
         draw.rounded_rectangle([p_x0, p_y0, p_x1, p_y1], radius=6, fill="#070d0a", outline="#1e293b", width=1)
         draw.text((cx, p_y0 + pill_h // 2), "[Vacant]", fill="#64748B", font=font_pos, anchor="mm")
     else:
-        # Occupied player slot
-        # 1. Jersey Circle with Beastly Gold accent
-        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="#0f172a", outline="#F59E0B", width=2)
+        # Occupied player slot with subtle glow halo and Beastly Gold ring
+        draw.ellipse([cx - r - 2, cy - r - 2, cx + r + 2, cy + r + 2], fill="#1e1b18")
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="#0b131e", outline="#F59E0B", width=2)
         num_str = str(number) if number is not None else "-"
         draw.text((cx, cy), num_str, fill="#FFFFFF", font=font_num, anchor="mm")
 
-        # 2. Sleek Name & Info Pill
-        pill_w, pill_h = 130, 36
+        # Sleek Name & Position Pill
+        pill_w, pill_h = 132, 36
         p_x0 = cx - pill_w // 2
         p_y0 = cy + r + 4
         p_x1 = cx + pill_w // 2
         p_y1 = p_y0 + pill_h
 
-        draw.rounded_rectangle([p_x0, p_y0, p_x1, p_y1], radius=8, fill="#0B131E", outline="#334155", width=1)
+        draw.rounded_rectangle([p_x0, p_y0, p_x1, p_y1], radius=8, fill="#070d16", outline="#1e293b", width=1)
 
         # Truncate clean display name if needed
         disp_name = name[:13] + ".." if len(name) > 15 else name
@@ -265,6 +422,105 @@ def draw_player_badge(
         draw.text((cx, p_y0 + 26), sub_info, fill="#38BDF8", font=font_pos, anchor="mm")
 
 
+def assign_players_to_formation_slots(
+    formation_slots: List[Tuple[str, float, float]],
+    players: List[Dict[str, Any]],
+) -> List[Optional[Dict[str, Any]]]:
+    """
+    Intelligently assign available squad players to tactical formation slots.
+    Ensures goalkeepers stay in goal, defenders stay in defense, midfielders
+    stay in midfield, and attackers stay up front.
+    """
+    available = list(players or [])
+    used_ids = set()
+    assignments: List[Optional[Dict[str, Any]]] = [None] * len(formation_slots)
+
+    # Pass 1: Exact Match (player.position == slot_position)
+    for idx, (slot_pos, _, _) in enumerate(formation_slots):
+        for p in available:
+            pid = p.get("id") or id(p)
+            if pid not in used_ids and (p.get("position") or "").upper() == slot_pos.upper():
+                assignments[idx] = p
+                used_ids.add(pid)
+                break
+
+    # Pass 2: Alternate Positions (alt_positions declared on player profile)
+    for idx, (slot_pos, _, _) in enumerate(formation_slots):
+        if assignments[idx] is not None:
+            continue
+        for p in available:
+            pid = p.get("id") or id(p)
+            if pid in used_ids:
+                continue
+            alts = [
+                a.strip().upper()
+                for a in (p.get("alt_positions") or "").replace(";", ",").replace("/", ",").split(",")
+                if a.strip()
+            ]
+            if slot_pos.upper() in alts:
+                assignments[idx] = p
+                used_ids.add(pid)
+                break
+
+    # Pass 3: Close Tactical Match
+    close_pairs = {
+        "LB": ["LWB", "CB"],
+        "RB": ["RWB", "CB"],
+        "LWB": ["LB", "LM"],
+        "RWB": ["RB", "RM"],
+        "CB": ["LB", "RB", "LWB", "RWB"],
+        "CDM": ["CM"],
+        "CM": ["CDM", "CAM", "LM", "RM"],
+        "CAM": ["CM", "CF"],
+        "LM": ["LW", "LWB", "CM"],
+        "RM": ["RW", "RWB", "CM"],
+        "LW": ["LM", "ST", "CF"],
+        "RW": ["RM", "ST", "CF"],
+        "CF": ["ST", "CAM", "LW", "RW"],
+        "ST": ["CF", "LW", "RW"],
+    }
+    for idx, (slot_pos, _, _) in enumerate(formation_slots):
+        if assignments[idx] is not None:
+            continue
+        valid_subs = close_pairs.get(slot_pos.upper(), [])
+        for p in available:
+            pid = p.get("id") or id(p)
+            if pid in used_ids:
+                continue
+            pos = (p.get("position") or "").upper()
+            if pos in valid_subs:
+                assignments[idx] = p
+                used_ids.add(pid)
+                break
+
+    # Pass 4: Same Category Match (Goalkeeper, Defense, Midfield, Attack)
+    for idx, (slot_pos, _, _) in enumerate(formation_slots):
+        if assignments[idx] is not None:
+            continue
+        slot_cat = POSITION_CATEGORIES.get(slot_pos.upper())
+        for p in available:
+            pid = p.get("id") or id(p)
+            if pid in used_ids:
+                continue
+            pos = (p.get("position") or "").upper()
+            if POSITION_CATEGORIES.get(pos) == slot_cat:
+                assignments[idx] = p
+                used_ids.add(pid)
+                break
+
+    # Pass 5: Fallback for any remaining unassigned players
+    for idx in range(len(formation_slots)):
+        if assignments[idx] is None:
+            for p in available:
+                pid = p.get("id") or id(p)
+                if pid not in used_ids:
+                    assignments[idx] = p
+                    used_ids.add(pid)
+                    break
+
+    return assignments
+
+
 def generate_lineup_image(
     team_name: str,
     manager_name: str,
@@ -272,47 +528,49 @@ def generate_lineup_image(
     starting_players: Optional[List[Dict[str, Any]]] = None,
 ) -> io.BytesIO:
     """
-    Generate a clean and minimal Starting 11 Matchday Pitch graphic.
+    Generate a clean, minimal yet attractive Starting 11 Matchday Pitch graphic.
     Completely excludes the bench to focus exclusively on the pitch lineup.
     Returns in-memory PNG BytesIO buffer.
     """
     width, height = 1080, 1440
-    img = Image.new("RGB", (width, height), color="#07130c")
+    img = Image.new("RGB", (width, height), color="#07110a")
     draw = ImageDraw.Draw(img)
 
     # Load typography
-    font_sub = get_font(20, bold=False)
+    font_sub = get_font(18, bold=False)
     font_num = get_font(18, bold=True)
     font_name = get_font(14, bold=True)
     font_pos = get_font(11, bold=True)
 
     # Dynamic team name sizing
     clean_team = team_name.strip().upper()
-    team_font_size = 38 if len(clean_team) <= 22 else (30 if len(clean_team) <= 30 else 24)
+    team_font_size = 36 if len(clean_team) <= 22 else (28 if len(clean_team) <= 32 else 22)
     font_team = get_font(team_font_size, bold=True)
 
-    # 1. Clean Header Banner
-    draw.text((width // 2, 50), clean_team, fill="#F8FAFC", font=font_team, anchor="mm")
-    sub_text = f"MANAGER: {manager_name.strip()}   •   FORMATION: {formation_name.strip()}"
+    # 1. Clean Minimalist Header Banner
+    draw.text((width // 2, 52), clean_team, fill="#F8FAFC", font=font_team, anchor="mm")
+    sub_text = f"MANAGER: {manager_name.strip()}   |   FORMATION: {formation_name.strip()}"
     draw.text((width // 2, 98), sub_text, fill="#94A3B8", font=font_sub, anchor="mm")
 
     # Hairline divider
-    draw.line([(50, 138), (width - 50, 138)], fill="#1E293B", width=2)
+    draw.line([(60, 138), (width - 60, 138)], fill="#1A3826", width=2)
 
     # 2. Football Pitch Dimensions
     px0, py0, px1, py1 = 40, 155, width - 40, height - 35
     pitch_w = px1 - px0
     pitch_h = py1 - py0
 
-    # Draw pitch background with subtle alternating lawn stripes
-    draw.rectangle([px0, py0, px1, py1], fill="#0e2317", outline="#1b4332", width=3)
-    n_stripes = 10
+    # Draw pitch grass bands
+    n_stripes = 12
     stripe_h = pitch_h / n_stripes
     for i in range(n_stripes):
-        if i % 2 == 1:
-            sy0 = py0 + i * stripe_h
-            sy1 = sy0 + stripe_h
-            draw.rectangle([px0, sy0, px1, sy1], fill="#112c1d")
+        sy0 = py0 + i * stripe_h
+        sy1 = sy0 + stripe_h
+        col = "#0b2316" if i % 2 == 0 else "#0e2b1b"
+        draw.rectangle([px0, sy0, px1, sy1], fill=col)
+
+    # Outer pitch border
+    draw.rectangle([px0, py0, px1, py1], outline="#1a4329", width=3)
 
     # Draw pitch lines & penalty areas
     draw_pitch_markings(draw, px0, py0, px1, py1)
@@ -320,31 +578,10 @@ def generate_lineup_image(
     # 3. Compute Coordinates for 11 Positions
     formation_slots = compute_formation_coords(formation_name)
 
-    # Match starting players to formation slots
-    available_players = list(starting_players or [])
-    used_player_ids = set()
+    # 4. Intelligently match starting players to formation slots
+    slot_assignments = assign_players_to_formation_slots(formation_slots, starting_players or [])
 
-    # First pass: Match players by exact position
-    slot_assignments: List[Optional[Dict[str, Any]]] = [None] * 11
-    for slot_idx, (pos_tag, _, _) in enumerate(formation_slots):
-        for p in available_players:
-            p_id = p.get("id") or id(p)
-            if p_id not in used_player_ids and (p.get("position") or "").upper() == pos_tag.upper():
-                slot_assignments[slot_idx] = p
-                used_player_ids.add(p_id)
-                break
-
-    # Second pass: Fill unfilled slots with remaining starting players
-    for slot_idx in range(11):
-        if slot_assignments[slot_idx] is None:
-            for p in available_players:
-                p_id = p.get("id") or id(p)
-                if p_id not in used_player_ids:
-                    slot_assignments[slot_idx] = p
-                    used_player_ids.add(p_id)
-                    break
-
-    # 4. Render 11 Player Badges on the Pitch
+    # 5. Render 11 Player Badges on the Pitch
     for slot_idx, (pos_tag, norm_x, norm_y) in enumerate(formation_slots):
         cx = int(px0 + norm_x * pitch_w)
         cy = int(py0 + norm_y * pitch_h)
@@ -383,7 +620,7 @@ def generate_lineup_image(
                 font_pos=font_pos,
             )
 
-    # 5. Export to in-memory BytesIO buffer
+    # 6. Export to in-memory BytesIO buffer
     buf = io.BytesIO()
     img.save(buf, format="PNG", optimize=True)
     buf.seek(0)

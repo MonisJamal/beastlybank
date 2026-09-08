@@ -194,16 +194,11 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
     # SLASH COMMAND: LINEUP
     # ==========================================
 
-    @app_commands.command(name="lineup", description="View clean matchday pitch lineup for a club.")
-    @app_commands.describe(
-        club="Club role to inspect (defaults to your club)",
-        view="Display style: image (clean minimal pitch) or embed (text layout)",
-    )
-    async def slash_lineup(
+    async def _handle_lineup(
         self,
         interaction: discord.Interaction,
         club: Optional[discord.Role] = None,
-        view: Literal["image", "embed"] = "image",
+        view: str = "image",
     ):
         await interaction.response.defer()
         if club:
@@ -263,6 +258,19 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             )
             await send_msg(interaction, embed=embed)
 
+    @app_commands.command(name="lineup", description="View clean matchday pitch lineup for a club.")
+    @app_commands.describe(
+        club="Club role to inspect (defaults to your club)",
+        view="Display style: image (clean minimal pitch) or embed (text layout)",
+    )
+    async def slash_lineup(
+        self,
+        interaction: discord.Interaction,
+        club: Optional[discord.Role] = None,
+        view: Literal["image", "embed"] = "image",
+    ):
+        await self._handle_lineup(interaction, club=club, view=view)
+
     @app_commands.command(name="lineupcard", description="Generate a clean matchday Starting 11 pitch image for your club.")
     @app_commands.describe(club="Club role to inspect (defaults to your club)")
     async def slash_lineupcard(
@@ -270,7 +278,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         interaction: discord.Interaction,
         club: Optional[discord.Role] = None,
     ):
-        await self.slash_lineup(interaction, club=club, view="image")
+        await self._handle_lineup(interaction, club=club, view="image")
 
     @app_commands.command(name="customlineup", description="Generate a custom clean matchday Starting 11 pitch image on the fly.")
     @app_commands.describe(

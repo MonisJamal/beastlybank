@@ -3339,6 +3339,22 @@ async def test_lineup_image_generation_and_commands(db: DatabaseManager):
     assert "file" in send_kwargs
     assert send_kwargs["file"].filename == "lineup.png"
 
+    # Test slash command /lineupcard
+    inter_card = MagicMock(spec=discord.Interaction)
+    inter_card.guild_id = guild_id
+    inter_card.guild = mock_guild
+    inter_card.user = MagicMock()
+    inter_card.user.id = owner_id
+    inter_card.response = MagicMock()
+    inter_card.response.defer = AsyncMock()
+    inter_card.response.is_done.return_value = True
+    inter_card.followup = MagicMock()
+    inter_card.followup.send = AsyncMock()
+
+    await squad_cog.slash_lineupcard.callback(squad_cog, inter_card, club=None)
+    inter_card.followup.send.assert_called_once()
+    assert inter_card.followup.send.call_args[1]["file"].filename == "lineup.png"
+
     # 4. Test slash command /customlineup
     inter2 = MagicMock(spec=discord.Interaction)
     inter2.guild_id = guild_id

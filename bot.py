@@ -100,6 +100,7 @@ class BeastlyBankBot(commands.Bot):
         if intents is None:
             intents = discord.Intents.default()
             intents.message_content = True
+            intents.members = True
 
         super().__init__(
             command_prefix=commands.when_mentioned_or("bb!", "BB!", "bb ", "BB "),
@@ -165,6 +166,15 @@ class BeastlyBankBot(commands.Bot):
             logger.warning("⚠️" * 30)
         else:
             logger.info("✅ MESSAGE CONTENT INTENT: ENABLED ('bb!' prefix commands fully operational).")
+
+        # Pre-cache guild members into memory for instantaneous role lookups
+        try:
+            for g in self.guilds:
+                if not g.chunked and self.intents.members:
+                    await g.chunk()
+                    logger.info("⚡ Cached %d members for %s", len(g.members), g.name)
+        except Exception as e:
+            logger.debug("Member pre-cache note: %s", e)
 
         # Set football economy presence
         activity = discord.Activity(
@@ -283,9 +293,10 @@ async def main_async():
                 bot = BeastlyBankBot(intents=intents)
             await bot.start(DISCORD_TOKEN)
         except discord.errors.PrivilegedIntentsRequired:
-            logger.warning("Message Content Intent not enabled in Developer Portal. Restarting with default intents.")
+            logger.warning("⚠️ Privileged Intents not enabled in Developer Portal. Retrying with fallback intents.")
             intents = discord.Intents.default()
-            intents.message_content = False
+            intents.message_content = True
+            intents.members = False
             bot = BeastlyBankBot(intents=intents)
         except discord.errors.LoginFailure as lf:
             logger.critical("❌ Fatal Discord authentication error (invalid token): %s", lf)

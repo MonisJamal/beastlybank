@@ -3147,4 +3147,118 @@ async def test_rolegrant_slash_and_prefix(db: DatabaseManager):
     assert u2["tokens"] == 10
 
 
+@pytest.mark.asyncio
+async def test_get_role_members_and_bank_rolegrant(db: DatabaseManager):
+    """Test get_role_members fallback mechanisms and /bank rolegrant command."""
+    from cogs.admin import get_role_members, BankAdmin
+    from unittest.mock import AsyncMock
+
+    mock_guild = MagicMock(spec=discord.Guild)
+    mock_guild.id = 888777666
+    mock_guild.chunked = False
+
+    mock_role = MagicMock(spec=discord.Role)
+    mock_role.id = 444333222
+    mock_role.mention = "<@&444333222>"
+    mock_role.name = "Managers"
+
+    m1 = MagicMock(spec=discord.Member)
+    m1.id = 101
+    m1.bot = False
+    m1.roles = [mock_role]
+
+    m2 = MagicMock(spec=discord.Member)
+    m2.id = 102
+    m2.bot = True  # Bot should be excluded
+    m2.roles = [mock_role]
+
+    m3 = MagicMock(spec=discord.Member)
+    m3.id = 103
+    m3.bot = False
+    m3.roles = [mock_role]
+
+    # Case 1: role.members is empty initially, guild.chunk() populates role.members
+    mock_role.members = []
+
+    async def fake_chunk():
+        mock_guild.chunked = True
+        mock_role.members = [m1, m2, m3]
+
+    mock_guild.chunk = AsyncMock(side_effect=fake_chunk)
+
+    members = await get_role_members(mock_guild, mock_role)
+    assert len(members) == 2
+    assert [m.id for m in members] == [101, 103]
+
+    # Case 2: guild.chunk fails or returns empty, fetch_members generator yields members
+    mock_guild2 = MagicMock(spec=discord.Guild)
+    mock_guild2.id = 999111
+    mock_guild2.chunked = True
+    mock_role2 = MagicMock(spec=discord.Role)
+    mock_role2.id = 555666
+    mock_role2.members = []
+
+    m4 = MagicMock(spec=discord.Member)
+    m4.id = 201
+    m4.bot = False
+    m4.roles = [mock_role2]
+
+    m5 = MagicMock(spec=discord.Member)
+    m5.id = 202
+    m5.bot = True
+    m5.roles = [mock_role2]
+
+    class AsyncMemberIterator:
+        def __init__(self, items):
+            self.items = list(items)
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self.items:
+                raise StopAsyncIteration
+            return self.items.pop(0)
+
+    mock_guild2.fetch_members = MagicMock(return_value=AsyncMemberIterator([m4, m5]))
+
+    members2 = await get_role_members(mock_guild2, mock_role2)
+    assert len(members2) == 1
+    assert members2[0].id == 201
+
+    # Case 3: Test BankAdmin.bank_rolegrant
+    mock_bot = MagicMock()
+    mock_bot.db = db
+    mock_role2.members = [m4]  # cached now
+    bank_cog = BankAdmin(mock_bot)
+
+    inter = MagicMock(spec=discord.Interaction)
+    inter.guild_id = mock_guild2.id
+    inter.guild = mock_guild2
+    inter.user = MagicMock()
+    inter.user.id = 9999
+    inter.user.mention = "<@9999>"
+    inter.response = MagicMock()
+    inter.response.is_done.return_value = False
+
+    async def mock_defer(*args, **kwargs):
+        inter.response.is_done.return_value = True
+
+    inter.response.defer = AsyncMock(side_effect=mock_defer)
+    inter.followup = MagicMock()
+    inter.followup.send = AsyncMock()
+
+    await bank_cog.bank_rolegrant.callback(
+        bank_cog, inter, role=mock_role2, currency="points", amount="250", reason="Manager Stipend"
+    )
+
+    inter.followup.send.assert_called_once()
+    embed = inter.followup.send.call_args[1]["embed"]
+    assert "Role Currency Grant Completed" in embed.title
+
+    user_data = await db.get_or_create_user(201, mock_guild2.id)
+    assert user_data["points"] == 250
+
+
+
 

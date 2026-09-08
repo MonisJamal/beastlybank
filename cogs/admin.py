@@ -4,6 +4,8 @@ Admin & Settings Cogs:
 - /settings: Toggle economy, purchases, shop, and view status.
 - /bank: Server announcements and user financial audits.
 """
+import asyncio
+import inspect
 from typing import Literal, Optional
 import discord
 from discord import app_commands
@@ -22,6 +24,45 @@ from config import (
 from utils.checks import require_beastlyfc, require_banker_or_admin
 from utils.embeds import create_beastly_embed, error_embed, success_embed, safe_defer, send_msg
 from cogs.clubs import club_name_autocomplete
+
+
+async def get_role_members(guild: Optional[discord.Guild], role: discord.Role) -> list[discord.Member]:
+    """Retrieve all human members belonging to a role, handling unchunked member caches and fetch fallbacks."""
+    if not guild:
+        return [m for m in role.members if not getattr(m, "bot", False)]
+
+    # 1. Check in-memory role.members
+    members = [m for m in role.members if not getattr(m, "bot", False)]
+    if members:
+        return members
+
+    # 2. If empty and guild is not chunked, try chunking guild members
+    try:
+        chunk_func = getattr(guild, "chunk", None)
+        if callable(chunk_func) and not getattr(guild, "chunked", False):
+            res = chunk_func()
+            if inspect.isawaitable(res):
+                await res
+            members = [m for m in role.members if not getattr(m, "bot", False)]
+            if members:
+                return members
+    except Exception:
+        pass
+
+    # 3. Fallback: stream members from Discord REST API
+    try:
+        fetch_func = getattr(guild, "fetch_members", None)
+        if callable(fetch_func):
+            fetched = []
+            async for m in guild.fetch_members(limit=None):
+                if not getattr(m, "bot", False) and any(getattr(r, "id", 0) == role.id for r in getattr(m, "roles", [])):
+                    fetched.append(m)
+            if fetched:
+                return fetched
+    except Exception:
+        pass
+
+    return [m for m in role.members if not getattr(m, "bot", False)]
 
 
 class ManageCurrency(commands.GroupCog, name="manage", description="Manage User Cash, CP, and Training Tokens"):
@@ -444,7 +485,7 @@ class ManageCurrency(commands.GroupCog, name="manage", description="Manage User 
             )
             return
 
-        eligible_members = [m for m in role.members if not m.bot]
+        eligible_members = await get_role_members(interaction.guild, role)
         if not eligible_members:
             await send_msg(
                 interaction,
@@ -912,7 +953,7 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
             )
             return
 
-        eligible_members = [m for m in role.members if not m.bot]
+        eligible_members = await get_role_members(interaction.guild, role)
         if not eligible_members:
             await send_msg(
                 interaction,
@@ -1434,7 +1475,7 @@ class BankerPrefixCommands(commands.Cog):
         # Remaining is reason
         reason = " ".join(cur_args).strip() or "Role Distribution"
 
-        eligible_members = [m for m in target_role.members if not m.bot]
+        eligible_members = await get_role_members(ctx.guild, target_role)
         if not eligible_members:
             await ctx.send(embed=error_embed("No Eligible Members", f"No non-bot members found holding the role {target_role.mention}."))
             return

@@ -2914,3 +2914,109 @@ async def test_prefix_transactions_pagination(db: DatabaseManager):
     assert len(tx_embed2.fields) == 5
     assert "Page 2 of 3" in tx_embed2.footer.text
 
+    # 3. Test interactive button click on prefix view (must be async without deadlock!)
+    button_inter = MagicMock(spec=discord.Interaction)
+    button_inter.user = ctx.author
+    button_inter.response = MagicMock()
+    button_inter.response.edit_message = AsyncMock()
+
+    await tx_view.next_button.callback(button_inter)
+    assert tx_view.current_page == 2
+    button_inter.response.edit_message.assert_called_once()
+    edited_embed = button_inter.response.edit_message.call_args[1]["embed"]
+    assert "Page 2 of 3" in edited_embed.footer.text
+
+
+@pytest.mark.asyncio
+async def test_slash_transactions_async_pagination_and_usernames(db: DatabaseManager):
+    """Verify /transactions slash command defers, resolves usernames, and paginates asynchronously without deadlock."""
+    from unittest.mock import AsyncMock, MagicMock
+    from cogs.economy import Economy
+    from utils.views import PaginationView
+
+    guild_id = 12340005
+    user_id = 999888
+    sender_id = 888777
+    mock_bot = MagicMock()
+    mock_bot.db = db
+
+    # Create members
+    mock_guild = MagicMock(spec=discord.Guild)
+    mock_guild.id = guild_id
+
+    def mock_get_member(uid):
+        m = MagicMock()
+        if uid == sender_id:
+            m.display_name = "TransferSender"
+        elif uid == user_id:
+            m.display_name = "TargetAccount"
+        else:
+            m.display_name = f"User_{uid}"
+        return m
+
+    mock_guild.get_member.side_effect = mock_get_member
+
+    # Insert 7 transactions with sender_id to verify username resolution
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        for i in range(1, 8):
+            await cur.execute(
+                """
+                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                VALUES (?, ?, ?, 'cash', ?, 'transfer', ?);
+                """,
+                (guild_id, sender_id, user_id, i * 100, f"Fee payment #{i}"),
+            )
+    await conn.commit()
+
+    economy_cog = Economy(mock_bot)
+
+    # 1. Execute /transactions slash command
+    inter = MagicMock(spec=discord.Interaction)
+    inter.guild_id = guild_id
+    inter.guild = mock_guild
+    inter.user = MagicMock()
+    inter.user.id = user_id
+    inter.response = MagicMock()
+    inter.response.is_done.return_value = False
+
+    async def mock_defer(*args, **kwargs):
+        inter.response.is_done.return_value = True
+
+    inter.response.defer = AsyncMock(side_effect=mock_defer)
+    inter.response.send_message = AsyncMock()
+    inter.followup = MagicMock()
+    inter.followup.send = AsyncMock()
+
+    await economy_cog.transactions.callback(economy_cog, inter, page=1)
+
+    # Verify defer was called immediately (preventing 3s timeout)
+    assert inter.response.defer.called is True
+
+    # Verify followup response contains embed and PaginationView
+    assert inter.followup.send.called is True
+    tx_embed = inter.followup.send.call_args[1]["embed"]
+    tx_view = inter.followup.send.call_args[1].get("view")
+
+    assert len(tx_embed.fields) == 5
+    assert "Page 1 of 2" in tx_embed.footer.text
+    # Verify counterpart displays resolved username "TransferSender"
+    assert any("TransferSender" in f.value for f in tx_embed.fields)
+    assert isinstance(tx_view, PaginationView)
+    assert tx_view.total_pages == 2
+
+    # 2. Test button click on PaginationView (async embed generator without deadlock!)
+    btn_inter = MagicMock(spec=discord.Interaction)
+    btn_inter.user = inter.user
+    btn_inter.response = MagicMock()
+    btn_inter.response.edit_message = AsyncMock()
+
+    await tx_view.next_button.callback(btn_inter)
+    assert tx_view.current_page == 2
+    btn_inter.response.edit_message.assert_called_once()
+    p2_embed = btn_inter.response.edit_message.call_args[1]["embed"]
+    assert len(p2_embed.fields) == 2
+    assert "Page 2 of 2" in p2_embed.footer.text
+    assert any("TransferSender" in f.value for f in p2_embed.fields)
+
+

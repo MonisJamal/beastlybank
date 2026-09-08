@@ -276,6 +276,7 @@ def transaction_history_embed(
     txs: List[Dict[str, Any]],
     page: int,
     total_pages: int,
+    user_names: Optional[Dict[int, str]] = None,
 ) -> discord.Embed:
     """Formatted transaction statement."""
     embed = create_beastly_embed(
@@ -300,10 +301,19 @@ def transaction_history_embed(
         # Determine direction
         if tx["sender_id"] == target_user.id and tx["receiver_id"]:
             prefix = "🔻 Debited"
-            counterpart = f"To: <@{tx['receiver_id']}>"
+            rec_id = tx["receiver_id"]
+            rec_name = (user_names or {}).get(rec_id)
+            rec_str = f"**{rec_name}**" if rec_name else f"<@{rec_id}>"
+            counterpart = f"To: {rec_str}"
         elif tx["receiver_id"] == target_user.id:
             prefix = "🔺 Credited"
-            counterpart = f"From: <@{tx['sender_id']}>" if tx["sender_id"] else "System Reward"
+            if tx["sender_id"]:
+                snd_id = tx["sender_id"]
+                snd_name = (user_names or {}).get(snd_id)
+                snd_str = f"**{snd_name}**" if snd_name else f"<@{snd_id}>"
+                counterpart = f"From: {snd_str}"
+            else:
+                counterpart = "From: System Reward"
         else:
             prefix = "💳 Transaction"
             counterpart = ""

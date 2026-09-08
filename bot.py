@@ -220,21 +220,49 @@ class BeastlyBankBot(commands.Bot):
 
 bot = BeastlyBankBot()
 
+_web_runner = None
+_web_site = None
+
 
 async def start_web_server(port: int):
     """Instantly bind to $PORT for cloud platforms (Render, Koyeb)."""
+    global _web_runner, _web_site
     try:
-        import os
         from aiohttp import web
         app = web.Application()
         app.router.add_get("/", lambda r: web.Response(text="BeastlyBank is online ⚽"))
-        runner = web.AppRunner(app)
-        await runner.setup()
-        site = web.TCPSite(runner, "0.0.0.0", port)
-        await site.start()
+        _web_runner = web.AppRunner(app)
+        await _web_runner.setup()
+        _web_site = web.TCPSite(_web_runner, "0.0.0.0", port)
+        await _web_site.start()
         logger.info("⚡ Cloud health server listening on port %d", port)
     except Exception as e:
         logger.warning("Could not start cloud health server: %s", e)
+
+
+async def render_keepalive_loop():
+    """Periodically ping public health endpoint to prevent Render Free Tier from idling to sleep."""
+    import os
+    import aiohttp
+    external_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    if not external_url:
+        if os.getenv("RENDER") or os.getenv("PORT"):
+            external_url = "https://beastlybank.onrender.com"
+        else:
+            return
+
+    logger.info("⚡ Render 24/7 keep-alive monitor active for: %s", external_url)
+    await asyncio.sleep(60)
+
+    while True:
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session:
+                async with session.get(external_url) as resp:
+                    logger.debug("Render keep-alive ping status: %d", resp.status)
+        except Exception as e:
+            logger.debug("Render keep-alive ping notice: %s", e)
+        # Ping every 10 minutes (600s) to comfortably stay within Render's 15m idle limit
+        await asyncio.sleep(600)
 
 
 async def main_async():
@@ -244,14 +272,30 @@ async def main_async():
     if port_str and port_str.isdigit():
         await start_web_server(int(port_str))
 
-    try:
-        await bot.start(DISCORD_TOKEN)
-    except discord.errors.PrivilegedIntentsRequired:
-        logger.warning("Message Content Intent not enabled in Developer Portal. Starting with default intents.")
-        intents = discord.Intents.default()
-        intents.message_content = False
-        bot = BeastlyBankBot(intents=intents)
-        await bot.start(DISCORD_TOKEN)
+    # Launch background keep-alive ping task
+    asyncio.create_task(render_keepalive_loop())
+
+    backoff = 5
+    while True:
+        try:
+            if bot.is_closed():
+                intents = bot.intents
+                bot = BeastlyBankBot(intents=intents)
+            await bot.start(DISCORD_TOKEN)
+        except discord.errors.PrivilegedIntentsRequired:
+            logger.warning("Message Content Intent not enabled in Developer Portal. Restarting with default intents.")
+            intents = discord.Intents.default()
+            intents.message_content = False
+            bot = BeastlyBankBot(intents=intents)
+        except discord.errors.LoginFailure as lf:
+            logger.critical("❌ Fatal Discord authentication error (invalid token): %s", lf)
+            break
+        except Exception as e:
+            logger.error("⚠️ Discord Gateway connection dropped: %s. Automatically reconnecting in %ds...", e, backoff, exc_info=True)
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+        else:
+            backoff = 5
 
 
 def main():

@@ -28,6 +28,9 @@ from utils.embeds import (
     summary_economy_embed,
     summary_squad_embed,
     help_system_guide_embed,
+    resolve_user_names,
+    safe_defer,
+    send_msg,
 )
 from utils.views import PaginationView, SummaryView, HelpView
 
@@ -159,6 +162,7 @@ class Economy(commands.Cog):
         user: Optional[discord.Member] = None,
         page: Optional[int] = 1,
     ):
+        await safe_defer(interaction)
         target = user or interaction.user
         total_txs = await self.db.get_total_transactions_count(
             target.id, interaction.guild_id
@@ -174,21 +178,22 @@ class Economy(commands.Cog):
             )
 
         initial_txs = await get_page_txs(current_page)
+        user_ids = {t["sender_id"] for t in initial_txs if t.get("sender_id")} | {t["receiver_id"] for t in initial_txs if t.get("receiver_id")}
+        user_map = await resolve_user_names(self.bot, interaction.guild, user_ids)
         initial_embed = transaction_history_embed(
-            target, initial_txs, current_page, total_pages
+            target, initial_txs, current_page, total_pages, user_names=user_map
         )
 
         if total_pages <= 1:
-            await interaction.response.send_message(embed=initial_embed)
+            await send_msg(interaction, embed=initial_embed)
             return
 
-        # Multi-page View
-        def page_embed_generator(page_num: int) -> discord.Embed:
-            import asyncio
-            txs = asyncio.run_coroutine_threadsafe(
-                get_page_txs(page_num), self.bot.loop
-            ).result()
-            return transaction_history_embed(target, txs, page_num, total_pages)
+        # Multi-page View (fully async, non-blocking)
+        async def page_embed_generator(page_num: int) -> discord.Embed:
+            txs = await get_page_txs(page_num)
+            p_ids = {t["sender_id"] for t in txs if t.get("sender_id")} | {t["receiver_id"] for t in txs if t.get("receiver_id")}
+            p_map = await resolve_user_names(self.bot, interaction.guild, p_ids)
+            return transaction_history_embed(target, txs, page_num, total_pages, user_names=p_map)
 
         view = PaginationView(
             embed_generator=page_embed_generator,
@@ -196,7 +201,7 @@ class Economy(commands.Cog):
             author_id=interaction.user.id,
             current_page=current_page,
         )
-        await interaction.response.send_message(embed=initial_embed, view=view)
+        await send_msg(interaction, embed=initial_embed, view=view)
 
     @app_commands.command(
         name="summary",
@@ -445,20 +450,22 @@ class Economy(commands.Cog):
             )
 
         initial_txs = await get_page_txs(target_page)
+        user_ids = {t["sender_id"] for t in initial_txs if t.get("sender_id")} | {t["receiver_id"] for t in initial_txs if t.get("receiver_id")}
+        user_map = await resolve_user_names(self.bot, ctx.guild, user_ids)
         initial_embed = transaction_history_embed(
-            target, initial_txs, target_page, total_pages
+            target, initial_txs, target_page, total_pages, user_names=user_map
         )
 
         if total_pages <= 1:
-            await ctx.send(embed=initial_embed)
+            await send_msg(ctx, embed=initial_embed)
             return
 
-        def page_embed_generator(page_num: int) -> discord.Embed:
-            import asyncio
-            txs = asyncio.run_coroutine_threadsafe(
-                get_page_txs(page_num), self.bot.loop
-            ).result()
-            return transaction_history_embed(target, txs, page_num, total_pages)
+        # Multi-page View (fully async, non-blocking)
+        async def page_embed_generator(page_num: int) -> discord.Embed:
+            txs = await get_page_txs(page_num)
+            p_ids = {t["sender_id"] for t in txs if t.get("sender_id")} | {t["receiver_id"] for t in txs if t.get("receiver_id")}
+            p_map = await resolve_user_names(self.bot, ctx.guild, p_ids)
+            return transaction_history_embed(target, txs, page_num, total_pages, user_names=p_map)
 
         view = PaginationView(
             embed_generator=page_embed_generator,
@@ -466,7 +473,7 @@ class Economy(commands.Cog):
             author_id=ctx.author.id,
             current_page=target_page,
         )
-        await ctx.send(embed=initial_embed, view=view)
+        await send_msg(ctx, embed=initial_embed, view=view)
 
 
 async def setup(bot: commands.Bot):

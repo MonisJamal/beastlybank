@@ -2532,6 +2532,10 @@ async def test_club_owner_username_display(db: DatabaseManager):
     assert owner_map[0] == "Vacant"
 
     # Test fallback to bot.fetch_user
+    from utils.embeds import _USER_NAME_CACHE
+    _USER_NAME_CACHE.clear()
+    _USER_NAME_CACHE[0] = "Vacant"
+
     mock_guild_empty = MagicMock(spec=discord.Guild)
     mock_guild_empty.get_member.return_value = None
     mock_bot.get_user.return_value = None
@@ -2541,6 +2545,10 @@ async def test_club_owner_username_display(db: DatabaseManager):
 
     owner_map_fetched = await resolve_owner_names(mock_bot, mock_guild_empty, clubs)
     assert owner_map_fetched[owner_id] == "FetchedOwner"
+
+    # Reset cache so mock_guild's Destinix is tested
+    _USER_NAME_CACHE.clear()
+    _USER_NAME_CACHE[0] = "Vacant"
 
     # 2. Test /club list shows username in field name
     clubs_cog = Clubs(mock_bot)

@@ -17,6 +17,8 @@ from utils.embeds import (
     create_beastly_embed,
     error_embed,
     resolve_user_names,
+    safe_defer,
+    send_msg,
     success_embed,
 )
 from utils.views import PaginationView
@@ -40,22 +42,6 @@ async def club_name_autocomplete(
         return choices[:25]
     except Exception:
         return []
-
-
-async def send_msg(target: discord.Interaction | commands.Context, embed: discord.Embed, ephemeral: bool = False):
-    try:
-        if isinstance(target, discord.Interaction):
-            if target.response.is_done():
-                try:
-                    await target.followup.send(embed=embed, ephemeral=ephemeral)
-                except Exception:
-                    await target.followup.send(embed=embed)
-            else:
-                await target.response.send_message(embed=embed, ephemeral=ephemeral)
-        else:
-            await target.send(embed=embed)
-    except Exception as e:
-        logger.error("Error in send_msg: %s", e, exc_info=True)
 
 
 async def execute_transfer(
@@ -180,35 +166,16 @@ async def execute_transfer(
 
 
 async def resolve_owner_names(
-    bot: commands.Bot, guild: Optional[discord.Guild], clubs: List[Dict[str, Any]]
+    bot: Any,
+    guild: Optional[discord.Guild],
+    clubs: List[Dict[str, Any]],
+    max_fetch: int = 15,
+    use_cache: bool = True,
 ) -> Dict[int, str]:
-    """Map owner_id -> display username for clean embed rendering."""
-    owner_map: Dict[int, str] = {0: "Vacant"}
-    for c in clubs:
-        oid = c.get("owner_id")
-        if not oid or oid in owner_map:
-            continue
-
-        name = None
-        if guild:
-            member = guild.get_member(oid)
-            if member:
-                name = getattr(member, "display_name", None) or getattr(member, "name", None)
-
-        if not name and bot:
-            user = bot.get_user(oid)
-            if user:
-                name = getattr(user, "display_name", None) or getattr(user, "name", None)
-
-        if not name and bot:
-            try:
-                user = await bot.fetch_user(oid)
-                if user:
-                    name = getattr(user, "display_name", None) or getattr(user, "name", None)
-            except Exception:
-                name = None
-
-        owner_map[oid] = name or f"User-{str(oid)[-4:]}"
+    """Map owner_id -> display username using cached and bounded parallel resolution."""
+    owner_ids = [c.get("owner_id") for c in clubs if c.get("owner_id")]
+    owner_map = await resolve_user_names(bot, guild, owner_ids, max_fetch=max_fetch, use_cache=use_cache)
+    owner_map[0] = "Vacant"
     return owner_map
 
 
@@ -302,10 +269,10 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
         members = await self.db.get_club_members(target_club["id"])
         owner_map = await resolve_owner_names(self.bot, interaction.guild, [target_club])
         owner_name = owner_map.get(target_club.get("owner_id", 0), "Vacant")
-        member_ids = [m["user_id"] for m in members if m.get("user_id")]
+        member_ids = [m["user_id"] for m in members[:12] if m.get("user_id")]
         member_names = await resolve_user_names(self.bot, interaction.guild, member_ids)
         embed = club_info_embed(target_club, members, owner_name=owner_name, member_names=member_names)
-        await interaction.response.send_message(embed=embed)
+        await send_msg(interaction, embed=embed)
 
     @app_commands.command(
         name="roster",
@@ -322,6 +289,7 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
         club: Optional[discord.Role] = None,
         page: Optional[int] = 1,
     ):
+        await safe_defer(interaction)
         if club:
             target_club = await self.db.get_or_create_club_from_role(
                 interaction.guild_id, club, default_owner_id=interaction.user.id
@@ -331,7 +299,8 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
 
         if not target_club:
             target_text = f"for role {club.mention}" if club else "for your account"
-            await interaction.response.send_message(
+            await send_msg(
+                interaction,
                 embed=error_embed("Club Not Found", f"Could not find an active club {target_text}."),
                 ephemeral=True,
             )
@@ -340,21 +309,32 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
         members = await self.db.get_club_members(target_club["id"])
         if not members:
             embed = error_embed("Empty Squad", f"No members registered in **[{target_club['tag']}] {target_club['name']}**.")
-            await interaction.response.send_message(embed=embed)
+            await send_msg(interaction, embed=embed)
             return
 
-        member_ids = [m["user_id"] for m in members if m.get("user_id")]
-        member_names = await resolve_user_names(self.bot, interaction.guild, member_ids)
         per_page = 10
         total_pages = max(1, (len(members) + per_page - 1) // per_page)
         target_page = max(1, min(page or 1, total_pages))
 
-        def make_roster_page(p: int) -> discord.Embed:
+        start_idx = (target_page - 1) * per_page
+        page_members = members[start_idx : start_idx + per_page]
+        page_uids = [m["user_id"] for m in page_members if m.get("user_id")]
+        member_names = await resolve_user_names(self.bot, interaction.guild, page_uids)
+
+        async def make_roster_page(p: int) -> discord.Embed:
+            p = max(1, min(p, total_pages))
+            s_idx = (p - 1) * per_page
+            p_members = members[s_idx : s_idx + per_page]
+            p_uids = [m["user_id"] for m in p_members if m.get("user_id")]
+            missing = [uid for uid in p_uids if uid not in member_names]
+            if missing:
+                fresh = await resolve_user_names(self.bot, interaction.guild, missing)
+                member_names.update(fresh)
             return club_roster_embed(target_club, members, member_names, page=p, total_pages=total_pages)
 
-        initial_embed = make_roster_page(target_page)
+        initial_embed = await make_roster_page(target_page)
         if total_pages <= 1:
-            await interaction.response.send_message(embed=initial_embed)
+            await send_msg(interaction, embed=initial_embed)
         else:
             view = PaginationView(
                 embed_generator=make_roster_page,
@@ -362,7 +342,7 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
                 author_id=interaction.user.id,
                 current_page=target_page,
             )
-            await interaction.response.send_message(embed=initial_embed, view=view)
+            await send_msg(interaction, embed=initial_embed, view=view)
 
     @app_commands.command(
         name="deposit",
@@ -544,6 +524,7 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
     )
     @require_beastlyfc()
     async def club_list(self, interaction: discord.Interaction, page: Optional[int] = 1):
+        await safe_defer(interaction)
         clubs = await self.db.get_club_leaderboard(interaction.guild_id, limit=200)
 
         if not clubs:
@@ -556,32 +537,39 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
                 ),
                 color=COLOR_BEASTLY_GOLD,
             )
-            await interaction.response.send_message(embed=embed)
+            await send_msg(interaction, embed=embed)
             return
-
-        owner_map = await resolve_owner_names(self.bot, interaction.guild, clubs)
 
         per_page = 10
         total_pages = max(1, (len(clubs) + per_page - 1) // per_page)
         target_page = max(1, min(page or 1, total_pages))
 
-        def make_page_embed(p: int) -> discord.Embed:
+        start_idx = (target_page - 1) * per_page
+        page_clubs = clubs[start_idx : start_idx + per_page]
+        owner_map = await resolve_owner_names(self.bot, interaction.guild, page_clubs)
+
+        async def make_page_embed(p: int) -> discord.Embed:
             p = max(1, min(p, total_pages))
-            start_idx = (p - 1) * per_page
-            page_clubs = clubs[start_idx : start_idx + per_page]
+            s_idx = (p - 1) * per_page
+            p_clubs = clubs[s_idx : s_idx + per_page]
+
+            missing = [c for c in p_clubs if c.get("owner_id", 0) not in owner_map]
+            if missing:
+                fresh = await resolve_owner_names(self.bot, interaction.guild, missing)
+                owner_map.update(fresh)
 
             embed = create_beastly_embed(
                 title="🏟️ BeastlyFC Club Treasuries Leaderboard",
                 description=(
                     f"Ranking of all registered clubs by total treasury assets:\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"*Showing clubs {start_idx + 1}–{start_idx + len(page_clubs)} of {len(clubs)} registered clubs*"
+                    f"*Showing clubs {s_idx + 1}–{s_idx + len(p_clubs)} of {len(clubs)} registered clubs*"
                 ),
                 color=COLOR_BEASTLY_GOLD,
             )
 
             medals = ["🥇", "🥈", "🥉"]
-            for idx, c in enumerate(page_clubs, start=start_idx + 1):
+            for idx, c in enumerate(p_clubs, start=s_idx + 1):
                 rank_str = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
                 owner_name = owner_map.get(c.get("owner_id", 0), "Vacant")
                 embed.add_field(
@@ -597,10 +585,10 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
             embed.set_footer(text=f"Page {p} of {total_pages} • BeastlyFC Bank")
             return embed
 
-        initial_embed = make_page_embed(target_page)
+        initial_embed = await make_page_embed(target_page)
 
         if total_pages <= 1:
-            await interaction.response.send_message(embed=initial_embed)
+            await send_msg(interaction, embed=initial_embed)
             return
 
         view = PaginationView(
@@ -609,7 +597,7 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
             author_id=interaction.user.id,
             current_page=target_page,
         )
-        await interaction.response.send_message(embed=initial_embed, view=view)
+        await send_msg(interaction, embed=initial_embed, view=view)
 
     @app_commands.command(
         name="addmanager",
@@ -1038,10 +1026,10 @@ class ClubPrefixCommands(commands.Cog):
         members = await self.db.get_club_members(club["id"])
         owner_map = await resolve_owner_names(self.bot, ctx.guild, [club])
         owner_name = owner_map.get(club.get("owner_id", 0), "Vacant")
-        member_ids = [m["user_id"] for m in members if m.get("user_id")]
+        member_ids = [m["user_id"] for m in members[:12] if m.get("user_id")]
         member_names = await resolve_user_names(self.bot, ctx.guild, member_ids)
         embed = club_info_embed(club, members, owner_name=owner_name, member_names=member_names)
-        await ctx.send(embed=embed)
+        await send_msg(ctx, embed=embed)
 
     @prefix_club.command(name="info")
     async def prefix_club_info(self, ctx: commands.Context, *, club_query: Optional[str] = None):
@@ -1327,32 +1315,39 @@ class ClubPrefixCommands(commands.Cog):
                 ),
                 color=COLOR_BEASTLY_GOLD,
             )
-            await ctx.send(embed=embed)
+            await send_msg(ctx, embed=embed)
             return
-
-        owner_map = await resolve_owner_names(self.bot, ctx.guild, clubs)
 
         per_page = 10
         total_pages = max(1, (len(clubs) + per_page - 1) // per_page)
         target_page = max(1, min(target_page, total_pages))
 
-        def make_page_embed(p: int) -> discord.Embed:
+        start_idx = (target_page - 1) * per_page
+        page_clubs = clubs[start_idx : start_idx + per_page]
+        owner_map = await resolve_owner_names(self.bot, ctx.guild, page_clubs)
+
+        async def make_page_embed(p: int) -> discord.Embed:
             p = max(1, min(p, total_pages))
-            start_idx = (p - 1) * per_page
-            page_clubs = clubs[start_idx : start_idx + per_page]
+            s_idx = (p - 1) * per_page
+            p_clubs = clubs[s_idx : s_idx + per_page]
+
+            missing = [c for c in p_clubs if c.get("owner_id", 0) not in owner_map]
+            if missing:
+                fresh = await resolve_owner_names(self.bot, ctx.guild, missing)
+                owner_map.update(fresh)
 
             embed = create_beastly_embed(
                 title="🏟️ BeastlyFC Club Treasuries Leaderboard",
                 description=(
                     f"Ranking of all registered clubs by total treasury assets:\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    f"*Showing clubs {start_idx + 1}–{start_idx + len(page_clubs)} of {len(clubs)} registered clubs*"
+                    f"*Showing clubs {s_idx + 1}–{s_idx + len(p_clubs)} of {len(clubs)} registered clubs*"
                 ),
                 color=COLOR_BEASTLY_GOLD,
             )
 
             medals = ["🥇", "🥈", "🥉"]
-            for idx, c in enumerate(page_clubs, start=start_idx + 1):
+            for idx, c in enumerate(p_clubs, start=s_idx + 1):
                 rank_str = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
                 owner_name = owner_map.get(c.get("owner_id", 0), "Vacant")
                 embed.add_field(
@@ -1368,10 +1363,10 @@ class ClubPrefixCommands(commands.Cog):
             embed.set_footer(text=f"Page {p} of {total_pages} • BeastlyFC Bank")
             return embed
 
-        initial_embed = make_page_embed(target_page)
+        initial_embed = await make_page_embed(target_page)
 
         if total_pages <= 1:
-            await ctx.send(embed=initial_embed)
+            await send_msg(ctx, embed=initial_embed)
             return
 
         view = PaginationView(
@@ -1380,7 +1375,7 @@ class ClubPrefixCommands(commands.Cog):
             author_id=ctx.author.id,
             current_page=target_page,
         )
-        await ctx.send(embed=initial_embed, view=view)
+        await send_msg(ctx, embed=initial_embed, view=view)
 
     @prefix_club.command(name="roster", aliases=["members", "squadmembers"])
     async def prefix_club_roster(self, ctx: commands.Context, *args):
@@ -1404,26 +1399,37 @@ class ClubPrefixCommands(commands.Cog):
             club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
 
         if not club:
-            await ctx.send(embed=error_embed("Club Not Found", "Could not find the specified club."))
+            await send_msg(ctx, embed=error_embed("Club Not Found", "Could not find the specified club."))
             return
 
         members = await self.db.get_club_members(club["id"])
         if not members:
-            await ctx.send(embed=error_embed("Empty Squad", f"No members registered in **[{club['tag']}] {club['name']}**."))
+            await send_msg(ctx, embed=error_embed("Empty Squad", f"No members registered in **[{club['tag']}] {club['name']}**."))
             return
 
-        member_ids = [m["user_id"] for m in members if m.get("user_id")]
-        member_names = await resolve_user_names(self.bot, ctx.guild, member_ids)
         per_page = 10
         total_pages = max(1, (len(members) + per_page - 1) // per_page)
         target_page = max(1, min(target_page, total_pages))
 
-        def make_roster_page(p: int) -> discord.Embed:
+        start_idx = (target_page - 1) * per_page
+        page_members = members[start_idx : start_idx + per_page]
+        page_uids = [m["user_id"] for m in page_members if m.get("user_id")]
+        member_names = await resolve_user_names(self.bot, ctx.guild, page_uids)
+
+        async def make_roster_page(p: int) -> discord.Embed:
+            p = max(1, min(p, total_pages))
+            s_idx = (p - 1) * per_page
+            p_members = members[s_idx : s_idx + per_page]
+            p_uids = [m["user_id"] for m in p_members if m.get("user_id")]
+            missing = [uid for uid in p_uids if uid not in member_names]
+            if missing:
+                fresh = await resolve_user_names(self.bot, ctx.guild, missing)
+                member_names.update(fresh)
             return club_roster_embed(club, members, member_names, page=p, total_pages=total_pages)
 
-        initial_embed = make_roster_page(target_page)
+        initial_embed = await make_roster_page(target_page)
         if total_pages <= 1:
-            await ctx.send(embed=initial_embed)
+            await send_msg(ctx, embed=initial_embed)
         else:
             view = PaginationView(
                 embed_generator=make_roster_page,
@@ -1431,7 +1437,7 @@ class ClubPrefixCommands(commands.Cog):
                 author_id=ctx.author.id,
                 current_page=target_page,
             )
-            await ctx.send(embed=initial_embed, view=view)
+            await send_msg(ctx, embed=initial_embed, view=view)
 
     @commands.command(name="roster", aliases=["squadmembers", "clubmembers"])
     async def prefix_standalone_roster(self, ctx: commands.Context, *args):

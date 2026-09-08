@@ -1,7 +1,6 @@
-"""
-Embed builders and BeastlyFC visual design components.
-"""
+import asyncio
 from datetime import datetime, timezone
+import logging
 from typing import Any, Dict, Iterable, List, Optional
 import discord
 from config import (
@@ -16,6 +15,10 @@ from config import (
     SUPPORTED_FORMATIONS,
     POSITION_CATEGORIES,
 )
+
+logger = logging.getLogger("BeastlyBank.Embeds")
+
+_USER_NAME_CACHE: Dict[int, str] = {0: "Vacant"}
 
 
 def formations_list_embed() -> discord.Embed:
@@ -79,34 +82,131 @@ async def resolve_user_names(
     bot: Any,
     guild: Optional[discord.Guild],
     user_ids: Iterable[int],
+    max_fetch: int = 15,
+    use_cache: bool = True,
 ) -> Dict[int, str]:
-    """Resolve Discord user IDs to their server display names or global usernames."""
-    user_map: Dict[int, str] = {0: "Vacant"}
+    """Resolve Discord user IDs to display names with in-memory caching and bounded parallel REST fallback."""
+    user_map: Dict[int, str] = {}
+    uncached_ids: List[int] = []
+
     for uid in user_ids:
-        if not uid or uid in user_map:
+        if not uid:
+            user_map[uid] = "Vacant"
             continue
 
+        # 1. In-memory global cache
+        if use_cache and uid in _USER_NAME_CACHE:
+            user_map[uid] = _USER_NAME_CACHE[uid]
+            continue
+
+        # 2. Guild member cache
         name = None
         if guild:
             member = guild.get_member(uid)
             if member:
                 name = getattr(member, "display_name", None) or getattr(member, "name", None)
 
-        if not name and bot:
+        # 3. Bot user cache
+        if not name and bot and hasattr(bot, "get_user"):
             user = bot.get_user(uid)
             if user:
                 name = getattr(user, "display_name", None) or getattr(user, "name", None)
 
-        if not name and bot:
-            try:
-                user = await bot.fetch_user(uid)
-                if user:
-                    name = getattr(user, "display_name", None) or getattr(user, "name", None)
-            except Exception:
-                name = None
+        if name:
+            if use_cache:
+                _USER_NAME_CACHE[uid] = name
+            user_map[uid] = name
+        else:
+            uncached_ids.append(uid)
 
-        user_map[uid] = name or f"User-{str(uid)[-4:]}"
+    # 4. Fast bounded parallel fetch for uncached IDs (up to max_fetch in parallel, capped at 0.8s)
+    if uncached_ids and bot and hasattr(bot, "fetch_user"):
+        to_fetch = uncached_ids[:max_fetch]
+
+        async def _fetch_one(target_id: int):
+            try:
+                u = await bot.fetch_user(target_id)
+                if u:
+                    n = getattr(u, "display_name", None) or getattr(u, "name", None)
+                    if n:
+                        return target_id, n
+            except Exception:
+                pass
+            return target_id, None
+
+        try:
+            results = await asyncio.wait_for(
+                asyncio.gather(*[_fetch_one(tid) for tid in to_fetch], return_exceptions=True),
+                timeout=0.8,
+            )
+            for res in results:
+                if isinstance(res, tuple) and len(res) == 2:
+                    tid, n = res
+                    if n:
+                        if use_cache:
+                            _USER_NAME_CACHE[tid] = n
+                        user_map[tid] = n
+        except Exception:
+            pass
+
+    # 5. Immediate non-blocking fallback for any still unresolvable IDs
+    for uid in uncached_ids:
+        if uid not in user_map:
+            user_map[uid] = f"User-{str(uid)[-4:]}"
+
     return user_map
+
+
+async def safe_defer(target: Any, ephemeral: bool = False) -> None:
+    """Safely defer a slash interaction if not already responded, handling mocks and errors."""
+    if isinstance(target, discord.Interaction) and hasattr(target, "response"):
+        try:
+            is_done_func = getattr(target.response, "is_done", None)
+            done = is_done_func() if callable(is_done_func) else False
+            if done is not True:
+                defer_func = getattr(target.response, "defer", None)
+                if callable(defer_func):
+                    res = defer_func(ephemeral=ephemeral)
+                    if asyncio.iscoroutine(res):
+                        await res
+        except Exception as e:
+            logger.debug("safe_defer error: %s", e)
+
+
+async def send_msg(
+    target: Any,
+    embed: discord.Embed,
+    ephemeral: bool = False,
+    view: Optional[discord.ui.View] = None,
+) -> Any:
+    """Safely send embed responses to interactions or commands.Context."""
+    try:
+        kwargs: Dict[str, Any] = {"embed": embed}
+        if view is not None:
+            kwargs["view"] = view
+
+        if isinstance(target, discord.Interaction):
+            is_done = False
+            if hasattr(target, "response") and hasattr(target.response, "is_done"):
+                done_val = target.response.is_done()
+                if done_val is True:
+                    is_done = True
+
+            if is_done:
+                try:
+                    return await target.followup.send(ephemeral=ephemeral, **kwargs)
+                except Exception:
+                    return await target.followup.send(**kwargs)
+            else:
+                if hasattr(target, "response") and hasattr(target.response, "send_message"):
+                    res = target.response.send_message(ephemeral=ephemeral, **kwargs)
+                    if asyncio.iscoroutine(res):
+                        return await res
+                    return res
+        elif hasattr(target, "send"):
+            return await target.send(**kwargs)
+    except Exception as e:
+        logger.error("Error in send_msg: %s", e, exc_info=True)
 
 
 def bank_card_embed(

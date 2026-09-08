@@ -8,7 +8,7 @@ from discord.ext import commands
 
 from config import CURRENCIES, COLOR_BEASTLY_GOLD, SERVER_NAME
 from utils.checks import require_beastlyfc
-from utils.embeds import create_beastly_embed, resolve_user_names
+from utils.embeds import create_beastly_embed, resolve_user_names, safe_defer, send_msg
 from utils.views import PaginationView
 from cogs.clubs import resolve_owner_names
 
@@ -35,6 +35,7 @@ class Leaderboard(commands.Cog):
         category: Literal["cash", "points", "tokens", "clubs"] = "cash",
         page: Optional[int] = 1,
     ):
+        await safe_defer(interaction)
         if category == "clubs":
             clubs = await self.db.get_club_leaderboard(interaction.guild_id, limit=200)
             if not clubs:
@@ -43,29 +44,39 @@ class Leaderboard(commands.Cog):
                     description=f"Top clubs ranked by total treasury wealth in **{SERVER_NAME}**:\n━━━━━━━━━━━━━━━━━━━━━━\n\n*No clubs registered yet.*",
                     color=COLOR_BEASTLY_GOLD,
                 )
-                await interaction.response.send_message(embed=embed)
+                await send_msg(interaction, embed=embed)
                 return
 
-            owner_map = await resolve_owner_names(self.bot, interaction.guild, clubs)
             per_page = 10
             total_pages = max(1, (len(clubs) + per_page - 1) // per_page)
             target_page = max(1, min(page or 1, total_pages))
 
-            def make_club_page(p: int) -> discord.Embed:
-                start_idx = (p - 1) * per_page
-                page_clubs = clubs[start_idx : start_idx + per_page]
-                end_idx = start_idx + len(page_clubs)
+            start_idx = (target_page - 1) * per_page
+            page_clubs = clubs[start_idx : start_idx + per_page]
+            owner_map = await resolve_owner_names(self.bot, interaction.guild, page_clubs)
+
+            async def make_club_page(p: int) -> discord.Embed:
+                p = max(1, min(p, total_pages))
+                s_idx = (p - 1) * per_page
+                p_clubs = clubs[s_idx : s_idx + per_page]
+                end_idx = s_idx + len(p_clubs)
+
+                missing = [c for c in p_clubs if c.get("owner_id", 0) not in owner_map]
+                if missing:
+                    fresh = await resolve_owner_names(self.bot, interaction.guild, missing)
+                    owner_map.update(fresh)
+
                 embed = create_beastly_embed(
                     title="🏆 BeastlyFC Club Treasury Leaderboard",
                     description=(
                         f"Clubs ranked by total treasury wealth in **{SERVER_NAME}**:\n"
-                        f"Showing clubs **{start_idx + 1}–{end_idx}** of **{len(clubs)}** registered clubs\n"
+                        f"Showing clubs **{s_idx + 1}–{end_idx}** of **{len(clubs)}** registered clubs\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━"
                     ),
                     color=COLOR_BEASTLY_GOLD,
                 )
                 medals = ["🥇", "🥈", "🥉"]
-                for idx, c in enumerate(page_clubs, start=start_idx + 1):
+                for idx, c in enumerate(p_clubs, start=s_idx + 1):
                     rank_icon = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
                     role_str = f" • <@&{c['role_id']}>" if c.get("role_id") else ""
                     owner_name = owner_map.get(c.get("owner_id", 0), "Vacant")
@@ -80,9 +91,9 @@ class Leaderboard(commands.Cog):
                 embed.set_footer(text=f"Page {p} of {total_pages} • BeastlyFC Club Leaderboard")
                 return embed
 
-            initial_embed = make_club_page(target_page)
+            initial_embed = await make_club_page(target_page)
             if total_pages <= 1:
-                await interaction.response.send_message(embed=initial_embed)
+                await send_msg(interaction, embed=initial_embed)
             else:
                 view = PaginationView(
                     embed_generator=make_club_page,
@@ -90,7 +101,7 @@ class Leaderboard(commands.Cog):
                     author_id=interaction.user.id,
                     current_page=target_page,
                 )
-                await interaction.response.send_message(embed=initial_embed, view=view)
+                await send_msg(interaction, embed=initial_embed, view=view)
             return
 
         # User Leaderboard (cash, points, tokens)
@@ -105,29 +116,39 @@ class Leaderboard(commands.Cog):
                 description=f"Top high-rollers ranked by **{emoji} {curr_name}** in **{SERVER_NAME}**:\n━━━━━━━━━━━━━━━━━━━━━━\n\n*No accounts found in BeastlyBank yet.*",
                 color=COLOR_BEASTLY_GOLD,
             )
-            await interaction.response.send_message(embed=embed)
+            await send_msg(interaction, embed=embed)
             return
 
-        user_map = await resolve_user_names(self.bot, interaction.guild, [u["user_id"] for u in leaders])
         per_page = 10
         total_pages = max(1, (len(leaders) + per_page - 1) // per_page)
         target_page = max(1, min(page or 1, total_pages))
 
-        def make_user_page(p: int) -> discord.Embed:
-            start_idx = (p - 1) * per_page
-            page_users = leaders[start_idx : start_idx + per_page]
-            end_idx = start_idx + len(page_users)
+        start_idx = (target_page - 1) * per_page
+        page_users = leaders[start_idx : start_idx + per_page]
+        user_map = await resolve_user_names(self.bot, interaction.guild, [u["user_id"] for u in page_users])
+
+        async def make_user_page(p: int) -> discord.Embed:
+            p = max(1, min(p, total_pages))
+            s_idx = (p - 1) * per_page
+            p_users = leaders[s_idx : s_idx + per_page]
+            end_idx = s_idx + len(p_users)
+
+            missing = [u["user_id"] for u in p_users if u["user_id"] not in user_map]
+            if missing:
+                fresh = await resolve_user_names(self.bot, interaction.guild, missing)
+                user_map.update(fresh)
+
             embed = create_beastly_embed(
                 title=f"🏆 BeastlyBank {curr_name} Leaderboard",
                 description=(
                     f"High-rollers ranked by **{emoji} {curr_name}** in **{SERVER_NAME}**:\n"
-                    f"Showing players **{start_idx + 1}–{end_idx}** of **{len(leaders)}** accounts\n"
+                    f"Showing players **{s_idx + 1}–{end_idx}** of **{len(leaders)}** accounts\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━"
                 ),
                 color=COLOR_BEASTLY_GOLD,
             )
             medals = ["🥇", "🥈", "🥉"]
-            for idx, user_entry in enumerate(page_users, start=start_idx + 1):
+            for idx, user_entry in enumerate(p_users, start=s_idx + 1):
                 rank_icon = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
                 uid = user_entry["user_id"]
                 display_name = user_map.get(uid, f"User-{str(uid)[-4:]}")
@@ -140,9 +161,9 @@ class Leaderboard(commands.Cog):
             embed.set_footer(text=f"Page {p} of {total_pages} • BeastlyBank Leaderboard")
             return embed
 
-        initial_embed = make_user_page(target_page)
+        initial_embed = await make_user_page(target_page)
         if total_pages <= 1:
-            await interaction.response.send_message(embed=initial_embed)
+            await send_msg(interaction, embed=initial_embed)
         else:
             view = PaginationView(
                 embed_generator=make_user_page,
@@ -150,7 +171,7 @@ class Leaderboard(commands.Cog):
                 author_id=interaction.user.id,
                 current_page=target_page,
             )
-            await interaction.response.send_message(embed=initial_embed, view=view)
+            await send_msg(interaction, embed=initial_embed, view=view)
 
     @commands.command(name="leaderboard", aliases=["lb", "top"])
     async def prefix_leaderboard(self, ctx: commands.Context, *args):
@@ -179,29 +200,39 @@ class Leaderboard(commands.Cog):
                     description=f"Top clubs ranked by total treasury wealth in **{SERVER_NAME}**:\n━━━━━━━━━━━━━━━━━━━━━━\n\n*No clubs registered yet.*",
                     color=COLOR_BEASTLY_GOLD,
                 )
-                await ctx.send(embed=embed)
+                await send_msg(ctx, embed=embed)
                 return
 
-            owner_map = await resolve_owner_names(self.bot, ctx.guild, clubs)
             per_page = 10
             total_pages = max(1, (len(clubs) + per_page - 1) // per_page)
             target_page = max(1, min(target_page, total_pages))
 
-            def make_club_page(p: int) -> discord.Embed:
-                start_idx = (p - 1) * per_page
-                page_clubs = clubs[start_idx : start_idx + per_page]
-                end_idx = start_idx + len(page_clubs)
+            start_idx = (target_page - 1) * per_page
+            page_clubs = clubs[start_idx : start_idx + per_page]
+            owner_map = await resolve_owner_names(self.bot, ctx.guild, page_clubs)
+
+            async def make_club_page(p: int) -> discord.Embed:
+                p = max(1, min(p, total_pages))
+                s_idx = (p - 1) * per_page
+                p_clubs = clubs[s_idx : s_idx + per_page]
+                end_idx = s_idx + len(p_clubs)
+
+                missing = [c for c in p_clubs if c.get("owner_id", 0) not in owner_map]
+                if missing:
+                    fresh = await resolve_owner_names(self.bot, ctx.guild, missing)
+                    owner_map.update(fresh)
+
                 embed = create_beastly_embed(
                     title="🏆 BeastlyFC Club Treasury Leaderboard",
                     description=(
                         f"Clubs ranked by total treasury wealth in **{SERVER_NAME}**:\n"
-                        f"Showing clubs **{start_idx + 1}–{end_idx}** of **{len(clubs)}** registered clubs\n"
+                        f"Showing clubs **{s_idx + 1}–{end_idx}** of **{len(clubs)}** registered clubs\n"
                         f"━━━━━━━━━━━━━━━━━━━━━━"
                     ),
                     color=COLOR_BEASTLY_GOLD,
                 )
                 medals = ["🥇", "🥈", "🥉"]
-                for idx, c in enumerate(page_clubs, start=start_idx + 1):
+                for idx, c in enumerate(p_clubs, start=s_idx + 1):
                     rank_icon = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
                     role_str = f" • <@&{c['role_id']}>" if c.get("role_id") else ""
                     owner_name = owner_map.get(c.get("owner_id", 0), "Vacant")
@@ -216,9 +247,9 @@ class Leaderboard(commands.Cog):
                 embed.set_footer(text=f"Page {p} of {total_pages} • BeastlyFC Club Leaderboard")
                 return embed
 
-            initial_embed = make_club_page(target_page)
+            initial_embed = await make_club_page(target_page)
             if total_pages <= 1:
-                await ctx.send(embed=initial_embed)
+                await send_msg(ctx, embed=initial_embed)
             else:
                 view = PaginationView(
                     embed_generator=make_club_page,
@@ -226,7 +257,7 @@ class Leaderboard(commands.Cog):
                     author_id=ctx.author.id,
                     current_page=target_page,
                 )
-                await ctx.send(embed=initial_embed, view=view)
+                await send_msg(ctx, embed=initial_embed, view=view)
             return
 
         # User Leaderboard (cash, points, tokens)
@@ -241,29 +272,39 @@ class Leaderboard(commands.Cog):
                 description=f"Top high-rollers ranked by **{emoji} {curr_name}** in **{SERVER_NAME}**:\n━━━━━━━━━━━━━━━━━━━━━━\n\n*No accounts found in BeastlyBank yet.*",
                 color=COLOR_BEASTLY_GOLD,
             )
-            await ctx.send(embed=embed)
+            await send_msg(ctx, embed=embed)
             return
 
-        user_map = await resolve_user_names(self.bot, ctx.guild, [u["user_id"] for u in leaders])
         per_page = 10
         total_pages = max(1, (len(leaders) + per_page - 1) // per_page)
         target_page = max(1, min(target_page, total_pages))
 
-        def make_user_page(p: int) -> discord.Embed:
-            start_idx = (p - 1) * per_page
-            page_users = leaders[start_idx : start_idx + per_page]
-            end_idx = start_idx + len(page_users)
+        start_idx = (target_page - 1) * per_page
+        page_users = leaders[start_idx : start_idx + per_page]
+        user_map = await resolve_user_names(self.bot, ctx.guild, [u["user_id"] for u in page_users])
+
+        async def make_user_page(p: int) -> discord.Embed:
+            p = max(1, min(p, total_pages))
+            s_idx = (p - 1) * per_page
+            p_users = leaders[s_idx : s_idx + per_page]
+            end_idx = s_idx + len(p_users)
+
+            missing = [u["user_id"] for u in p_users if u["user_id"] not in user_map]
+            if missing:
+                fresh = await resolve_user_names(self.bot, ctx.guild, missing)
+                user_map.update(fresh)
+
             embed = create_beastly_embed(
                 title=f"🏆 BeastlyBank {curr_name} Leaderboard",
                 description=(
                     f"High-rollers ranked by **{emoji} {curr_name}** in **{SERVER_NAME}**:\n"
-                    f"Showing players **{start_idx + 1}–{end_idx}** of **{len(leaders)}** accounts\n"
+                    f"Showing players **{s_idx + 1}–{end_idx}** of **{len(leaders)}** accounts\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━"
                 ),
                 color=COLOR_BEASTLY_GOLD,
             )
             medals = ["🥇", "🥈", "🥉"]
-            for idx, user_entry in enumerate(page_users, start=start_idx + 1):
+            for idx, user_entry in enumerate(p_users, start=s_idx + 1):
                 rank_icon = medals[idx - 1] if idx <= 3 else f"`#{idx}`"
                 uid = user_entry["user_id"]
                 display_name = user_map.get(uid, f"User-{str(uid)[-4:]}")
@@ -276,9 +317,9 @@ class Leaderboard(commands.Cog):
             embed.set_footer(text=f"Page {p} of {total_pages} • BeastlyBank Leaderboard")
             return embed
 
-        initial_embed = make_user_page(target_page)
+        initial_embed = await make_user_page(target_page)
         if total_pages <= 1:
-            await ctx.send(embed=initial_embed)
+            await send_msg(ctx, embed=initial_embed)
         else:
             view = PaginationView(
                 embed_generator=make_user_page,
@@ -286,7 +327,7 @@ class Leaderboard(commands.Cog):
                 author_id=ctx.author.id,
                 current_page=target_page,
             )
-            await ctx.send(embed=initial_embed, view=view)
+            await send_msg(ctx, embed=initial_embed, view=view)
 
 
 async def setup(bot: commands.Bot):

@@ -1,17 +1,18 @@
 """
 Discord UI Views, Buttons, Select Menus, and Interactive Components.
 """
-from typing import Any, Callable, Dict, List, Optional
+import asyncio
+from typing import Any, Callable, Dict, List, Optional, Union
 import discord
 from config import BOT_NAME, CURRENCIES
 
 
 class PaginationView(discord.ui.View):
-    """Universal pagination view for embeds."""
+    """Universal pagination view for embeds, supporting both sync and async embed generators."""
 
     def __init__(
         self,
-        embed_generator: Callable[[int], discord.Embed],
+        embed_generator: Callable[[int], Union[discord.Embed, Any]],
         total_pages: int,
         author_id: int,
         current_page: int = 1,
@@ -41,7 +42,8 @@ class PaginationView(discord.ui.View):
         if self.current_page > 1:
             self.current_page -= 1
             self._update_buttons()
-            embed = self.embed_generator(self.current_page)
+            res = self.embed_generator(self.current_page)
+            embed = await res if asyncio.iscoroutine(res) else res
             await interaction.response.edit_message(embed=embed, view=self)
 
     @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
@@ -49,7 +51,8 @@ class PaginationView(discord.ui.View):
         if self.current_page < self.total_pages:
             self.current_page += 1
             self._update_buttons()
-            embed = self.embed_generator(self.current_page)
+            res = self.embed_generator(self.current_page)
+            embed = await res if asyncio.iscoroutine(res) else res
             await interaction.response.edit_message(embed=embed, view=self)
 
     async def on_timeout(self) -> None:

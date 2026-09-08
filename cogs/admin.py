@@ -20,7 +20,7 @@ from config import (
     parse_amount,
 )
 from utils.checks import require_beastlyfc, require_banker_or_admin
-from utils.embeds import create_beastly_embed, error_embed, success_embed
+from utils.embeds import create_beastly_embed, error_embed, success_embed, safe_defer, send_msg
 from cogs.clubs import club_name_autocomplete
 
 
@@ -413,6 +413,80 @@ class ManageCurrency(commands.GroupCog, name="manage", description="Manage User 
             color=COLOR_ERROR,
         )
         await interaction.response.send_message(embed=embed)
+
+    @app_commands.command(
+        name="rolegrant",
+        description="Distribute Cash, Points, or Tokens to all members holding a specific Discord role.",
+    )
+    @app_commands.describe(
+        role="The Discord role whose members will receive the grant",
+        currency="Currency type to grant (Cash, Points, Tokens)",
+        amount="Amount to grant to each member (e.g. 50000, 50k, 1m)",
+        reason="Official memo explaining the role distribution",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def manage_rolegrant(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role,
+        currency: Literal["cash", "points", "tokens"],
+        amount: str,
+        reason: Optional[str] = "Role Distribution",
+    ):
+        await safe_defer(interaction)
+        parsed_amount = parse_amount(amount)
+        if parsed_amount is None or parsed_amount <= 0:
+            await send_msg(
+                interaction,
+                embed=error_embed("Invalid Amount", f"Grant amount must be greater than 0: `{amount}`"),
+                ephemeral=True,
+            )
+            return
+
+        eligible_members = [m for m in role.members if not m.bot]
+        if not eligible_members:
+            await send_msg(
+                interaction,
+                embed=error_embed("No Eligible Members", f"No non-bot members found holding the role {role.mention}."),
+                ephemeral=True,
+            )
+            return
+
+        memo = reason or "Role Distribution"
+        user_ids = [m.id for m in eligible_members]
+        success, msg, count = await self.db.bulk_role_grant(
+            guild_id=interaction.guild_id,
+            user_ids=user_ids,
+            currency=currency,
+            amount=parsed_amount,
+            reason=memo,
+            admin_id=interaction.user.id,
+            role_name=role.name,
+        )
+
+        if not success:
+            await send_msg(interaction, embed=error_embed("Grant Failed", msg), ephemeral=True)
+            return
+
+        curr_emoji = CURRENCIES[currency]["emoji"]
+        curr_name = CURRENCIES[currency]["name"]
+        total_payout = parsed_amount * count
+
+        embed = create_beastly_embed(
+            title="🎁 Role Currency Grant Completed",
+            description=(
+                f"Successfully distributed {curr_emoji} **{curr_name}** to all members of {role.mention}!\n\n"
+                f"• **Target Role:** {role.mention} (`{role.name}`)\n"
+                f"• **Amount Per Member:** {curr_emoji} **{parsed_amount:,} {curr_name}**\n"
+                f"• **Total Members Credited:** **{count:,} players**\n"
+                f"• **Total Currency Distributed:** {curr_emoji} **{total_payout:,} {curr_name}**\n"
+                f"• **Authorized Staff:** {interaction.user.mention}\n"
+                f"• **Official Memo:** *{memo}*"
+            ),
+            color=COLOR_SUCCESS,
+        )
+        await send_msg(interaction, embed=embed)
 
 
 
@@ -807,6 +881,80 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
             )
         except Exception as e:
             await interaction.followup.send(embed=error_embed("Restore Failed", f"An error occurred: `{e}`"), ephemeral=True)
+
+    @app_commands.command(
+        name="rolegrant",
+        description="Distribute Cash, Points, or Tokens to all members with a specific Discord role.",
+    )
+    @app_commands.describe(
+        role="The Discord role whose members will receive the grant",
+        currency="Currency type to grant (Cash, Points, Tokens)",
+        amount="Amount to grant to each member (e.g. 50000, 50k, 1m)",
+        reason="Official memo explaining the role distribution",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def bank_rolegrant(
+        self,
+        interaction: discord.Interaction,
+        role: discord.Role,
+        currency: Literal["cash", "points", "tokens"],
+        amount: str,
+        reason: Optional[str] = "Role Distribution",
+    ):
+        await safe_defer(interaction)
+        parsed_amount = parse_amount(amount)
+        if parsed_amount is None or parsed_amount <= 0:
+            await send_msg(
+                interaction,
+                embed=error_embed("Invalid Amount", f"Grant amount must be greater than 0: `{amount}`"),
+                ephemeral=True,
+            )
+            return
+
+        eligible_members = [m for m in role.members if not m.bot]
+        if not eligible_members:
+            await send_msg(
+                interaction,
+                embed=error_embed("No Eligible Members", f"No non-bot members found holding the role {role.mention}."),
+                ephemeral=True,
+            )
+            return
+
+        memo = reason or "Role Distribution"
+        user_ids = [m.id for m in eligible_members]
+        success, msg, count = await self.db.bulk_role_grant(
+            guild_id=interaction.guild_id,
+            user_ids=user_ids,
+            currency=currency,
+            amount=parsed_amount,
+            reason=memo,
+            admin_id=interaction.user.id,
+            role_name=role.name,
+        )
+
+        if not success:
+            await send_msg(interaction, embed=error_embed("Grant Failed", msg), ephemeral=True)
+            return
+
+        curr_emoji = CURRENCIES[currency]["emoji"]
+        curr_name = CURRENCIES[currency]["name"]
+        total_payout = parsed_amount * count
+
+        embed = create_beastly_embed(
+            title="🎁 Role Currency Grant Completed",
+            description=(
+                f"Successfully distributed {curr_emoji} **{curr_name}** to all members of {role.mention}!\n\n"
+                f"• **Target Role:** {role.mention} (`{role.name}`)\n"
+                f"• **Amount Per Member:** {curr_emoji} **{parsed_amount:,} {curr_name}**\n"
+                f"• **Total Members Credited:** **{count:,} players**\n"
+                f"• **Total Currency Distributed:** {curr_emoji} **{total_payout:,} {curr_name}**\n"
+                f"• **Authorized Staff:** {interaction.user.mention}\n"
+                f"• **Official Memo:** *{memo}*"
+            ),
+            color=COLOR_SUCCESS,
+        )
+        await send_msg(interaction, embed=embed)
 
 
 class BankerPrefixCommands(commands.Cog):
@@ -1205,6 +1353,123 @@ class BankerPrefixCommands(commands.Cog):
                 f"• **Member Balances:** 🛡️ Zero data loss (all members retain their full personal balances)."
             ),
             color=COLOR_ERROR,
+        )
+        await ctx.send(embed=embed)
+
+    @commands.command(name="rolegrant", aliases=["payrole", "grantrole", "rolegive", "rolepay"])
+    @require_banker_or_admin()
+    async def prefix_rolegrant(self, ctx: commands.Context, *args):
+        """
+        bb!rolegrant <@role> <cash|points|tokens> <amount> [reason]
+        e.g. bb!rolegrant @Champions cash 50k Tournament 1st Place
+        """
+        if len(args) < 3 and not (ctx.message.role_mentions and len(args) >= 2):
+            embed = error_embed(
+                "Invalid Command Usage",
+                "**Usage:** `bb!rolegrant <@role> <currency> <amount> [reason]`\n"
+                "**Example:** `bb!rolegrant @Champions cash 50k Tournament 1st Place`\n"
+                "*(Aliases: `bb!payrole`, `bb!grantrole`, `bb!rolegive`)*",
+            )
+            await ctx.send(embed=embed)
+            return
+
+        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+
+        cur_args = list(args)
+        if target_role:
+            cur_args = [a for a in cur_args if not (a.startswith("<@&") and a.endswith(">"))]
+        else:
+            # Check if first arg is a role ID or role name
+            potential_role = None
+            if cur_args:
+                clean_r = cur_args[0].replace("<@&", "").replace(">", "").strip()
+                if clean_r.isdigit():
+                    potential_role = ctx.guild.get_role(int(clean_r))
+                if not potential_role:
+                    for r in ctx.guild.roles:
+                        if r.name.lower() == cur_args[0].lower():
+                            potential_role = r
+                            break
+            if potential_role:
+                target_role = potential_role
+                cur_args.pop(0)
+
+        if not target_role:
+            await ctx.send(embed=error_embed("Missing Role", "Please mention a Discord role (e.g. `bb!rolegrant @Winners cash 50k`)."))
+            return
+
+        # Extract currency
+        valid_currencies = ("cash", "points", "tokens", "token", "point")
+        curr_key = None
+        curr_idx = -1
+        for i, a in enumerate(cur_args):
+            low = a.lower().strip()
+            if low in valid_currencies:
+                curr_key = "points" if "point" in low else ("tokens" if "token" in low else "cash")
+                curr_idx = i
+                break
+
+        if not curr_key:
+            await ctx.send(embed=error_embed("Invalid Currency", "Currency must be `cash`, `points`, or `tokens`."))
+            return
+
+        cur_args.pop(curr_idx)
+
+        # Extract amount
+        amount_idx = -1
+        parsed_amount = None
+        for i, a in enumerate(cur_args):
+            val = parse_amount(a)
+            if val is not None and val > 0:
+                parsed_amount = val
+                amount_idx = i
+                break
+
+        if parsed_amount is None:
+            await ctx.send(embed=error_embed("Invalid Amount", "Please provide a valid grant amount (e.g. `5000`, `50k`, `1m`)."))
+            return
+
+        cur_args.pop(amount_idx)
+
+        # Remaining is reason
+        reason = " ".join(cur_args).strip() or "Role Distribution"
+
+        eligible_members = [m for m in target_role.members if not m.bot]
+        if not eligible_members:
+            await ctx.send(embed=error_embed("No Eligible Members", f"No non-bot members found holding the role {target_role.mention}."))
+            return
+
+        user_ids = [m.id for m in eligible_members]
+        success, msg, count = await self.db.bulk_role_grant(
+            guild_id=ctx.guild.id,
+            user_ids=user_ids,
+            currency=curr_key,
+            amount=parsed_amount,
+            reason=reason,
+            admin_id=ctx.author.id,
+            role_name=target_role.name,
+        )
+
+        if not success:
+            await ctx.send(embed=error_embed("Grant Failed", msg))
+            return
+
+        curr_emoji = CURRENCIES[curr_key]["emoji"]
+        curr_name = CURRENCIES[curr_key]["name"]
+        total_payout = parsed_amount * count
+
+        embed = create_beastly_embed(
+            title="🎁 Role Currency Grant Completed",
+            description=(
+                f"Successfully distributed {curr_emoji} **{curr_name}** to all members of {target_role.mention}!\n\n"
+                f"• **Target Role:** {target_role.mention} (`{target_role.name}`)\n"
+                f"• **Amount Per Member:** {curr_emoji} **{parsed_amount:,} {curr_name}**\n"
+                f"• **Total Members Credited:** **{count:,} players**\n"
+                f"• **Total Currency Distributed:** {curr_emoji} **{total_payout:,} {curr_name}**\n"
+                f"• **Authorized Staff:** {ctx.author.mention}\n"
+                f"• **Official Memo:** *{reason}*"
+            ),
+            color=COLOR_SUCCESS,
         )
         await ctx.send(embed=embed)
 

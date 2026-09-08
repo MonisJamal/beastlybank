@@ -2078,6 +2078,54 @@ class DatabaseManager:
         updated = await self.get_or_create_user(user_id, guild_id)
         return True, f"Updated <@{user_id}>'s {currency} balance to {amount:,}.", updated
 
+    async def bulk_role_grant(
+        self,
+        guild_id: int,
+        user_ids: List[int],
+        currency: str,
+        amount: int,
+        reason: str,
+        admin_id: int,
+        role_name: str = "Role",
+    ) -> Tuple[bool, str, int]:
+        """Batch credit currency to all specified user IDs atomically in a single database transaction."""
+        if currency not in ("cash", "points", "tokens"):
+            return False, f"Invalid currency '{currency}'.", 0
+        if amount <= 0:
+            return False, "Grant amount must be greater than 0.", 0
+        if not user_ids:
+            return False, "No eligible user IDs provided for role grant.", 0
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            for uid in user_ids:
+                await cur.execute(
+                    """
+                    INSERT OR IGNORE INTO users (user_id, guild_id, cash, points, tokens, daily_streak)
+                    VALUES (?, ?, 0, 0, 0, 0);
+                    """,
+                    (uid, guild_id),
+                )
+                await cur.execute(
+                    f"""
+                    UPDATE users
+                    SET {currency} = {currency} + ?
+                    WHERE user_id = ? AND guild_id = ?;
+                    """,
+                    (amount, uid, guild_id),
+                )
+                memo = f"Role Grant [{role_name}] by <@{admin_id}>: {reason}"
+                await cur.execute(
+                    """
+                    INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                    VALUES (?, NULL, ?, ?, ?, 'role_grant', ?);
+                    """,
+                    (guild_id, uid, currency, amount, memo),
+                )
+            await conn.commit()
+
+        return True, f"Successfully granted {amount:,} {currency} to {len(user_ids)} members!", len(user_ids)
+
     # ------------------ Server Settings ------------------ #
 
     async def get_settings(self, guild_id: int) -> Dict[str, Any]:

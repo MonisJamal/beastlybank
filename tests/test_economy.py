@@ -3020,3 +3020,131 @@ async def test_slash_transactions_async_pagination_and_usernames(db: DatabaseMan
     assert any("TransferSender" in f.value for f in p2_embed.fields)
 
 
+@pytest.mark.asyncio
+async def test_bulk_role_grant_db(db: DatabaseManager):
+    """Test bulk_role_grant in database layer with multiple users and transaction recording."""
+    guild_id = 987654321
+    admin_id = 112233
+    user_ids = [10001, 10002, 10003]
+
+    # Grant 25,000 cash to 3 users
+    success, msg, count = await db.bulk_role_grant(
+        guild_id=guild_id,
+        user_ids=user_ids,
+        currency="cash",
+        amount=25000,
+        reason="Tournament 1st Prize",
+        admin_id=admin_id,
+        role_name="Champions",
+    )
+    assert success is True
+    assert count == 3
+
+    # Verify each user's balance
+    for uid in user_ids:
+        u = await db.get_or_create_user(uid, guild_id)
+        assert u["cash"] == 25000
+
+        # Verify transaction statement
+        txs = await db.get_transactions(uid, guild_id)
+        assert len(txs) == 1
+        assert txs[0]["tx_type"] == "role_grant"
+        assert txs[0]["amount"] == 25000
+        assert "Champions" in txs[0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_rolegrant_slash_and_prefix(db: DatabaseManager):
+    """Test /manage rolegrant and bb!rolegrant commands filtering bots and granting funds."""
+    from unittest.mock import AsyncMock, MagicMock
+    from discord.ext import commands
+    from cogs.admin import ManageCurrency, BankerPrefixCommands
+
+    guild_id = 987654322
+    admin_id = 990011
+    mock_bot = MagicMock()
+    mock_bot.db = db
+
+    mock_guild = MagicMock(spec=discord.Guild)
+    mock_guild.id = guild_id
+
+    # Create mock role with 2 humans and 1 bot
+    mock_role = MagicMock(spec=discord.Role)
+    mock_role.id = 555000
+    mock_role.name = "GoldVIP"
+    mock_role.mention = "<@&555000>"
+
+    member1 = MagicMock(spec=discord.Member)
+    member1.id = 20001
+    member1.bot = False
+
+    member2 = MagicMock(spec=discord.Member)
+    member2.id = 20002
+    member2.bot = False
+
+    bot_member = MagicMock(spec=discord.Member)
+    bot_member.id = 99999
+    bot_member.bot = True
+
+    mock_role.members = [member1, member2, bot_member]
+
+    # 1. Test /manage rolegrant slash command
+    manage_cog = ManageCurrency(mock_bot)
+    inter = MagicMock(spec=discord.Interaction)
+    inter.guild_id = guild_id
+    inter.guild = mock_guild
+    inter.user = MagicMock()
+    inter.user.id = admin_id
+    inter.user.mention = f"<@{admin_id}>"
+    inter.response = MagicMock()
+    inter.response.is_done.return_value = False
+
+    async def mock_defer(*args, **kwargs):
+        inter.response.is_done.return_value = True
+
+    inter.response.defer = AsyncMock(side_effect=mock_defer)
+    inter.response.send_message = AsyncMock()
+    inter.followup = MagicMock()
+    inter.followup.send = AsyncMock()
+
+    await manage_cog.manage_rolegrant.callback(
+        manage_cog, inter, role=mock_role, currency="cash", amount="50k", reason="VIP Season Bonus"
+    )
+
+    assert inter.followup.send.called is True
+    grant_embed = inter.followup.send.call_args[1]["embed"]
+    assert "Role Currency Grant Completed" in grant_embed.title
+    assert "2 players" in grant_embed.description
+    assert "100,000" in grant_embed.description
+
+    u1 = await db.get_or_create_user(member1.id, guild_id)
+    u2 = await db.get_or_create_user(member2.id, guild_id)
+    assert u1["cash"] == 50000
+    assert u2["cash"] == 50000
+
+    # 2. Test bb!rolegrant prefix command
+    prefix_cog = BankerPrefixCommands(mock_bot)
+    ctx = MagicMock(spec=commands.Context)
+    ctx.guild = mock_guild
+    ctx.author = MagicMock()
+    ctx.author.id = admin_id
+    ctx.author.mention = f"<@{admin_id}>"
+    ctx.message = MagicMock()
+    ctx.message.role_mentions = [mock_role]
+    ctx.send = AsyncMock()
+
+    # Call bb!rolegrant @GoldVIP tokens 10 "Drills reward"
+    await prefix_cog.prefix_rolegrant.callback(
+        prefix_cog, ctx, "<@&555000>", "tokens", "10", "Drills reward"
+    )
+    ctx.send.assert_called_once()
+    pref_embed = ctx.send.call_args[1]["embed"]
+    assert "Role Currency Grant Completed" in pref_embed.title
+
+    u1 = await db.get_or_create_user(member1.id, guild_id)
+    u2 = await db.get_or_create_user(member2.id, guild_id)
+    assert u1["tokens"] == 10
+    assert u2["tokens"] == 10
+
+
+

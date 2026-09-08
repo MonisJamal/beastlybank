@@ -9,6 +9,7 @@ from discord.ext import commands
 from config import CURRENCIES, COLOR_BEASTLY_GOLD, COLOR_PITCH_GREEN, COLOR_SUCCESS
 from utils.checks import require_beastlyfc, require_banker_or_admin
 from utils.embeds import create_beastly_embed, error_embed, success_embed
+from utils.views import PaginationView
 
 
 class Shop(commands.Cog):
@@ -22,8 +23,9 @@ class Shop(commands.Cog):
         name="shop",
         description="Browse the official BeastlyFC Server Shop for perks, roles, and boosts.",
     )
+    @app_commands.describe(page="Page number to view (default: 1)")
     @require_beastlyfc()
-    async def shop(self, interaction: discord.Interaction):
+    async def shop(self, interaction: discord.Interaction, page: Optional[int] = 1):
         settings = await self.db.get_settings(interaction.guild_id)
         if not settings.get("shop_enabled", 1):
             await interaction.response.send_message(
@@ -34,32 +36,60 @@ class Shop(commands.Cog):
 
         items = await self.db.get_shop_items(interaction.guild_id, include_inactive=False)
 
-        embed = create_beastly_embed(
-            title="🛒 BeastlyBank Official Store",
-            description=(
-                "Spend your **Cash**, **Community Points**, and **Training Tokens** here!\n"
-                "Use `/buy <item_id>` to purchase any item.\n━━━━━━━━━━━━━━━━━━━━━━"
-            ),
-            color=COLOR_BEASTLY_GOLD,
-        )
-
         if not items:
-            embed.description += "\n*The BeastlyBank shop is currently being restocked!*"
+            embed = create_beastly_embed(
+                title="🛒 BeastlyBank Official Store",
+                description=(
+                    "Spend your **Cash**, **Community Points**, and **Training Tokens** here!\n"
+                    "Use `/buy <item_id>` to purchase any item.\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "*The BeastlyBank shop is currently being restocked!*"
+                ),
+                color=COLOR_BEASTLY_GOLD,
+            )
             await interaction.response.send_message(embed=embed)
             return
 
-        for itm in items:
-            curr_info = CURRENCIES.get(itm["currency"], {})
-            emoji = curr_info.get("emoji", "💰")
-            stock_str = "Unlimited" if itm["stock"] == -1 else f"{itm['stock']} remaining"
+        per_page = 6
+        total_pages = max(1, (len(items) + per_page - 1) // per_page)
+        target_page = max(1, min(page or 1, total_pages))
 
-            embed.add_field(
-                name=f"#{itm['id']} • {itm['name']} — {emoji} {itm['price']:,}",
-                value=f"{itm['description']}\n📦 **Stock:** `{stock_str}` | 🏷️ **Type:** `{itm.get('category', 'Perk')}`",
-                inline=False,
+        def make_shop_page(p: int) -> discord.Embed:
+            start_idx = (p - 1) * per_page
+            page_items = items[start_idx : start_idx + per_page]
+            end_idx = start_idx + len(page_items)
+            embed = create_beastly_embed(
+                title="🛒 BeastlyBank Official Store",
+                description=(
+                    "Spend your **Cash**, **Community Points**, and **Training Tokens** here!\n"
+                    "Use `/buy <item_id>` to purchase any item.\n"
+                    f"Showing items **{start_idx + 1}–{end_idx}** of **{len(items)}** available items\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━"
+                ),
+                color=COLOR_BEASTLY_GOLD,
             )
+            for itm in page_items:
+                curr_info = CURRENCIES.get(itm["currency"], {})
+                emoji = curr_info.get("emoji", "💰")
+                stock_str = "Unlimited" if itm["stock"] == -1 else f"{itm['stock']} remaining"
+                embed.add_field(
+                    name=f"#{itm['id']} • {itm['name']} — {emoji} {itm['price']:,}",
+                    value=f"{itm['description']}\n📦 **Stock:** `{stock_str}` | 🏷️ **Type:** `{itm.get('category', 'Perk')}`",
+                    inline=False,
+                )
+            embed.set_footer(text=f"Page {p} of {total_pages} • BeastlyBank Store")
+            return embed
 
-        await interaction.response.send_message(embed=embed)
+        initial_embed = make_shop_page(target_page)
+        if total_pages <= 1:
+            await interaction.response.send_message(embed=initial_embed)
+        else:
+            view = PaginationView(
+                embed_generator=make_shop_page,
+                total_pages=total_pages,
+                author_id=interaction.user.id,
+                current_page=target_page,
+            )
+            await interaction.response.send_message(embed=initial_embed, view=view)
 
     @app_commands.command(
         name="buy",
@@ -131,71 +161,132 @@ class Shop(commands.Cog):
         name="inventory",
         description="Inspect items, perks, and upgrades in your personal stash.",
     )
-    @app_commands.describe(user="The member whose inventory to check (default: yourself)")
+    @app_commands.describe(
+        user="The member whose inventory to check (default: yourself)",
+        page="Page number to view (default: 1)",
+    )
     @require_beastlyfc()
     async def inventory(
         self,
         interaction: discord.Interaction,
         user: Optional[discord.Member] = None,
+        page: Optional[int] = 1,
     ):
         target = user or interaction.user
         items = await self.db.get_inventory(target.id, interaction.guild_id)
 
-        embed = create_beastly_embed(
-            title=f"🎒 Inventory • {target.display_name}",
-            description=f"Personal perks and inventory items for {target.mention}.\n━━━━━━━━━━━━━━━━━━━━━━",
-            color=COLOR_PITCH_GREEN,
-        )
-
         if not items:
-            embed.description += "\n*Inventory is empty! Browse `/shop` to purchase items and perks.*"
+            embed = create_beastly_embed(
+                title=f"🎒 Inventory • {target.display_name}",
+                description=f"Personal perks and inventory items for {target.mention}.\n━━━━━━━━━━━━━━━━━━━━━━\n\n*Inventory is empty! Browse `/shop` to purchase items and perks.*",
+                color=COLOR_PITCH_GREEN,
+            )
             await interaction.response.send_message(embed=embed)
             return
 
-        for itm in items:
-            embed.add_field(
-                name=f"{itm['name']} (x{itm['quantity']})",
-                value=f"{itm['description']}\n📅 *Acquired:* `{itm['acquired_at'][:10]}`",
-                inline=False,
-            )
+        per_page = 6
+        total_pages = max(1, (len(items) + per_page - 1) // per_page)
+        target_page = max(1, min(page or 1, total_pages))
 
-        await interaction.response.send_message(embed=embed)
+        def make_inv_page(p: int) -> discord.Embed:
+            start_idx = (p - 1) * per_page
+            page_items = items[start_idx : start_idx + per_page]
+            end_idx = start_idx + len(page_items)
+            embed = create_beastly_embed(
+                title=f"🎒 Inventory • {target.display_name}",
+                description=(
+                    f"Personal perks and inventory items for {target.mention}.\n"
+                    f"Showing items **{start_idx + 1}–{end_idx}** of **{len(items)}** total items\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━"
+                ),
+                color=COLOR_PITCH_GREEN,
+            )
+            for itm in page_items:
+                embed.add_field(
+                    name=f"{itm['name']} (x{itm['quantity']})",
+                    value=f"{itm['description']}\n📅 *Acquired:* `{itm['acquired_at'][:10]}`",
+                    inline=False,
+                )
+            embed.set_footer(text=f"Page {p} of {total_pages} • BeastlyBank Inventory")
+            return embed
+
+        initial_embed = make_inv_page(target_page)
+        if total_pages <= 1:
+            await interaction.response.send_message(embed=initial_embed)
+        else:
+            view = PaginationView(
+                embed_generator=make_inv_page,
+                total_pages=total_pages,
+                author_id=interaction.user.id,
+                current_page=target_page,
+            )
+            await interaction.response.send_message(embed=initial_embed, view=view)
 
     @commands.command(name="shop", aliases=["store"])
-    async def prefix_shop(self, ctx: commands.Context):
-        """bb!shop"""
+    async def prefix_shop(self, ctx: commands.Context, page: str = "1"):
+        """bb!shop [page]"""
         settings = await self.db.get_settings(ctx.guild.id)
         if not settings.get("shop_enabled", 1):
             await ctx.send(embed=error_embed("Shop Closed", "The BeastlyBank store is currently closed by administrators."))
             return
 
+        target_page = int(page) if page.isdigit() else 1
         items = await self.db.get_shop_items(ctx.guild.id, include_inactive=False)
-        embed = create_beastly_embed(
-            title="🛒 BeastlyBank Official Store",
-            description=(
-                "Spend your **Cash**, **Community Points**, and **Training Tokens** here!\n"
-                "Use `bb!buy <item_id> [quantity]` or `/buy <item_id>` to purchase any item.\n━━━━━━━━━━━━━━━━━━━━━━"
-            ),
-            color=COLOR_BEASTLY_GOLD,
-        )
 
         if not items:
-            embed.description += "\n*The BeastlyBank shop is currently being restocked!*"
+            embed = create_beastly_embed(
+                title="🛒 BeastlyBank Official Store",
+                description=(
+                    "Spend your **Cash**, **Community Points**, and **Training Tokens** here!\n"
+                    "Use `bb!buy <item_id> [quantity]` or `/buy <item_id>` to purchase any item.\n━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    "*The BeastlyBank shop is currently being restocked!*"
+                ),
+                color=COLOR_BEASTLY_GOLD,
+            )
             await ctx.send(embed=embed)
             return
 
-        for itm in items:
-            curr_info = CURRENCIES.get(itm["currency"], {})
-            emoji = curr_info.get("emoji", "💰")
-            stock_str = "Unlimited" if itm["stock"] == -1 else f"{itm['stock']} remaining"
+        per_page = 6
+        total_pages = max(1, (len(items) + per_page - 1) // per_page)
+        target_page = max(1, min(target_page, total_pages))
 
-            embed.add_field(
-                name=f"#{itm['id']} • {itm['name']} — {emoji} {itm['price']:,}",
-                value=f"{itm['description']}\n📦 **Stock:** `{stock_str}` | 🏷️ **Type:** `{itm.get('category', 'Perk')}`",
-                inline=False,
+        def make_shop_page(p: int) -> discord.Embed:
+            start_idx = (p - 1) * per_page
+            page_items = items[start_idx : start_idx + per_page]
+            end_idx = start_idx + len(page_items)
+            embed = create_beastly_embed(
+                title="🛒 BeastlyBank Official Store",
+                description=(
+                    "Spend your **Cash**, **Community Points**, and **Training Tokens** here!\n"
+                    "Use `bb!buy <item_id> [quantity]` or `/buy <item_id>` to purchase any item.\n"
+                    f"Showing items **{start_idx + 1}–{end_idx}** of **{len(items)}** available items\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━"
+                ),
+                color=COLOR_BEASTLY_GOLD,
             )
+            for itm in page_items:
+                curr_info = CURRENCIES.get(itm["currency"], {})
+                emoji = curr_info.get("emoji", "💰")
+                stock_str = "Unlimited" if itm["stock"] == -1 else f"{itm['stock']} remaining"
+                embed.add_field(
+                    name=f"#{itm['id']} • {itm['name']} — {emoji} {itm['price']:,}",
+                    value=f"{itm['description']}\n📦 **Stock:** `{stock_str}` | 🏷️ **Type:** `{itm.get('category', 'Perk')}`",
+                    inline=False,
+                )
+            embed.set_footer(text=f"Page {p} of {total_pages} • BeastlyBank Store")
+            return embed
 
-        await ctx.send(embed=embed)
+        initial_embed = make_shop_page(target_page)
+        if total_pages <= 1:
+            await ctx.send(embed=initial_embed)
+        else:
+            view = PaginationView(
+                embed_generator=make_shop_page,
+                total_pages=total_pages,
+                author_id=ctx.author.id,
+                current_page=target_page,
+            )
+            await ctx.send(embed=initial_embed, view=view)
 
     @commands.command(name="buy", aliases=["purchase"])
     async def prefix_buy(self, ctx: commands.Context, item_id: int, quantity: int = 1):
@@ -242,30 +333,84 @@ class Shop(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.command(name="inventory", aliases=["inv"])
-    async def prefix_inventory(self, ctx: commands.Context, user: Optional[discord.Member] = None):
-        """bb!inventory [user]"""
-        target = user or ctx.author
+    async def prefix_inventory(self, ctx: commands.Context, *args):
+        """bb!inventory [user] [page]"""
+        target = ctx.author
+        target_page = 1
+
+        for arg in args:
+            clean = arg.strip()
+            if clean.isdigit() and len(clean) <= 5:
+                target_page = max(1, int(clean))
+            elif ctx.guild:
+                member_id = None
+                if clean.startswith("<@") and clean.endswith(">"):
+                    raw = clean.strip("<@!>")
+                    if raw.isdigit():
+                        member_id = int(raw)
+                elif clean.isdigit() and len(clean) > 14:
+                    member_id = int(clean)
+
+                if member_id:
+                    m = ctx.guild.get_member(member_id)
+                    if m:
+                        target = m
+                else:
+                    m = ctx.guild.get_member_named(clean)
+                    if m:
+                        target = m
+
+        if ctx.message.mentions:
+            target = ctx.message.mentions[0]
+
         items = await self.db.get_inventory(target.id, ctx.guild.id)
 
-        embed = create_beastly_embed(
-            title=f"🎒 Inventory • {target.display_name}",
-            description=f"Personal perks and inventory items for {target.mention}.\n━━━━━━━━━━━━━━━━━━━━━━",
-            color=COLOR_PITCH_GREEN,
-        )
-
         if not items:
-            embed.description += "\n*Inventory is empty! Browse `bb!shop` to purchase items and perks.*"
+            embed = create_beastly_embed(
+                title=f"🎒 Inventory • {target.display_name}",
+                description=f"Personal perks and inventory items for {target.mention}.\n━━━━━━━━━━━━━━━━━━━━━━\n\n*Inventory is empty! Browse `bb!shop` to purchase items and perks.*",
+                color=COLOR_PITCH_GREEN,
+            )
             await ctx.send(embed=embed)
             return
 
-        for itm in items:
-            embed.add_field(
-                name=f"{itm['name']} (x{itm['quantity']})",
-                value=f"{itm['description']}\n📅 *Acquired:* `{itm['acquired_at'][:10]}`",
-                inline=False,
-            )
+        per_page = 6
+        total_pages = max(1, (len(items) + per_page - 1) // per_page)
+        target_page = max(1, min(target_page, total_pages))
 
-        await ctx.send(embed=embed)
+        def make_inv_page(p: int) -> discord.Embed:
+            start_idx = (p - 1) * per_page
+            page_items = items[start_idx : start_idx + per_page]
+            end_idx = start_idx + len(page_items)
+            embed = create_beastly_embed(
+                title=f"🎒 Inventory • {target.display_name}",
+                description=(
+                    f"Personal perks and inventory items for {target.mention}.\n"
+                    f"Showing items **{start_idx + 1}–{end_idx}** of **{len(items)}** total items\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━"
+                ),
+                color=COLOR_PITCH_GREEN,
+            )
+            for itm in page_items:
+                embed.add_field(
+                    name=f"{itm['name']} (x{itm['quantity']})",
+                    value=f"{itm['description']}\n📅 *Acquired:* `{itm['acquired_at'][:10]}`",
+                    inline=False,
+                )
+            embed.set_footer(text=f"Page {p} of {total_pages} • BeastlyBank Inventory")
+            return embed
+
+        initial_embed = make_inv_page(target_page)
+        if total_pages <= 1:
+            await ctx.send(embed=initial_embed)
+        else:
+            view = PaginationView(
+                embed_generator=make_inv_page,
+                total_pages=total_pages,
+                author_id=ctx.author.id,
+                current_page=target_page,
+            )
+            await ctx.send(embed=initial_embed, view=view)
 
 
 class ShopAdmin(commands.GroupCog, name="shopadmin", description="Banker & Staff Shop Management"):

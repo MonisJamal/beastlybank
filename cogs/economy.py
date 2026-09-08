@@ -148,12 +148,16 @@ class Economy(commands.Cog):
         name="transactions",
         description="View official BeastlyBank transaction statement and financial history.",
     )
-    @app_commands.describe(user="The member whose statement to inspect (default: yourself)")
+    @app_commands.describe(
+        user="The member whose statement to inspect (default: yourself)",
+        page="Page number to view (default: 1)",
+    )
     @require_beastlyfc()
     async def transactions(
         self,
         interaction: discord.Interaction,
         user: Optional[discord.Member] = None,
+        page: Optional[int] = 1,
     ):
         target = user or interaction.user
         total_txs = await self.db.get_total_transactions_count(
@@ -161,6 +165,7 @@ class Economy(commands.Cog):
         )
         page_size = 5
         total_pages = max(1, math.ceil(total_txs / page_size))
+        current_page = max(1, min(page or 1, total_pages))
 
         async def get_page_txs(page_num: int):
             offset = (page_num - 1) * page_size
@@ -168,9 +173,9 @@ class Economy(commands.Cog):
                 target.id, interaction.guild_id, limit=page_size, offset=offset
             )
 
-        initial_txs = await get_page_txs(1)
+        initial_txs = await get_page_txs(current_page)
         initial_embed = transaction_history_embed(
-            target, initial_txs, 1, total_pages
+            target, initial_txs, current_page, total_pages
         )
 
         if total_pages <= 1:
@@ -179,7 +184,6 @@ class Economy(commands.Cog):
 
         # Multi-page View
         def page_embed_generator(page_num: int) -> discord.Embed:
-            # Synchronous generator wrapper called by View
             import asyncio
             txs = asyncio.run_coroutine_threadsafe(
                 get_page_txs(page_num), self.bot.loop
@@ -190,6 +194,7 @@ class Economy(commands.Cog):
             embed_generator=page_embed_generator,
             total_pages=total_pages,
             author_id=interaction.user.id,
+            current_page=current_page,
         )
         await interaction.response.send_message(embed=initial_embed, view=view)
 
@@ -394,16 +399,74 @@ class Economy(commands.Cog):
         await ctx.send(embed=embed, view=view)
 
     @commands.command(name="transactions", aliases=["txs"])
-    async def prefix_transactions(self, ctx: commands.Context, user: Optional[discord.Member] = None):
-        """bb!transactions [user]"""
-        target = user or ctx.author
+    async def prefix_transactions(self, ctx: commands.Context, *args):
+        """bb!transactions [user] [page]"""
+        target = ctx.author
+        target_page = 1
+
+        for arg in args:
+            clean = arg.strip()
+            if clean.isdigit() and len(clean) <= 5:
+                target_page = max(1, int(clean))
+            elif ctx.guild:
+                member_id = None
+                if clean.startswith("<@") and clean.endswith(">"):
+                    raw = clean.strip("<@!>")
+                    if raw.isdigit():
+                        member_id = int(raw)
+                elif clean.isdigit() and len(clean) > 14:
+                    member_id = int(clean)
+
+                if member_id:
+                    m = ctx.guild.get_member(member_id)
+                    if m:
+                        target = m
+                else:
+                    m = ctx.guild.get_member_named(clean)
+                    if m:
+                        target = m
+
+        if ctx.message.mentions:
+            target = ctx.message.mentions[0]
+
         total_txs = await self.db.get_total_transactions_count(target.id, ctx.guild.id)
         if total_txs == 0:
             await ctx.send(embed=error_embed("No History", f"No transaction history found for {target.mention}."))
             return
-        txs = await self.db.get_transactions(target.id, ctx.guild.id, limit=6, offset=0)
-        embed = transaction_history_embed(target, txs, page=1, total_pages=math.ceil(total_txs / 6), total_count=total_txs)
-        await ctx.send(embed=embed)
+
+        page_size = 5
+        total_pages = max(1, math.ceil(total_txs / page_size))
+        target_page = max(1, min(target_page, total_pages))
+
+        async def get_page_txs(page_num: int):
+            offset = (page_num - 1) * page_size
+            return await self.db.get_transactions(
+                target.id, ctx.guild.id, limit=page_size, offset=offset
+            )
+
+        initial_txs = await get_page_txs(target_page)
+        initial_embed = transaction_history_embed(
+            target, initial_txs, target_page, total_pages
+        )
+
+        if total_pages <= 1:
+            await ctx.send(embed=initial_embed)
+            return
+
+        def page_embed_generator(page_num: int) -> discord.Embed:
+            import asyncio
+            txs = asyncio.run_coroutine_threadsafe(
+                get_page_txs(page_num), self.bot.loop
+            ).result()
+            return transaction_history_embed(target, txs, page_num, total_pages)
+
+        view = PaginationView(
+            embed_generator=page_embed_generator,
+            total_pages=total_pages,
+            author_id=ctx.author.id,
+            current_page=target_page,
+        )
+        await ctx.send(embed=initial_embed, view=view)
 
 
 async def setup(bot: commands.Bot):

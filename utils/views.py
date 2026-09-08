@@ -29,7 +29,7 @@ class PaginationView(discord.ui.View):
         self.next_button.disabled = self.current_page >= self.total_pages
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.author_id:
+        if self.author_id and interaction.user.id != self.author_id:
             await interaction.response.send_message(
                 "❌ You cannot control someone else's navigation menu!", ephemeral=True
             )

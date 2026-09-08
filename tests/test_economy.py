@@ -2580,6 +2580,8 @@ async def test_club_owner_username_display(db: DatabaseManager):
     inter_lb = MagicMock(spec=discord.Interaction)
     inter_lb.guild_id = guild_id
     inter_lb.guild = mock_guild
+    inter_lb.user = MagicMock()
+    inter_lb.user.id = 111111
     inter_lb.response = MagicMock()
     inter_lb.response.send_message = AsyncMock()
 
@@ -2588,3 +2590,319 @@ async def test_club_owner_username_display(db: DatabaseManager):
     lb_embed = inter_lb.response.send_message.call_args[1]["embed"]
     assert f"<@{owner_id}>" not in lb_embed.fields[0].value
     assert "👑 Owner: **Destinix**" in lb_embed.fields[0].value
+
+
+@pytest.mark.asyncio
+async def test_user_leaderboard_pagination_and_usernames(db: DatabaseManager):
+    """Verify user leaderboard shows resolved usernames instead of user IDs, with 10 per page pagination."""
+    from unittest.mock import AsyncMock
+    from discord.ext import commands
+    from cogs.leaderboard import Leaderboard
+    from utils.views import PaginationView
+
+    guild_id = 12340001
+    mock_bot = MagicMock()
+    mock_bot.db = db
+
+    mock_guild = MagicMock(spec=discord.Guild)
+    mock_guild.id = guild_id
+
+    # Create 15 users with varying balances
+    for i in range(1, 16):
+        uid = 5000 + i
+        await db.get_or_create_user(uid, guild_id)
+        await db.update_balance(uid, guild_id, "cash", i * 10000, tx_type="deposit")
+
+    # Set member display name mock
+    def mock_get_member(uid):
+        m = MagicMock()
+        m.display_name = f"Player_{uid}"
+        return m
+
+    mock_guild.get_member.side_effect = mock_get_member
+
+    lb_cog = Leaderboard(mock_bot)
+
+    # 1. Test slash command /leaderboard category=cash (default page 1)
+    inter = MagicMock(spec=discord.Interaction)
+    inter.guild_id = guild_id
+    inter.guild = mock_guild
+    inter.user = MagicMock()
+    inter.user.id = 999999
+    inter.response = MagicMock()
+    inter.response.send_message = AsyncMock()
+
+    await lb_cog.leaderboard.callback(lb_cog, inter, category="cash", page=1)
+    inter.response.send_message.assert_called_once()
+    embed = inter.response.send_message.call_args[1]["embed"]
+    view = inter.response.send_message.call_args[1].get("view")
+
+    assert len(embed.fields) == 10
+    assert "Page 1 of 2" in embed.footer.text
+    # Check that field titles contain display name and do NOT contain user IDs/mentions
+    assert "Player_" in embed.fields[0].name
+    assert "<@" not in embed.fields[0].name
+    assert isinstance(view, PaginationView)
+    assert view.total_pages == 2
+    assert view.current_page == 1
+
+    # 2. Test button navigation to Page 2
+    button_inter = MagicMock(spec=discord.Interaction)
+    button_inter.user = MagicMock()
+    button_inter.user.id = 999999
+    button_inter.response = MagicMock()
+    button_inter.response.edit_message = AsyncMock()
+
+    await view.next_button.callback(button_inter)
+    assert view.current_page == 2
+    button_inter.response.edit_message.assert_called_once()
+    page2_embed = button_inter.response.edit_message.call_args[1]["embed"]
+    assert len(page2_embed.fields) == 5
+    assert "Page 2 of 2" in page2_embed.footer.text
+    assert "<@" not in page2_embed.fields[0].name
+
+    # 3. Test prefix command bb!lb 2
+    ctx = MagicMock(spec=commands.Context)
+    ctx.guild = mock_guild
+    ctx.author = MagicMock()
+    ctx.author.id = 999999
+    ctx.send = AsyncMock()
+
+    await lb_cog.prefix_leaderboard.callback(lb_cog, ctx, "2")
+    ctx.send.assert_called_once()
+    pref_embed = ctx.send.call_args[1]["embed"]
+    assert len(pref_embed.fields) == 5
+    assert "Page 2 of 2" in pref_embed.footer.text
+
+
+@pytest.mark.asyncio
+async def test_club_roster_and_info_pagination(db: DatabaseManager):
+    """Verify club info and club roster display resolved usernames and paginated squad members."""
+    from unittest.mock import AsyncMock
+    from discord.ext import commands
+    from cogs.clubs import Clubs, ClubPrefixCommands
+    from utils.views import PaginationView
+
+    guild_id = 12340002
+    owner_id = 9001
+    mock_bot = MagicMock()
+    mock_bot.db = db
+
+    mock_guild = MagicMock(spec=discord.Guild)
+    mock_guild.id = guild_id
+
+    # Create club
+    await db.create_club(guild_id, "Galacticos FC", "GLC", owner_id, role_id=77701)
+    club = await db.get_club_by_user(guild_id, owner_id)
+    assert club is not None
+
+    # Add 12 squad members
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        for i in range(1, 13):
+            uid = 8000 + i
+            await cur.execute(
+                """
+                INSERT INTO club_members (club_id, user_id, guild_id, role)
+                VALUES (?, ?, ?, 'Player');
+                """,
+                (club["id"], uid, guild_id),
+            )
+    await conn.commit()
+
+    def mock_get_member(uid):
+        m = MagicMock()
+        if uid == owner_id:
+            m.display_name = "BossZidane"
+        else:
+            m.display_name = f"RosterPlayer_{uid}"
+        return m
+
+    mock_guild.get_member.side_effect = mock_get_member
+
+    clubs_cog = Clubs(mock_bot)
+    prefix_cog = ClubPrefixCommands(mock_bot)
+
+    # 1. Test /club info shows resolved owner name and member names
+    inter = MagicMock(spec=discord.Interaction)
+    inter.guild_id = guild_id
+    inter.guild = mock_guild
+    inter.user = MagicMock()
+    inter.user.id = owner_id
+    inter.response = MagicMock()
+    inter.response.send_message = AsyncMock()
+
+    await clubs_cog.club_info.callback(clubs_cog, inter)
+    inter.response.send_message.assert_called_once()
+    info_embed = inter.response.send_message.call_args[1]["embed"]
+    # Check that owner field has BossZidane
+    assert any("BossZidane" in f.value for f in info_embed.fields if "Owner" in f.name)
+
+    # 2. Test /club roster pagination (13 total members: owner + 12 players = Page 1 has 10, Page 2 has 3)
+    inter_roster = MagicMock(spec=discord.Interaction)
+    inter_roster.guild_id = guild_id
+    inter_roster.guild = mock_guild
+    inter_roster.user = MagicMock()
+    inter_roster.user.id = owner_id
+    inter_roster.response = MagicMock()
+    inter_roster.response.send_message = AsyncMock()
+
+    await clubs_cog.club_roster.callback(clubs_cog, inter_roster, page=1)
+    inter_roster.response.send_message.assert_called_once()
+    roster_embed = inter_roster.response.send_message.call_args[1]["embed"]
+    roster_view = inter_roster.response.send_message.call_args[1]["view"]
+
+    assert len(roster_embed.fields) == 10
+    assert "Page 1 of 2" in roster_embed.footer.text
+    assert isinstance(roster_view, PaginationView)
+    assert roster_view.total_pages == 2
+
+    # 3. Test prefix bb!club roster 2
+    ctx = MagicMock(spec=commands.Context)
+    ctx.guild = mock_guild
+    ctx.message = MagicMock()
+    ctx.message.role_mentions = []
+    ctx.author = MagicMock()
+    ctx.author.id = owner_id
+    ctx.send = AsyncMock()
+
+    await prefix_cog.prefix_club_roster.callback(prefix_cog, ctx, "2")
+    ctx.send.assert_called_once()
+    pref_roster_embed = ctx.send.call_args[1]["embed"]
+    assert len(pref_roster_embed.fields) == 3
+    assert "Page 2 of 2" in pref_roster_embed.footer.text
+
+
+@pytest.mark.asyncio
+async def test_shop_and_inventory_pagination(db: DatabaseManager):
+    """Verify shop and inventory commands paginate multiple items cleanly with PaginationView."""
+    from unittest.mock import AsyncMock
+    from discord.ext import commands
+    from cogs.shop import Shop
+    from utils.views import PaginationView
+
+    guild_id = 12340003
+    user_id = 888888
+    mock_bot = MagicMock()
+    mock_bot.db = db
+
+    # Insert 8 shop items and 7 inventory items into database
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        for i in range(1, 9):
+            await cur.execute(
+                """
+                INSERT INTO shop_items (guild_id, name, description, price, currency, stock, category)
+                VALUES (?, ?, ?, ?, 'cash', -1, 'Perk');
+                """,
+                (guild_id, f"Shop Perk {i}", f"Perk description {i}", i * 100),
+            )
+            if i <= 7:
+                await cur.execute(
+                    """
+                    INSERT INTO inventory (user_id, guild_id, item_id, quantity)
+                    VALUES (?, ?, ?, 1);
+                    """,
+                    (user_id, guild_id, i),
+                )
+    await conn.commit()
+
+    shop_cog = Shop(mock_bot)
+
+    # 1. Test /shop slash command page 1
+    inter = MagicMock(spec=discord.Interaction)
+    inter.guild_id = guild_id
+    inter.user = MagicMock()
+    inter.user.id = user_id
+    inter.response = MagicMock()
+    inter.response.send_message = AsyncMock()
+
+    await shop_cog.shop.callback(shop_cog, inter, page=1)
+    inter.response.send_message.assert_called_once()
+    shop_embed = inter.response.send_message.call_args[1]["embed"]
+    shop_view = inter.response.send_message.call_args[1]["view"]
+
+    assert len(shop_embed.fields) == 6
+    assert "Page 1 of 2" in shop_embed.footer.text
+    assert isinstance(shop_view, PaginationView)
+    assert shop_view.total_pages == 2
+
+    # 2. Test user inventory with 7 items
+    inter_inv = MagicMock(spec=discord.Interaction)
+    inter_inv.guild_id = guild_id
+    inter_inv.user = MagicMock()
+    inter_inv.user.id = user_id
+    inter_inv.user.display_name = "CollectorGuy"
+    inter_inv.response = MagicMock()
+    inter_inv.response.send_message = AsyncMock()
+
+    await shop_cog.inventory.callback(shop_cog, inter_inv, page=1)
+    inter_inv.response.send_message.assert_called_once()
+    inv_embed = inter_inv.response.send_message.call_args[1]["embed"]
+    inv_view = inter_inv.response.send_message.call_args[1]["view"]
+
+    assert len(inv_embed.fields) == 6
+    assert "Page 1 of 2" in inv_embed.footer.text
+    assert isinstance(inv_view, PaginationView)
+    assert inv_view.total_pages == 2
+
+
+@pytest.mark.asyncio
+async def test_prefix_transactions_pagination(db: DatabaseManager):
+    """Verify prefix bb!transactions paginates multi-page statements with interactive buttons."""
+    from unittest.mock import AsyncMock
+    from discord.ext import commands
+    from cogs.economy import Economy
+    from utils.views import PaginationView
+
+    guild_id = 12340004
+    user_id = 777111
+    mock_bot = MagicMock()
+    mock_bot.db = db
+
+    # Log 12 transactions (page_size = 5, total_pages = 3)
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        for i in range(1, 13):
+            await cur.execute(
+                """
+                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                VALUES (?, ?, NULL, 'cash', ?, 'test_tx', ?);
+                """,
+                (guild_id, user_id, i * 50, f"Statement item {i}"),
+            )
+    await conn.commit()
+
+    economy_cog = Economy(mock_bot)
+    mock_guild = MagicMock(spec=discord.Guild)
+    mock_guild.id = guild_id
+
+    ctx = MagicMock(spec=commands.Context)
+    ctx.guild = mock_guild
+    ctx.author = MagicMock()
+    ctx.author.id = user_id
+    ctx.author.display_name = "FinanceUser"
+    ctx.author.mention = f"<@{user_id}>"
+    ctx.message = MagicMock()
+    ctx.message.mentions = []
+    ctx.send = AsyncMock()
+
+    # Call bb!transactions (default page 1)
+    await economy_cog.prefix_transactions.callback(economy_cog, ctx)
+    ctx.send.assert_called_once()
+    tx_embed = ctx.send.call_args[1]["embed"]
+    tx_view = ctx.send.call_args[1].get("view")
+
+    assert len(tx_embed.fields) == 5
+    assert "Page 1 of 3" in tx_embed.footer.text
+    assert isinstance(tx_view, PaginationView)
+    assert tx_view.total_pages == 3
+
+    # Call bb!transactions 2
+    ctx.send.reset_mock()
+    await economy_cog.prefix_transactions.callback(economy_cog, ctx, "2")
+    ctx.send.assert_called_once()
+    tx_embed2 = ctx.send.call_args[1]["embed"]
+    assert len(tx_embed2.fields) == 5
+    assert "Page 2 of 3" in tx_embed2.footer.text
+

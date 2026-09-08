@@ -2,7 +2,7 @@
 Embed builders and BeastlyFC visual design components.
 """
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 import discord
 from config import (
     BOT_NAME,
@@ -73,6 +73,40 @@ def error_embed(title: str, description: str) -> discord.Embed:
         description=description,
         color=COLOR_ERROR,
     )
+
+
+async def resolve_user_names(
+    bot: Any,
+    guild: Optional[discord.Guild],
+    user_ids: Iterable[int],
+) -> Dict[int, str]:
+    """Resolve Discord user IDs to their server display names or global usernames."""
+    user_map: Dict[int, str] = {0: "Vacant"}
+    for uid in user_ids:
+        if not uid or uid in user_map:
+            continue
+
+        name = None
+        if guild:
+            member = guild.get_member(uid)
+            if member:
+                name = getattr(member, "display_name", None) or getattr(member, "name", None)
+
+        if not name and bot:
+            user = bot.get_user(uid)
+            if user:
+                name = getattr(user, "display_name", None) or getattr(user, "name", None)
+
+        if not name and bot:
+            try:
+                user = await bot.fetch_user(uid)
+                if user:
+                    name = getattr(user, "display_name", None) or getattr(user, "name", None)
+            except Exception:
+                name = None
+
+        user_map[uid] = name or f"User-{str(uid)[-4:]}"
+    return user_map
 
 
 def bank_card_embed(
@@ -180,12 +214,15 @@ def transaction_history_embed(
             inline=False,
         )
 
+    embed.set_footer(text=f"Page {page} of {max(total_pages, 1)} • BeastlyBank Statement")
     return embed
 
 
 def club_info_embed(
     club: Dict[str, Any],
     members: List[Dict[str, Any]],
+    owner_name: Optional[str] = None,
+    member_names: Optional[Dict[int, str]] = None,
 ) -> discord.Embed:
     """Display BeastlyFC Club profile and Treasury vault status."""
     embed = create_beastly_embed(
@@ -194,9 +231,15 @@ def club_info_embed(
         color=COLOR_PITCH_GREEN,
     )
 
+    owner_id = club.get("owner_id", 0)
+    if owner_name:
+        owner_val = f"**{owner_name}** (<@{owner_id}>)" if owner_id else "*Vacant*"
+    else:
+        owner_val = f"<@{owner_id}>" if owner_id else "*Vacant*"
+
     embed.add_field(
         name="👑 Club Owner",
-        value=f"<@{club['owner_id']}>",
+        value=owner_val,
         inline=True,
     )
     role_mention = f"<@&{club['role_id']}>" if club.get("role_id") else "*None linked*"
@@ -230,21 +273,75 @@ def club_info_embed(
     # Member list preview
     if members:
         roster_lines = []
+        name_map = member_names or {}
         for m in members[:12]:
-            if m.get("user_id"):
-                roster_lines.append(f"• <@{m['user_id']}> — `{m['role']}`")
+            uid = m.get("user_id")
+            if uid:
+                dname = name_map.get(uid)
+                if dname:
+                    roster_lines.append(f"• **{dname}** (<@{uid}>) — `{m['role']}`")
+                else:
+                    roster_lines.append(f"• <@{uid}> — `{m['role']}`")
             elif m.get("player_name"):
                 roster_lines.append(f"• **{m['player_name']}** — `{m.get('role', 'Player')}`")
             else:
                 roster_lines.append(f"• Unknown Player — `{m.get('role', 'Player')}`")
         if len(members) > 12:
-            roster_lines.append(f"*...and {len(members) - 12} more players*")
+            roster_lines.append(f"*...and {len(members) - 12} more players (use `/club roster`)*")
         embed.add_field(
             name="📋 Squad Members",
             value="\n".join(roster_lines),
             inline=False,
         )
 
+    return embed
+
+
+def club_roster_embed(
+    club: Dict[str, Any],
+    members: List[Dict[str, Any]],
+    member_names: Dict[int, str],
+    page: int = 1,
+    total_pages: int = 1,
+) -> discord.Embed:
+    """Paginated embed displaying a club's full squad roster with usernames and roles."""
+    role_mention = f"<@&{club['role_id']}>" if club.get("role_id") else f"**[{club['tag']}] {club['name']}**"
+    embed = create_beastly_embed(
+        title=f"📋 Squad Roster • [{club['tag']}] {club['name']}",
+        description=(
+            f"Club: {role_mention}\n"
+            f"Total Squad: **{len(members)}** registered players & staff\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=COLOR_PITCH_GREEN,
+    )
+
+    if not members:
+        embed.description += "\n*No members registered in this club.*"
+        return embed
+
+    per_page = 10
+    start_idx = (page - 1) * per_page
+    page_members = members[start_idx : start_idx + per_page]
+
+    for idx, m in enumerate(page_members, start=start_idx + 1):
+        uid = m.get("user_id")
+        role = m.get("role", "Member")
+        if uid:
+            display_name = member_names.get(uid, f"User-{str(uid)[-4:]}")
+            embed.add_field(
+                name=f"`#{idx}` {display_name} — `{role}`",
+                value=f"👤 Mention: <@{uid}>",
+                inline=False,
+            )
+        elif m.get("player_name"):
+            embed.add_field(
+                name=f"`#{idx}` {m['player_name']} — `{role}`",
+                value="🏃 Registered Squad Member",
+                inline=False,
+            )
+
+    embed.set_footer(text=f"Page {page} of {total_pages} • BeastlyFC Squad Roster")
     return embed
 
 
@@ -799,7 +896,11 @@ def player_card_embed(player: Dict[str, Any], club: Optional[Dict[str, Any]] = N
     embed.add_field(name="📊 Lineup Status", value=f"**{status_str}**", inline=True)
 
     if player.get("user_id"):
-        embed.add_field(name="👤 Discord Member", value=f"<@{player['user_id']}>", inline=True)
+        member_name = player.get("display_name")
+        if member_name:
+            embed.add_field(name="👤 Discord Member", value=f"**{member_name}** (<@{player['user_id']}>)", inline=True)
+        else:
+            embed.add_field(name="👤 Discord Member", value=f"<@{player['user_id']}>", inline=True)
 
     joined = player.get("transferred_at") or player.get("joined_at")
     if joined:

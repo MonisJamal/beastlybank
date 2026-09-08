@@ -26,7 +26,9 @@ from utils.embeds import (
     error_embed,
     success_embed,
     formations_list_embed,
+    send_msg,
 )
+from utils.lineup_image import generate_lineup_image
 
 logger = logging.getLogger("BeastlyBank.Squad")
 
@@ -60,18 +62,25 @@ async def position_autocomplete(
 
 async def send_msg(
     target: discord.Interaction | commands.Context,
-    embed: discord.Embed,
+    embed: Optional[discord.Embed] = None,
+    file: Optional[discord.File] = None,
     ephemeral: bool = False,
 ):
-    """Safely send embed responses to interactions or contexts."""
+    """Safely send embed or file responses to interactions or contexts."""
     try:
+        kwargs: Dict[str, Any] = {}
+        if embed is not None:
+            kwargs["embed"] = embed
+        if file is not None:
+            kwargs["file"] = file
+
         if isinstance(target, discord.Interaction):
             if target.response.is_done():
-                await target.followup.send(embed=embed, ephemeral=ephemeral)
+                await target.followup.send(ephemeral=ephemeral, **kwargs)
             else:
-                await target.response.send_message(embed=embed, ephemeral=ephemeral)
+                await target.response.send_message(ephemeral=ephemeral, **kwargs)
         else:
-            await target.send(embed=embed)
+            await target.send(**kwargs)
     except Exception as e:
         logger.error("Error in send_msg: %s", e, exc_info=True)
 
@@ -185,12 +194,16 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
     # SLASH COMMAND: LINEUP
     # ==========================================
 
-    @app_commands.command(name="lineup", description="View tactical pitch lineup and bench for a club.")
-    @app_commands.describe(club="Club role to inspect (defaults to your club)")
+    @app_commands.command(name="lineup", description="View clean matchday pitch lineup for a club.")
+    @app_commands.describe(
+        club="Club role to inspect (defaults to your club)",
+        view="Display style: image (clean minimal pitch) or embed (text layout)",
+    )
     async def slash_lineup(
         self,
         interaction: discord.Interaction,
         club: Optional[discord.Role] = None,
+        view: Literal["image", "embed"] = "image",
     ):
         await interaction.response.defer()
         if club:
@@ -218,13 +231,84 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             await send_msg(interaction, embed=error_embed("Lineup Unavailable", msg), ephemeral=True)
             return
 
-        embed = club_lineup_embed(
-            club=data["club"],
-            formation=data["formation"],
-            starting_players=data["starting"],
-            bench_players=data["bench"],
+        club_info = data["club"]
+        formation = data["formation"]
+        starting_players = data["starting"]
+
+        if view == "image":
+            # Resolve manager display name
+            manager_name = "Club Manager"
+            owner_id = club_info.get("owner_id")
+            if owner_id and interaction.guild:
+                member = interaction.guild.get_member(owner_id)
+                if member:
+                    manager_name = member.display_name
+
+            team_name = f"[{club_info['tag']}] {club_info['name']}" if club_info.get("tag") else club_info.get("name", "Beastly FC")
+
+            buf = generate_lineup_image(
+                team_name=team_name,
+                manager_name=manager_name,
+                formation_name=formation,
+                starting_players=starting_players,
+            )
+            file = discord.File(fp=buf, filename="lineup.png")
+            await send_msg(interaction, file=file)
+        else:
+            embed = club_lineup_embed(
+                club=club_info,
+                formation=formation,
+                starting_players=starting_players,
+                bench_players=data["bench"],
+            )
+            await send_msg(interaction, embed=embed)
+
+    @app_commands.command(name="lineupcard", description="Generate a clean matchday Starting 11 pitch image for your club.")
+    @app_commands.describe(club="Club role to inspect (defaults to your club)")
+    async def slash_lineupcard(
+        self,
+        interaction: discord.Interaction,
+        club: Optional[discord.Role] = None,
+    ):
+        await self.slash_lineup(interaction, club=club, view="image")
+
+    @app_commands.command(name="customlineup", description="Generate a custom clean matchday Starting 11 pitch image on the fly.")
+    @app_commands.describe(
+        team="Team or club name (e.g. Real Madrid CF)",
+        manager="Manager name (e.g. Carlo Ancelotti)",
+        formation="Formation (e.g. 4-3-3 Balanced, 4-2-3-1 Wide)",
+        players="Optional comma-separated player names",
+    )
+    @app_commands.autocomplete(formation=formation_autocomplete)
+    async def slash_custom_lineup(
+        self,
+        interaction: discord.Interaction,
+        team: str,
+        manager: str,
+        formation: str,
+        players: Optional[str] = None,
+    ):
+        await interaction.response.defer()
+        player_list = []
+        if players:
+            raw_names = [p.strip() for p in players.split(",") if p.strip()]
+            for idx, p_name in enumerate(raw_names[:11], start=1):
+                player_list.append({
+                    "player_name": p_name,
+                    "number": idx,
+                    "position": None,
+                    "rating": None,
+                })
+
+        buf = generate_lineup_image(
+            team_name=team,
+            manager_name=manager,
+            formation_name=formation,
+            starting_players=player_list,
         )
-        await send_msg(interaction, embed=embed)
+        file = discord.File(fp=buf, filename="lineup.png")
+        await send_msg(interaction, file=file)
+
 
     # ==========================================
     # SLASH COMMANDS: PLAYER MANAGEMENT
@@ -690,10 +774,15 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         View tactical pitch lineup and bench for a club.
         Usage:
           bb!lineup [@club_role or club_name]
+          bb!lineup image [@club_role]
           bb!lineup switch <player> <position>
         """
         if args and args[0].lower() in ("switch", "switchpos", "setpos", "swap"):
             return await self.prefix_switchpos.callback(self, ctx, *args)
+
+        if args and args[0].lower() in ("image", "card", "pitch", "img"):
+            sub_args = list(args[1:])
+            return await self.prefix_lineupimage.callback(self, ctx, *sub_args)
 
         target_club = None
         if ctx.message.role_mentions:
@@ -729,6 +818,104 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             bench_players=data["bench"],
         )
         await ctx.send(embed=embed)
+
+    @commands.command(name="lineupimage", aliases=["lineupcard", "pitch", "starting11"])
+    async def prefix_lineupimage(self, ctx: commands.Context, *args):
+        """
+        Generate a clean matchday Starting 11 pitch image for a club.
+        Usage: bb!lineupimage [@club_role or club_name]
+        """
+        target_club = None
+        if ctx.message.role_mentions:
+            target_club = await self.db.get_or_create_club_from_role(
+                ctx.guild.id, ctx.message.role_mentions[0], default_owner_id=ctx.author.id
+            )
+        elif args:
+            club_query = " ".join(args)
+            target_club = await self.db.get_or_create_club_from_role(
+                ctx.guild.id, club_query, default_owner_id=ctx.author.id
+            )
+        else:
+            target_club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+
+        if not target_club:
+            await ctx.send(
+                embed=error_embed(
+                    "Club Not Found",
+                    "You must belong to a club or mention a club role (`bb!lineupimage @Role`) to generate its pitch image.",
+                )
+            )
+            return
+
+        success, msg, data = await self.db.get_club_lineup(ctx.guild.id, target_club["id"])
+        if not success:
+            await ctx.send(embed=error_embed("Lineup Unavailable", msg))
+            return
+
+        club_info = data["club"]
+        formation = data["formation"]
+        starting_players = data["starting"]
+
+        manager_name = "Club Manager"
+        owner_id = club_info.get("owner_id")
+        if owner_id and ctx.guild:
+            member = ctx.guild.get_member(owner_id)
+            if member:
+                manager_name = member.display_name
+
+        team_name = f"[{club_info['tag']}] {club_info['name']}" if club_info.get("tag") else club_info.get("name", "Beastly FC")
+
+        buf = generate_lineup_image(
+            team_name=team_name,
+            manager_name=manager_name,
+            formation_name=formation,
+            starting_players=starting_players,
+        )
+        file = discord.File(fp=buf, filename="lineup.png")
+        await ctx.send(file=file)
+
+    @commands.command(name="customlineup")
+    async def prefix_custom_lineup(self, ctx: commands.Context, *, args: str = ""):
+        """
+        Generate a custom Starting 11 pitch image.
+        Usage: bb!customlineup <team> | <manager> | <formation> | [players]
+        Example: bb!customlineup Real Madrid | Carlo Ancelotti | 4-3-3 Balanced | Mbappe, Vini, Bellingham
+        """
+        parts = [p.strip() for p in args.split("|")] if args else []
+        if len(parts) < 3:
+            await ctx.send(
+                embed=error_embed(
+                    "Missing Information",
+                    "Please provide team, manager, and formation separated by `|`.\n"
+                    "**Usage:** `bb!customlineup <Team Name> | <Manager Name> | <Formation> | [Players...]`\n"
+                    "**Example:** `bb!customlineup Real Madrid | Carlo Ancelotti | 4-3-3 Balanced | Courtois, Mendy, Rudiger, Militao, Carvajal, Tchouameni, Bellingham, Valverde, Vini, Mbappe, Rodrygo`"
+                )
+            )
+            return
+
+        team = parts[0]
+        manager = parts[1]
+        formation = parts[2]
+        player_list = []
+        if len(parts) >= 4 and parts[3]:
+            raw_names = [p.strip() for p in parts[3].split(",") if p.strip()]
+            for idx, p_name in enumerate(raw_names[:11], start=1):
+                player_list.append({
+                    "player_name": p_name,
+                    "number": idx,
+                    "position": None,
+                    "rating": None,
+                })
+
+        buf = generate_lineup_image(
+            team_name=team,
+            manager_name=manager,
+            formation_name=formation,
+            starting_players=player_list,
+        )
+        file = discord.File(fp=buf, filename="lineup.png")
+        await ctx.send(file=file)
+
 
     @commands.command(name="setformation", aliases=["formation"])
     async def prefix_setformation(self, ctx: commands.Context, *args):

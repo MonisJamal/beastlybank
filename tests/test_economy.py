@@ -3260,5 +3260,120 @@ async def test_get_role_members_and_bank_rolegrant(db: DatabaseManager):
     assert user_data["points"] == 250
 
 
+@pytest.mark.asyncio
+async def test_lineup_image_generation_and_commands(db: DatabaseManager):
+    """Verify clean Starting 11 lineup image generation, slash commands, and prefix commands."""
+    from unittest.mock import AsyncMock
+    from discord.ext import commands
+    from utils.lineup_image import generate_lineup_image, compute_formation_coords
+    from cogs.squad import SquadCog
+
+    # 1. Test coordinate calculation across all 37 formations
+    for form_name in SUPPORTED_FORMATIONS:
+        coords = compute_formation_coords(form_name)
+        assert len(coords) == 11, f"Formation {form_name} must return 11 coordinates"
+        assert coords[0][0] == "GK", "First coordinate must be Goalkeeper"
+
+    # 2. Test Pillow image generation (Full 11 players, partial squad, empty squad)
+    squad_11 = [
+        {"player_name": "Courtois", "number": 1, "position": "GK", "rating": 90},
+        {"player_name": "Mendy", "number": 23, "position": "LB", "rating": 82},
+        {"player_name": "Rüdiger", "number": 22, "position": "CB", "rating": 88},
+        {"player_name": "Militao", "number": 3, "position": "CB", "rating": 85},
+        {"player_name": "Carvajal", "number": 2, "position": "RB", "rating": 86},
+        {"player_name": "Tchouameni", "number": 14, "position": "CDM", "rating": 85},
+        {"player_name": "Bellingham", "number": 5, "position": "CM", "rating": 90},
+        {"player_name": "Valverde", "number": 8, "position": "CM", "rating": 88},
+        {"player_name": "Vinicius Jr", "number": 7, "position": "LW", "rating": 90},
+        {"player_name": "Mbappe", "number": 9, "position": "ST", "rating": 91},
+        {"player_name": "Rodrygo", "number": 11, "position": "RW", "rating": 86},
+    ]
+
+    buf1 = generate_lineup_image("Real Madrid CF", "Carlo Ancelotti", "4-3-3 Balanced", squad_11)
+    bytes1 = buf1.getvalue()
+    assert bytes1.startswith(b"\x89PNG\r\n\x1a\n"), "Buffer must be valid PNG image"
+    assert len(bytes1) > 15000, "PNG should be high resolution"
+
+    # Test partial / vacant squad
+    buf2 = generate_lineup_image("Arsenal FC", "Mikel Arteta", "3-5-2", squad_11[:5])
+    assert buf2.getvalue().startswith(b"\x89PNG\r\n\x1a\n")
+
+    # Test empty squad
+    buf3 = generate_lineup_image("Empty Squad FC", "Manager", "5-3-2", [])
+    assert buf3.getvalue().startswith(b"\x89PNG\r\n\x1a\n")
+
+    # 3. Test slash command /lineup with view="image"
+    mock_bot = MagicMock()
+    mock_bot.db = db
+    squad_cog = SquadCog(mock_bot)
+
+    guild_id = 777666555
+    owner_id = 12345
+    # Register club and players in test DB
+    c_ok, c_msg, club_id = await db.create_club(guild_id, "Galacticos", "GAL", owner_id=owner_id)
+    assert c_ok is True
+    await db.set_club_formation(guild_id, club_id, "4-3-3 Balanced")
+    await db.add_club_player(guild_id, club_id, "Zidane", number=5, position="CM", rating=94, status="starting")
+    await db.add_club_player(guild_id, club_id, "Ronaldo", number=9, position="ST", rating=96, status="starting")
+
+    mock_guild = MagicMock(spec=discord.Guild)
+    mock_guild.id = guild_id
+    mock_member = MagicMock(spec=discord.Member)
+    mock_member.display_name = "Zinedine"
+    mock_guild.get_member.return_value = mock_member
+
+    inter = MagicMock(spec=discord.Interaction)
+    inter.guild_id = guild_id
+    inter.guild = mock_guild
+    inter.user = MagicMock()
+    inter.user.id = owner_id
+    inter.response = MagicMock()
+    inter.response.defer = AsyncMock()
+    inter.response.is_done.return_value = True
+    inter.followup = MagicMock()
+    inter.followup.send = AsyncMock()
+
+    await squad_cog.slash_lineup.callback(squad_cog, inter, club=None, view="image")
+    inter.followup.send.assert_called_once()
+    send_kwargs = inter.followup.send.call_args[1]
+    assert "file" in send_kwargs
+    assert send_kwargs["file"].filename == "lineup.png"
+
+    # 4. Test slash command /customlineup
+    inter2 = MagicMock(spec=discord.Interaction)
+    inter2.guild_id = guild_id
+    inter2.guild = mock_guild
+    inter2.response = MagicMock()
+    inter2.response.defer = AsyncMock()
+    inter2.response.is_done.return_value = True
+    inter2.followup = MagicMock()
+    inter2.followup.send = AsyncMock()
+
+    await squad_cog.slash_custom_lineup.callback(
+        squad_cog,
+        inter2,
+        team="Manchester City",
+        manager="Pep Guardiola",
+        formation="4-3-3 Holding",
+        players="Ederson, Walker, Dias, Stones, Gvardiol, Rodri, De Bruyne, Silva, Foden, Haaland, Doku",
+    )
+    inter2.followup.send.assert_called_once()
+    assert inter2.followup.send.call_args[1]["file"].filename == "lineup.png"
+
+    # 5. Test prefix command bb!lineupimage
+    ctx = MagicMock(spec=commands.Context)
+    ctx.guild = mock_guild
+    ctx.author = MagicMock()
+    ctx.author.id = owner_id
+    ctx.message = MagicMock()
+    ctx.message.role_mentions = []
+    ctx.send = AsyncMock()
+
+    await squad_cog.prefix_lineupimage.callback(squad_cog, ctx, "Galacticos")
+    ctx.send.assert_called_once()
+    assert ctx.send.call_args[1]["file"].filename == "lineup.png"
+
+
+
 
 

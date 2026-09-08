@@ -175,15 +175,20 @@ async def safe_defer(target: Any, ephemeral: bool = False) -> None:
 
 async def send_msg(
     target: Any,
-    embed: discord.Embed,
+    embed: Optional[discord.Embed] = None,
     ephemeral: bool = False,
     view: Optional[discord.ui.View] = None,
+    file: Optional[discord.File] = None,
 ) -> Any:
-    """Safely send embed responses to interactions or commands.Context."""
+    """Safely send embed responses and file attachments to interactions or commands.Context."""
     try:
-        kwargs: Dict[str, Any] = {"embed": embed}
+        kwargs: Dict[str, Any] = {}
+        if embed is not None:
+            kwargs["embed"] = embed
         if view is not None:
             kwargs["view"] = view
+        if file is not None:
+            kwargs["file"] = file
 
         if isinstance(target, discord.Interaction):
             is_done = False

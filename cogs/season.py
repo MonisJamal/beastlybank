@@ -22,6 +22,13 @@ from utils.match_parser import parse_matchsimulator_html
 logger = logging.getLogger("BeastlyBank.Season")
 
 
+COMPETITION_CHOICES = [
+    app_commands.Choice(name="League", value="league"),
+    app_commands.Choice(name="Champions League (UCL)", value="ucl"),
+    app_commands.Choice(name="Cup", value="cup"),
+]
+
+
 class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Seasons & Hall of Fame"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -32,6 +39,7 @@ class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Sea
         name="Name for the new season (e.g. 'Season 2', 'Beastly S2 League')",
         competition="Competition type (league, ucl, cup, default: league)",
     )
+    @app_commands.choices(competition=COMPETITION_CHOICES)
     async def season_start(
         self,
         interaction: discord.Interaction,
@@ -48,9 +56,10 @@ class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Sea
             if ok:
                 archived_msg = f"📦 **{existing['name']}** concluded & archived to Hall of Fame!\n"
 
-        # 2. Determine season number
-        hist = await self.db.get_season_history(interaction.guild_id)
-        next_season_num = len(hist) + 1
+        # 2. Determine season number for this competition
+        comp_hist = await self.db.get_season_history(interaction.guild_id, competition_name=competition.lower())
+        max_s = max([r["season_number"] for r in comp_hist], default=0)
+        next_season_num = max_s + 1
 
         # 3. Create fresh season skeleton
         parsed_data = {
@@ -86,6 +95,7 @@ class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Sea
 
     @app_commands.command(name="conclude", description="Manually conclude an active season and immortalize awards into the Hall of Fame.")
     @app_commands.describe(competition="Competition type (league, ucl, cup, default: league)")
+    @app_commands.choices(competition=COMPETITION_CHOICES)
     async def season_conclude(self, interaction: discord.Interaction, competition: str = "league"):
         await interaction.response.defer()
         t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
@@ -99,7 +109,7 @@ class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Sea
             return
 
         # Fetch archived history record
-        hist = await self.db.get_season_history(interaction.guild_id, season_number=res["season_number"])
+        hist = await self.db.get_season_history(interaction.guild_id, season_number=res["season_number"], competition_name=competition.lower())
         record = hist[0] if hist else {}
 
         lines = [
@@ -121,11 +131,20 @@ class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Sea
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="history", description="Browse the BeastlyFC Hall of Fame and past season winners.")
-    @app_commands.describe(season="Specific season number to inspect (optional)")
-    async def season_history_cmd(self, interaction: discord.Interaction, season: Optional[int] = None):
+    @app_commands.describe(
+        season="Specific season number to inspect (optional)",
+        competition="Filter by competition type (optional, e.g. league, ucl)",
+    )
+    @app_commands.choices(competition=COMPETITION_CHOICES)
+    async def season_history_cmd(
+        self,
+        interaction: discord.Interaction,
+        season: Optional[int] = None,
+        competition: Optional[str] = None,
+    ):
         await interaction.response.defer()
         await self.db.ensure_tournament_seeded(interaction.guild_id)
-        records = await self.db.get_season_history(interaction.guild_id, season_number=season)
+        records = await self.db.get_season_history(interaction.guild_id, season_number=season, competition_name=competition)
         if not records:
             await interaction.followup.send(
                 embed=error_embed("Hall of Fame Empty", "No concluded seasons archived in the Hall of Fame yet."),

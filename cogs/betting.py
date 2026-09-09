@@ -135,6 +135,13 @@ class MatchdayBettingView(discord.ui.View):
         self.add_item(select)
 
 
+COMPETITION_CHOICES = [
+    app_commands.Choice(name="League", value="league"),
+    app_commands.Choice(name="Champions League (UCL)", value="ucl"),
+    app_commands.Choice(name="Cup", value="cup"),
+]
+
+
 class Betting(commands.GroupCog, name="bet", description="BeastlyFC Matchday Sports Betting House"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -146,6 +153,7 @@ class Betting(commands.GroupCog, name="bet", description="BeastlyFC Matchday Spo
         closes="Lock timer duration (e.g. 15m, 30m, 1h, 2h)",
         competition="Competition type (league, ucl, cup, default: league)",
     )
+    @app_commands.choices(competition=COMPETITION_CHOICES)
     async def bet_open(
         self,
         interaction: discord.Interaction,

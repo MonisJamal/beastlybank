@@ -21,13 +21,23 @@ from utils.match_parser import parse_matchsimulator_html
 logger = logging.getLogger("BeastlyBank.Matches")
 
 
+COMPETITION_CHOICES = [
+    app_commands.Choice(name="League", value="league"),
+    app_commands.Choice(name="Champions League (UCL)", value="ucl"),
+    app_commands.Choice(name="Cup", value="cup"),
+]
+
+
 def format_fixture_line(f: Dict[str, Any]) -> str:
     h_team = f["home_team_name"]
     a_team = f["away_team_name"]
     if f["is_finished"]:
         g_h = f.get("goals_home", 0)
         g_a = f.get("goals_away", 0)
-        return f"⚽ **{h_team}** `{g_h} - {g_a}` **{a_team}**"
+        pen_h = f.get("penalties_home", 0)
+        pen_a = f.get("penalties_away", 0)
+        pen_str = f" `({pen_h}-{pen_a} pen)`" if (pen_h > 0 or pen_a > 0) else ""
+        return f"⚽ **{h_team}** `{g_h} - {g_a}` **{a_team}**{pen_str}"
     return f"⏳ **{h_team}** `vs` **{a_team}** *(Upcoming)*"
 
 
@@ -36,6 +46,8 @@ class FixtureSelect(discord.ui.Select):
         options = []
         for i, f in enumerate(fixtures[:25]):
             score_str = f"{f['goals_home']}-{f['goals_away']}" if f["is_finished"] else "vs"
+            if f.get("is_finished") and (f.get("penalties_home", 0) > 0 or f.get("penalties_away", 0) > 0):
+                score_str += f" ({f['penalties_home']}-{f['penalties_away']}p)"
             label = f"{f['home_team_short'] or f['home_team_name'][:3]} {score_str} {f['away_team_short'] or f['away_team_name'][:3]}"
             desc = f"{f['home_team_name']} vs {f['away_team_name']}"
             options.append(discord.SelectOption(label=label, description=desc[:100], value=str(f["id"])))
@@ -54,14 +66,18 @@ class FixtureSelect(discord.ui.Select):
         finished = f["is_finished"]
         gh = f.get("goals_home", 0)
         ga = f.get("goals_away", 0)
+        pen_h = f.get("penalties_home", 0)
+        pen_a = f.get("penalties_away", 0)
 
         desc_lines = []
         if finished:
             desc_lines.append(f"# {h}  `{gh} - {ga}`  {a}")
+            if pen_h > 0 or pen_a > 0:
+                desc_lines.append(f"🎯 **Penalty Shootout**: `{pen_h} - {pen_a}`")
             desc_lines.append("")
-            if gh > ga:
+            if gh > ga or (gh == ga and pen_h > pen_a):
                 desc_lines.append(f"🏆 **Winner**: **{h}**")
-            elif gh < ga:
+            elif gh < ga or (gh == ga and pen_h < pen_a):
                 desc_lines.append(f"🏆 **Winner**: **{a}**")
             else:
                 desc_lines.append("🤝 **Result**: **Draw**")
@@ -73,8 +89,9 @@ class FixtureSelect(discord.ui.Select):
         else:
             desc_lines.append(f"# {h}  `vs`  {a}\nStatus: **Upcoming**")
 
+        stage_str = f" • {f['stage_name']}" if f.get("stage_name") else ""
         embed = create_beastly_embed(
-            title=f"🏟️ Match Center • Matchday {f['matchday']}",
+            title=f"🏟️ Match Center • Matchday {f['matchday']}{stage_str}",
             description="\n".join(desc_lines),
             color=COLOR_BEASTLY_GOLD,
         )
@@ -94,7 +111,11 @@ class MatchdayNavigatorView(discord.ui.View):
         t = await self.bot.db.get_tournament_by_id(self.tournament_id)
         t_name = t["name"] if t else "League"
 
-        lines = [f"**Matchday {self.current_md} of {self.max_md}**\n"]
+        stage = fixtures[0].get("stage_name") if (fixtures and fixtures[0].get("stage_name")) else None
+        header = f"**Matchday {self.current_md} of {self.max_md}**"
+        if stage and stage.lower() != f"matchday {self.current_md}":
+            header = f"**Matchday {self.current_md} of {self.max_md} • {stage}**"
+        lines = [f"{header}\n"]
         for f in fixtures:
             lines.append(format_fixture_line(f))
 
@@ -152,6 +173,7 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
         competition="Competition type (league, ucl, cup, default: league)",
         season="Specific season number to view (e.g. 1, default: active season)",
     )
+    @app_commands.choices(competition=COMPETITION_CHOICES)
     async def matches_view(
         self,
         interaction: discord.Interaction,
@@ -178,7 +200,11 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
         max_md = t["total_matchdays"] or 38
         fixtures = await self.db.get_tournament_fixtures(t["id"], matchday=target_md)
 
-        lines = [f"**Matchday {target_md} of {max_md}**\n"]
+        stage = fixtures[0].get("stage_name") if (fixtures and fixtures[0].get("stage_name")) else None
+        header = f"**Matchday {target_md} of {max_md}**"
+        if stage and stage.lower() != f"matchday {target_md}":
+            header = f"**Matchday {target_md} of {max_md} • {stage}**"
+        lines = [f"{header}\n"]
         for f in fixtures:
             lines.append(format_fixture_line(f))
 
@@ -214,8 +240,9 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
     @app_commands.command(name="import", description="Upload a saved tournament .html file from matchsimulator.com.")
     @app_commands.describe(
         file="Attach the saved .html webpage file from matchsimulator.com",
-        competition="Competition type (league, ucl, cup, default: league)",
+        competition="Competition type (league, ucl, cup, default: auto-detect)",
     )
+    @app_commands.choices(competition=COMPETITION_CHOICES)
     async def matches_import(
         self,
         interaction: discord.Interaction,
@@ -232,11 +259,24 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
             html_text = content_bytes.decode("utf-8", errors="replace")
             parsed = parse_matchsimulator_html(html_text)
 
+            # Auto-detect competition type if default 'league' passed
+            comp_type = competition.lower()
+            name_lower = parsed.get("tournament_name", "").lower()
+            if comp_type == "league":
+                if "ucl" in name_lower or "champions" in name_lower:
+                    comp_type = "ucl"
+                elif "cup" in name_lower and "league" not in name_lower:
+                    comp_type = "cup"
+
+            # Auto-detect season number from tournament name
+            s_match = re.search(r'\b(?:s|season)\s*(\d+)\b', name_lower)
+            season_num = int(s_match.group(1)) if s_match else 1
+
             saved = await self.db.save_parsed_tournament(
                 guild_id=interaction.guild_id,
                 tournament_data=parsed,
-                season_number=1,
-                competition_type=competition.lower(),
+                season_number=season_num,
+                competition_type=comp_type,
             )
 
             # Auto-settle pending bets for finished matchdays
@@ -250,6 +290,7 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
                 embed=success_embed(
                     "Tournament Imported Successfully!",
                     f"🏆 **{saved['name']}**\n"
+                    f"• Competition: **{comp_type.upper()}** (Season {season_num})\n"
                     f"• Fixtures Loaded: **{parsed['total_fixtures']}**\n"
                     f"• Total Matchdays: **{saved['total_matchdays']}**\n"
                     f"• Teams: **{len(parsed['standings'])}**\n"
@@ -274,6 +315,7 @@ class Standings(commands.Cog):
         competition="Competition type (league, ucl, cup, default: league)",
         season="Specific season number to view (e.g. 1, default: active season)",
     )
+    @app_commands.choices(competition=COMPETITION_CHOICES)
     async def standings_cmd(
         self,
         interaction: discord.Interaction,

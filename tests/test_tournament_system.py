@@ -290,3 +290,65 @@ async def test_bottom_5_betting_restriction(temp_db):
     assert not ok
     assert "bottom 5" in msg.lower()
     assert "Team_6" in msg
+
+
+@pytest.mark.asyncio
+async def test_ucl_s1_knockout_tournament(temp_db):
+    """Test parsing, knockout stages, penalty shootouts, and dual-seeding for BEASTLY UCL S1."""
+    ucl_path = "data/beastly_ucl_s1.html"
+    assert os.path.exists(ucl_path), "UCL S1 HTML file must exist"
+
+    with open(ucl_path, "r", encoding="utf-8") as f:
+        html = f.read()
+
+    parsed = parse_matchsimulator_html(html)
+    assert parsed["tournament_name"] == "BEASTLY UCL S1"
+    assert parsed["champion"] == "Paris Saint-Germain"
+    assert parsed["runner_up"] == "Chelsea"
+    assert parsed["highest_matchday"] == 7
+    assert parsed["total_fixtures"] == 29
+
+    # Verify Awards
+    awards = parsed["awards"]
+    assert awards["golden_boot"]["player_name"] == "Eusebio"
+    assert awards["golden_boot"]["stat_value"] == 8
+    assert awards["playmaker"]["player_name"] == "A. Hakimi"
+    assert awards["playmaker"]["stat_value"] == 4
+    assert awards["mvp"]["player_name"] == "Eusebio"
+    assert awards["mvp"]["rating"] >= 8.0
+
+    guild_id = 777888
+    # Test dual-seeding of League + UCL
+    t_league = await temp_db.ensure_tournament_seeded(guild_id)
+    assert t_league is not None
+    assert t_league["competition_type"] == "league"
+
+    t_ucl = await temp_db.get_active_tournament(guild_id, competition_type="ucl")
+    assert t_ucl is not None
+    assert t_ucl["name"] == "BEASTLY UCL S1"
+    assert t_ucl["champion"] == "Paris Saint-Germain"
+    assert t_ucl["runner_up"] == "Chelsea"
+
+    # Verify Matchday 7 (Final) stage name
+    final_fixtures = await temp_db.get_tournament_fixtures(t_ucl["id"], matchday=7)
+    assert len(final_fixtures) == 1
+    final_m = final_fixtures[0]
+    assert final_m["stage_name"] == "Final"
+    assert final_m["home_team_name"] == "Chelsea"
+    assert final_m["away_team_name"] == "Paris Saint-Germain"
+    assert final_m["goals_home"] == 1
+    assert final_m["goals_away"] == 3
+
+    # Verify Matchday 4 Penalties (Inter vs Bayern)
+    m4_fixtures = await temp_db.get_tournament_fixtures(t_ucl["id"], matchday=4)
+    pen_match = next((f for f in m4_fixtures if f["home_team_short"] == "INT"), None)
+    assert pen_match is not None
+    assert pen_match["penalties_home"] == 3
+    assert pen_match["penalties_away"] == 4
+
+    # Verify Hall of Fame has both League and UCL
+    hof = await temp_db.get_season_history(guild_id)
+    assert len(hof) == 2
+    comp_names = [h["competition_name"] for h in hof]
+    assert "BEASTLY S1 LEAGUE" in comp_names
+    assert "BEASTLY UCL S1" in comp_names

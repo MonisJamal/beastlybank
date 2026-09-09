@@ -19,6 +19,13 @@ from utils.embeds import (
 logger = logging.getLogger("BeastlyBank.Stats")
 
 
+COMPETITION_CHOICES = [
+    app_commands.Choice(name="League", value="league"),
+    app_commands.Choice(name="Champions League (UCL)", value="ucl"),
+    app_commands.Choice(name="Cup", value="cup"),
+]
+
+
 class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament Player Stats & Leaderboards"):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -30,6 +37,7 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         season="Specific season number to view (e.g. 1, default: active season)",
         limit="Number of players to show (default: 10, max: 25)",
     )
+    @app_commands.choices(competition=COMPETITION_CHOICES)
     async def stats_topscorers(
         self,
         interaction: discord.Interaction,
@@ -75,6 +83,7 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         season="Specific season number to view (e.g. 1, default: active season)",
         limit="Number of players to show (default: 10, max: 25)",
     )
+    @app_commands.choices(competition=COMPETITION_CHOICES)
     async def stats_assists(
         self,
         interaction: discord.Interaction,
@@ -120,6 +129,7 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         season="Specific season number to view (e.g. 1, default: active season)",
         limit="Number of players to show (default: 10, max: 25)",
     )
+    @app_commands.choices(competition=COMPETITION_CHOICES)
     async def stats_ratings(
         self,
         interaction: discord.Interaction,
@@ -164,6 +174,7 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         competition="Competition type (league, ucl, cup, default: league)",
         season="Specific season number to view (e.g. 1, default: active season)",
     )
+    @app_commands.choices(competition=COMPETITION_CHOICES)
     async def stats_cleansheets(
         self,
         interaction: discord.Interaction,
@@ -244,9 +255,10 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
             lines.append(f"• 🤦 **Own Goals**: **{own_goals}**")
 
         if "seasons" in profile and len(profile["seasons"]) > 1:
-            lines.append("\n**Season-by-Season Breakdown**:")
+            lines.append("\n**Competition & Season Breakdown**:")
             for s_rec in profile["seasons"]:
-                lines.append(f"• **S{s_rec['season_number']}** ({s_rec['team_name']}): **{s_rec['goals']}G** / **{s_rec['assists']}A** (⭐ {s_rec['rating']:.2f})")
+                tourn_name = s_rec.get("tournament_name") or f"Season {s_rec['season_number']}"
+                lines.append(f"• **{tourn_name}** ({s_rec['team_name']}): **{s_rec['goals']}G** / **{s_rec['assists']}A** (⭐ {s_rec['rating']:.2f})")
 
         embed = create_beastly_embed(
             title=f"⭐ Player Profile • {p_name} ({title_suffix})",

@@ -48,6 +48,32 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
         except Exception as e:
             logger.warning("Failed parsing fixturesInfo JSON: %s", e)
 
+    # Extract matchdayDescriptions if available (e.g. Round of 16, Quarter-finals, Final)
+    matchday_descriptions: Dict[int, str] = {}
+    md_desc_m = re.search(r'const\s+matchdayDescriptions\s*=\s*(\{.*?\});', html_text, re.DOTALL)
+    if md_desc_m:
+        try:
+            cleaned_json = md_desc_m.group(1).replace(r"\/", "/")
+            raw_descs = json.loads(cleaned_json)
+            for k, v in raw_descs.items():
+                try:
+                    matchday_descriptions[int(k)] = str(v).strip()
+                except ValueError:
+                    pass
+        except Exception as e:
+            logger.debug("Failed parsing matchdayDescriptions: %s", e)
+
+    # Extract canonical team mapping from cupTeamsInfo if present
+    teams_map: Dict[str, str] = {}
+    teams_m = re.search(r'cupTeamsInfo\s*=\s*(\[\{.*?\}\]);', html_text, re.DOTALL)
+    if teams_m:
+        try:
+            teams_list = json.loads(teams_m.group(1))
+            for item in teams_list:
+                teams_map[str(item.get("teamId"))] = str(item.get("name")).strip()
+        except Exception as e:
+            logger.debug("Failed parsing cupTeamsInfo: %s", e)
+
     raw_fixtures = fixtures_info.get("fixtures", {})
     highest_matchday = fixtures_info.get("highest_matchday") or (len(raw_fixtures) if raw_fixtures else 0)
     winner_data = fixtures_info.get("winner") or {}
@@ -61,15 +87,22 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
         except ValueError:
             md_num = 1
 
+        stage_name = matchday_descriptions.get(md_num) or f"Matchday {md_num}"
         normalized_fixtures[md_num] = []
         for m in matches:
+            h_id = str(m.get("homeTeamId", ""))
+            a_id = str(m.get("awayTeamId", ""))
+            h_name = teams_map.get(h_id) or m.get("home_team_name", "Home Team").strip()
+            a_name = teams_map.get(a_id) or m.get("away_team_name", "Away Team").strip()
+
             fixture_entry = {
                 "matchday": md_num,
+                "stage_name": stage_name,
                 "match_uid": m.get("match_uid", ""),
-                "home_team_id": str(m.get("homeTeamId", "")),
-                "away_team_id": str(m.get("awayTeamId", "")),
-                "home_team_name": m.get("home_team_name", "Home Team").strip(),
-                "away_team_name": m.get("away_team_name", "Away Team").strip(),
+                "home_team_id": h_id,
+                "away_team_id": a_id,
+                "home_team_name": h_name,
+                "away_team_name": a_name,
                 "home_team_short": m.get("home_team_name_short", "").strip(),
                 "away_team_short": m.get("away_team_name_short", "").strip(),
                 "goals_home": m.get("goals_home_team", 0),
@@ -245,10 +278,13 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
 
     # 6. Aggregate Comprehensive Player Profiles & Calculate Ratings
     players_map = {}
+    team_played_map = {t["name"].lower(): t["played"] for t in standings_list}
 
     def get_or_create_player(name: str, team: str) -> Dict[str, Any]:
         key = f"{name.strip().lower()}::{team.strip().lower()}"
         if key not in players_map:
+            t_name_clean = team.strip().lower()
+            p_played = team_played_map.get(t_name_clean) or highest_matchday or 1
             players_map[key] = {
                 "player_name": name.strip(),
                 "team_name": team.strip(),
@@ -258,8 +294,8 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
                 "yellow_cards": 0,
                 "red_cards": 0,
                 "clean_sheets": 0,
-                "matches_played": 38,
-                "minutes_played": 38 * 90,
+                "matches_played": p_played,
+                "minutes_played": p_played * 90,
                 "rating": 6.5,
             }
         return players_map[key]
@@ -286,20 +322,34 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
 
     team_cs_map = {t["name"].lower(): t["clean_sheets"] for t in standings_list}
     team_pts_map = {t["name"].lower(): t["points"] for t in standings_list}
+    max_possible_pts = max(1.0, float((highest_matchday or 1) * 3))
+
+    is_cup = (highest_matchday or 0) <= 15
 
     for p in players_map.values():
         t_name = p["team_name"].lower()
         cs = team_cs_map.get(t_name, 0)
         p["clean_sheets"] = cs
 
-        team_pts = team_pts_map.get(t_name, 40)
-        team_success = (team_pts / 80.0) * 0.8
+        p_matches = max(1, p["matches_played"])
+
+        if is_cup:
+            team_pts = team_pts_map.get(t_name, 0)
+            team_success = min(1.0, (team_pts / max_possible_pts)) * 0.8
+            goal_contrib = (p["goals"] / p_matches) * 2.5 + (p["assists"] / p_matches) * 1.5
+            calc_rating = 6.20 + min(2.6, goal_contrib) + team_success
+        else:
+            team_pts = team_pts_map.get(t_name, 40)
+            team_success = (team_pts / 80.0) * 0.8
+            calc_rating = (
+                6.20
+                + (p["goals"] * 0.075)
+                + (p["assists"] * 0.055)
+                + team_success
+            )
 
         calculated_rating = (
-            6.20
-            + (p["goals"] * 0.075)
-            + (p["assists"] * 0.055)
-            + (team_success)
+            calc_rating
             - (p["yellow_cards"] * 0.015)
             - (p["red_cards"] * 0.06)
             - (p["own_goals"] * 0.05)
@@ -309,6 +359,17 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
     # 7. Season Awards
     champion = winner_data.get("name") or (standings_list[0]["name"] if standings_list else "Unknown")
     runner_up = standings_list[1]["name"] if len(standings_list) > 1 else "Unknown"
+
+    # For knockout tournaments, determine runner-up from final matchday fixture
+    final_fixtures = normalized_fixtures.get(highest_matchday, [])
+    if len(final_fixtures) == 1:
+        f_match = final_fixtures[0]
+        h_name = f_match["home_team_name"]
+        a_name = f_match["away_team_name"]
+        if champion.lower() in h_name.lower():
+            runner_up = a_name
+        elif champion.lower() in a_name.lower():
+            runner_up = h_name
 
     golden_boot = top_goals[0] if top_goals else None
     playmaker = top_assists[0] if top_assists else None
@@ -328,6 +389,7 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
         "winner_data": winner_data,
         "standings": standings_list,
         "fixtures_by_matchday": normalized_fixtures,
+        "matchday_descriptions": matchday_descriptions,
         "total_fixtures": len(all_fixtures_flat),
         "player_stats": {
             "goals": top_goals,

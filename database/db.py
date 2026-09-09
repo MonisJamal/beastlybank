@@ -412,6 +412,7 @@ class DatabaseManager:
                     tournament_id INTEGER NOT NULL,
                     guild_id INTEGER NOT NULL,
                     matchday INTEGER NOT NULL,
+                    stage_name TEXT DEFAULT NULL,
                     match_uid TEXT DEFAULT NULL,
                     home_team_id TEXT NOT NULL,
                     away_team_id TEXT NOT NULL,
@@ -536,6 +537,11 @@ class DatabaseManager:
             await cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_bets_tourn_md ON matchday_bets (tournament_id, matchday, status);"
             )
+
+            try:
+                await cur.execute("ALTER TABLE tournament_fixtures ADD COLUMN stage_name TEXT DEFAULT NULL;")
+            except Exception:
+                pass
 
             # Performance Indices
             await cur.execute(
@@ -4002,27 +4008,28 @@ class DatabaseManager:
                             """
                             UPDATE tournament_fixtures
                             SET goals_home = ?, goals_away = ?, penalties_home = ?, penalties_away = ?,
-                                is_finished = ?, replay_exists = ?, match_uid = COALESCE(?, match_uid)
+                                is_finished = ?, replay_exists = ?, match_uid = COALESCE(?, match_uid),
+                                stage_name = COALESCE(?, stage_name)
                             WHERE id = ?;
                             """,
                             (
                                 m["goals_home"], m["goals_away"], m["penalties_home"], m["penalties_away"],
                                 1 if m["is_finished"] else 0, 1 if m["replay_exists"] else 0,
-                                m.get("match_uid"), fix_row["id"],
+                                m.get("match_uid"), m.get("stage_name"), fix_row["id"],
                             ),
                         )
                     else:
                         await cur.execute(
                             """
                             INSERT INTO tournament_fixtures (
-                                tournament_id, guild_id, matchday, match_uid,
+                                tournament_id, guild_id, matchday, stage_name, match_uid,
                                 home_team_id, away_team_id, home_team_name, away_team_name,
                                 home_team_short, away_team_short, goals_home, goals_away,
                                 penalties_home, penalties_away, is_finished, replay_exists
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                             """,
                             (
-                                tournament_id, guild_id, md, m.get("match_uid"),
+                                tournament_id, guild_id, md, m.get("stage_name"), m.get("match_uid"),
                                 m["home_team_id"], m["away_team_id"], m["home_team_name"], m["away_team_name"],
                                 m["home_team_short"], m["away_team_short"], m["goals_home"], m["goals_away"],
                                 m["penalties_home"], m["penalties_away"], 1 if m["is_finished"] else 0,
@@ -4125,39 +4132,63 @@ class DatabaseManager:
             return dict(t_row)
 
     async def ensure_tournament_seeded(self, guild_id: int) -> Optional[Dict[str, Any]]:
-        """Ensure Season 1 tournament exists for this guild; if not, seed it immediately from data/beastly_s1_cup.html."""
-        existing = await self.get_tournament_by_season(guild_id, "league", 1)
-        if existing:
-            return existing
+        """Ensure Season 1 tournaments (League and UCL) exist for this guild; if not, seed immediately from data/."""
         from pathlib import Path
-        s1_file = Path("data/beastly_s1_cup.html")
-        if not s1_file.exists():
-            return None
-        try:
-            with open(s1_file, "r", encoding="utf-8") as f:
-                html_text = f.read()
-            from utils.match_parser import parse_matchsimulator_html
-            parsed = parse_matchsimulator_html(html_text)
-            saved = await self.save_parsed_tournament(
-                guild_id=guild_id,
-                tournament_data=parsed,
-                url="https://matchsimulator.com/cup/2859670/beastly-s1-league",
-                season_number=1,
-                competition_type="league",
-            )
-            # Also ensure it's archived in season_history so /season history works
-            hist = await self.get_season_history(guild_id, season_number=1)
-            if not hist:
-                await self.conclude_tournament(saved["id"])
-                # Mark as active again if it was the only one
-                conn = await self.connect()
-                async with conn.cursor() as cur:
-                    await cur.execute("UPDATE tournaments SET status = 'active' WHERE id = ?;", (saved["id"],))
-                    await conn.commit()
-            return saved
-        except Exception as e:
-            logger.warning("ensure_tournament_seeded error: %s", e)
-            return None
+        from utils.match_parser import parse_matchsimulator_html
+
+        # 1. League Season 1
+        existing_league = await self.get_tournament_by_season(guild_id, "league", 1)
+        if not existing_league:
+            s1_file = Path("data/beastly_s1_cup.html")
+            if s1_file.exists():
+                try:
+                    with open(s1_file, "r", encoding="utf-8") as f:
+                        html_text = f.read()
+                    parsed = parse_matchsimulator_html(html_text)
+                    saved = await self.save_parsed_tournament(
+                        guild_id=guild_id,
+                        tournament_data=parsed,
+                        url="https://matchsimulator.com/cup/2859670/beastly-s1-league",
+                        season_number=1,
+                        competition_type="league",
+                    )
+                    hist = await self.get_season_history(guild_id, season_number=1, competition_name="league")
+                    if not hist:
+                        await self.conclude_tournament(saved["id"])
+                        conn = await self.connect()
+                        async with conn.cursor() as cur:
+                            await cur.execute("UPDATE tournaments SET status = 'active' WHERE id = ?;", (saved["id"],))
+                            await conn.commit()
+                except Exception as e:
+                    logger.warning("ensure_tournament_seeded league error: %s", e)
+
+        # 2. UCL Season 1
+        existing_ucl = await self.get_tournament_by_season(guild_id, "ucl", 1)
+        if not existing_ucl:
+            ucl_file = Path("data/beastly_ucl_s1.html")
+            if ucl_file.exists():
+                try:
+                    with open(ucl_file, "r", encoding="utf-8") as f:
+                        ucl_text = f.read()
+                    parsed_ucl = parse_matchsimulator_html(ucl_text)
+                    saved_ucl = await self.save_parsed_tournament(
+                        guild_id=guild_id,
+                        tournament_data=parsed_ucl,
+                        url="https://matchsimulator.com/cup/2894790/beastly-ucl-s1",
+                        season_number=1,
+                        competition_type="ucl",
+                    )
+                    hist_ucl = await self.get_season_history(guild_id, season_number=1, competition_name="ucl")
+                    if not hist_ucl:
+                        await self.conclude_tournament(saved_ucl["id"])
+                        conn = await self.connect()
+                        async with conn.cursor() as cur:
+                            await cur.execute("UPDATE tournaments SET status = 'active' WHERE id = ?;", (saved_ucl["id"],))
+                            await conn.commit()
+                except Exception as e:
+                    logger.warning("ensure_tournament_seeded ucl error: %s", e)
+
+        return await self.get_tournament_by_season(guild_id, "league", 1)
 
     async def get_active_tournament(self, guild_id: int, competition_type: str = "league") -> Optional[Dict[str, Any]]:
         """Fetch the currently active tournament for a given competition type in a guild."""
@@ -4398,20 +4429,25 @@ class DatabaseManager:
             t["runner_up"] = runner
             return True, f"Season {t['season_number']} concluded! {champ} crowned Champions!", t
 
-    async def get_season_history(self, guild_id: int, season_number: Optional[int] = None) -> List[Dict[str, Any]]:
+    async def get_season_history(
+        self,
+        guild_id: int,
+        season_number: Optional[int] = None,
+        competition_name: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """Fetch archived season history for the Hall of Fame."""
         conn = await self.connect()
         async with conn.cursor() as cur:
+            query = "SELECT * FROM season_history WHERE (guild_id = ? OR guild_id = 0)"
+            params: List[Any] = [guild_id]
             if season_number is not None:
-                await cur.execute(
-                    "SELECT * FROM season_history WHERE (guild_id = ? OR guild_id = 0) AND season_number = ? ORDER BY id DESC;",
-                    (guild_id, season_number),
-                )
-            else:
-                await cur.execute(
-                    "SELECT * FROM season_history WHERE (guild_id = ? OR guild_id = 0) ORDER BY season_number DESC, id DESC;",
-                    (guild_id,),
-                )
+                query += " AND season_number = ?"
+                params.append(season_number)
+            if competition_name:
+                query += " AND LOWER(competition_name) LIKE ?"
+                params.append(f"%{competition_name.lower()}%")
+            query += " ORDER BY season_number DESC, id DESC;"
+            await cur.execute(query, tuple(params))
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 

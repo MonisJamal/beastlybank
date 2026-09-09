@@ -107,9 +107,10 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
             c_name = p["team_name"]
             g = p["goals"]
             m_played = p.get("matches_played", 0)
-            mins = p.get("minutes_played", m_played * 90)
+            mins = p.get("minutes_played", 0) or 0
+            mins_str = f" (`{mins:,}m`)" if mins > 0 else ""
             rt = p.get("rating", 6.5)
-            lines.append(f"{medal} **{p_name}** ({c_name})\n    ⚽ **{g} Goals** • **{m_played} Apps** (`{mins:,}m`) • ⭐ `{rt:.2f}`")
+            lines.append(f"{medal} **{p_name}** ({c_name})\n    ⚽ **{g} Goals** • **{m_played} Apps**{mins_str} • ⭐ `{rt:.2f}`")
 
         embed = create_beastly_embed(
             title=f"👟 Golden Boot • {t['name']}",
@@ -156,9 +157,10 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
             c_name = p["team_name"]
             a = p["assists"]
             m_played = p.get("matches_played", 0)
-            mins = p.get("minutes_played", m_played * 90)
+            mins = p.get("minutes_played", 0) or 0
+            mins_str = f" (`{mins:,}m`)" if mins > 0 else ""
             rt = p.get("rating", 6.5)
-            lines.append(f"{medal} **{p_name}** ({c_name})\n    🎯 **{a} Assists** • **{m_played} Apps** (`{mins:,}m`) • ⭐ `{rt:.2f}`")
+            lines.append(f"{medal} **{p_name}** ({c_name})\n    🎯 **{a} Assists** • **{m_played} Apps**{mins_str} • ⭐ `{rt:.2f}`")
 
         embed = create_beastly_embed(
             title=f"🎯 Golden Playmaker • {t['name']}",
@@ -205,10 +207,11 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
             c_name = p["team_name"]
             rt = p.get("rating", 6.5)
             m_played = p.get("matches_played", 0)
-            mins = p.get("minutes_played", m_played * 90)
+            mins = p.get("minutes_played", 0) or 0
+            mins_str = f" (`{mins:,}m`)" if mins > 0 else ""
             g = p.get("goals", 0)
             a = p.get("assists", 0)
-            lines.append(f"{medal} **{p_name}** ({c_name})\n    ⭐ **{rt:.2f} Rating** • **{m_played} Apps** (`{mins:,}m`) • {g}G / {a}A")
+            lines.append(f"{medal} **{p_name}** ({c_name})\n    ⭐ **{rt:.2f} Rating** • **{m_played} Apps**{mins_str} • {g}G / {a}A")
 
         embed = create_beastly_embed(
             title=f"⭐ Player of the Season (MVP) • {t['name']}",
@@ -288,7 +291,7 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         p_name = profile["player_name"]
         t_name = profile["team_name"]
         matches = profile["total_matches"] or 0
-        mins = profile["total_minutes"] or (matches * 90)
+        mins = profile["total_minutes"] or 0
         goals = profile["total_goals"] or 0
         assists = profile["total_assists"] or 0
         cs = profile["total_clean_sheets"] or 0
@@ -298,12 +301,16 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         avg_rating = profile["avg_rating"] or 6.50
 
         title_suffix = f"Season {season}" if season else "Career All-Time"
-        mins_per_goal = f" *({round(mins / goals)} mins/goal)*" if goals > 0 else ""
-        mins_per_assist = f" *({round(mins / assists)} mins/assist)*" if assists > 0 else ""
+        mins_per_goal = f" *({round(mins / goals)} mins/goal)*" if (goals > 0 and mins > 0) else ""
+        mins_per_assist = f" *({round(mins / assists)} mins/assist)*" if (assists > 0 and mins > 0) else ""
+
+        app_str = f"**Appearances**: **{matches} Matches**"
+        if mins > 0:
+            app_str += f" (`{mins:,}` Minutes Played)"
 
         lines = [
             f"**Club**: {t_name}",
-            f"**Appearances**: **{matches} Matches** (`{mins:,}` Minutes Played)",
+            app_str,
             f"**Average Match Rating**: ⭐ **{avg_rating:.2f} AVG**\n",
             f"• ⚽ **Goals**: **{goals}**{mins_per_goal}",
             f"• 🎯 **Assists**: **{assists}**{mins_per_assist}",
@@ -319,9 +326,10 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
             for s_rec in profile["seasons"]:
                 tourn_name = s_rec.get("tournament_name") or f"Season {s_rec['season_number']}"
                 s_matches = s_rec.get("matches_played", 0)
-                s_mins = s_rec.get("minutes_played", s_matches * 90)
+                s_mins = s_rec.get("minutes_played", 0) or 0
+                s_mins_str = f" (`{s_mins:,}m`)" if s_mins > 0 else ""
                 lines.append(
-                    f"• **{tourn_name}** ({s_rec['team_name']}): **{s_matches} Apps** (`{s_mins:,}m`) • **{s_rec['goals']}G** / **{s_rec['assists']}A** • ⭐ `{s_rec['rating']:.2f}`"
+                    f"• **{tourn_name}** ({s_rec['team_name']}): **{s_matches} Apps**{s_mins_str} • **{s_rec['goals']}G** / **{s_rec['assists']}A** • ⭐ `{s_rec['rating']:.2f}`"
                 )
 
         embed = create_beastly_embed(
@@ -377,7 +385,8 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         for p in players:
             p_name = p["player_name"]
             m_played = p.get("matches_played", 0)
-            mins = p.get("minutes_played", m_played * 90)
+            mins = p.get("minutes_played", 0) or 0
+            mins_str = f" (`{mins:,}m`)" if mins > 0 else ""
             g = p.get("goals", 0)
             a = p.get("assists", 0)
             cs = p.get("clean_sheets", 0)
@@ -391,7 +400,7 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
             cs_str = f" | 🧤{cs}" if cs > 0 else ""
 
             lines.append(
-                f"• **{p_name}** — **{m_played} Apps** (`{mins:,}m`) • ⚽ **{g}G** / 🎯 **{a}A**{cs_str}{card_str} • ⭐ `{rt:.2f}`"
+                f"• **{p_name}** — **{m_played} Apps**{mins_str} • ⚽ **{g}G** / 🎯 **{a}A**{cs_str}{card_str} • ⭐ `{rt:.2f}`"
             )
 
         embed = create_beastly_embed(

@@ -295,7 +295,7 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
                 "red_cards": 0,
                 "clean_sheets": 0,
                 "matches_played": p_played,
-                "minutes_played": p_played * 90,
+                "minutes_played": 0,
                 "rating": 6.5,
             }
         return players_map[key]
@@ -382,7 +382,6 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
                         val = re.sub(r"[^0-9]", "", cells[col_map["matches"]].get_text(strip=True))
                         if val:
                             p["matches_played"] = int(val)
-                            p["minutes_played"] = int(val) * 90
                     if "minutes" in col_map and len(cells) > col_map["minutes"]:
                         val = re.sub(r"[^0-9]", "", cells[col_map["minutes"]].get_text(strip=True))
                         if val:

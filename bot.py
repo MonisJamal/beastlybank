@@ -147,6 +147,14 @@ class BeastlyBankBot(commands.Bot):
         try:
             if BEASTLYFC_GUILD_ID != 0:
                 guild_obj = discord.Object(id=BEASTLYFC_GUILD_ID)
+                # 1. PURGE ALL OLD/DUPLICATE GLOBAL COMMANDS FROM DISCORD'S SERVERS
+                try:
+                    await self.http.bulk_upsert_global_commands(self.application_id, [])
+                    logger.info("🧹 Purged old duplicate global commands from Discord API.")
+                except Exception as e:
+                    logger.warning("Could not purge global slash commands: %s", e)
+
+                # 2. Sync exclusively to BeastlyFC Guild for instant updates without duplicates
                 self.tree.copy_global_to(guild=guild_obj)
                 synced_guild = await self.tree.sync(guild=guild_obj)
                 logger.info(
@@ -154,8 +162,9 @@ class BeastlyBankBot(commands.Bot):
                     len(synced_guild),
                     BEASTLYFC_GUILD_ID,
                 )
-            synced_global = await self.tree.sync()
-            logger.info("Synced %d commands globally.", len(synced_global))
+            else:
+                synced_global = await self.tree.sync()
+                logger.info("Synced %d commands globally.", len(synced_global))
         except Exception as e:
             logger.warning("Slash command tree sync postponed: %s", e)
 

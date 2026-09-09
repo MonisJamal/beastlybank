@@ -1525,31 +1525,28 @@ class BankerPrefixCommands(commands.Cog):
         • bb!sync *     -> Copies global to server and syncs.
         • bb!sync ^     -> Clears server commands and syncs global.
         """
-        msg = await ctx.send("⏳ **Syncing slash command tree with Discord...**")
+        msg = await ctx.send("⏳ **Purging older duplicate commands and syncing latest slash commands...**")
         try:
-            if spec == "~" and ctx.guild:
-                synced = await ctx.bot.tree.sync(guild=ctx.guild)
-            elif spec == "*" and ctx.guild:
+            # 1. Delete all global commands from Discord to prevent duplicate commands
+            try:
+                await ctx.bot.http.bulk_upsert_global_commands(ctx.bot.application_id, [])
+            except Exception as e:
+                logger.warning("Could not purge global commands: %s", e)
+
+            # 2. Sync exclusively to this server
+            if ctx.guild:
                 ctx.bot.tree.copy_global_to(guild=ctx.guild)
                 synced = await ctx.bot.tree.sync(guild=ctx.guild)
-            elif spec == "^" and ctx.guild:
-                ctx.bot.tree.clear_commands(guild=ctx.guild)
-                await ctx.bot.tree.sync(guild=ctx.guild)
-                synced = await ctx.bot.tree.sync()
             else:
-                synced_guild = []
-                if ctx.guild:
-                    ctx.bot.tree.copy_global_to(guild=ctx.guild)
-                    synced_guild = await ctx.bot.tree.sync(guild=ctx.guild)
-                synced_global = await ctx.bot.tree.sync()
-                synced = synced_guild or synced_global
+                synced = await ctx.bot.tree.sync()
 
             names = sorted([f"`/{c.name}`" for c in synced])
             await msg.edit(
                 content=(
-                    f"✅ **Successfully Synced {len(synced)} Slash Commands to Discord!**\n\n"
+                    f"✅ **Cleaned Up Duplicates & Successfully Synced {len(synced)} Slash Commands!**\n\n"
+                    f"🧹 Older/duplicate global commands have been purged from Discord.\n\n"
                     f"**Registered Commands:**\n{', '.join(names)}\n\n"
-                    f"💡 *If new commands don't show up immediately in your Discord app, press `Ctrl+R` (or `Cmd+R` on Mac) to reload Discord.*"
+                    f"💡 *If your Discord app still caches the old command list, press `Ctrl+R` (or `Cmd+R` on Mac / restart Discord) to refresh your Discord client cache.*"
                 )
             )
         except Exception as e:

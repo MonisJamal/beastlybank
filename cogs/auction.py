@@ -538,11 +538,8 @@ class Auction(commands.GroupCog, name="auction", description="Manage BeastlyFC M
             seller_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
 
         # Check if player exists in SoFIFA or squad to auto-fill OVR/POT/photo
-        clean_name = player.strip()
-        if clean_name.lower().startswith("custom:"):
-            clean_name = clean_name[7:].strip().strip("'\"")
-        elif clean_name.lower().startswith("custom: '") and clean_name.endswith("'"):
-            clean_name = clean_name[9:-1].strip()
+        import re
+        clean_name = re.sub(r"^custom\s*(?:player)?\s*:\s*['\"]?", "", player.strip(), flags=re.IGNORECASE).rstrip("'\"").strip()
 
         photo_url = None
         resolved_pos = position.upper() if position else "ST"
@@ -614,18 +611,49 @@ class Auction(commands.GroupCog, name="auction", description="Manage BeastlyFC M
         interaction: discord.Interaction,
         current: str,
     ) -> List[app_commands.Choice[str]]:
-        """Autocomplete players from SoFIFA and club squad."""
-        clean = current.strip()
-        results = await self.db.search_cached_sofifa_players(clean, limit=20)
+        """Autocomplete players from user's club squad and SoFIFA, with custom player support."""
+        import re
+        clean = re.sub(r"^custom\s*(?:player)?\s*:\s*['\"]?", "", current.strip(), flags=re.IGNORECASE).rstrip("'\"").strip()
         choices: List[app_commands.Choice[str]] = []
-        for p in results:
-            label = f"{p['name']} ({p['overall_rating']} {p['primary_pos']}) • {p['team']}"
-            if len(label) > 100:
-                label = label[:97] + "..."
-            choices.append(app_commands.Choice(name=label, value=p["name"]))
+        added_names = set()
 
-        if clean and not any(p["name"].lower() == clean.lower() for p in results):
-            choices.append(app_commands.Choice(name=f"Custom: '{clean[:40]}'", value=clean))
+        # 1. First priority: Check user's club squad players
+        try:
+            user_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+            if user_club:
+                conn = await self.db.connect()
+                async with conn.cursor() as cur:
+                    if clean:
+                        await cur.execute(
+                            "SELECT player_name, position, rating FROM club_players WHERE club_id = ? AND LOWER(player_name) LIKE ? LIMIT 10;",
+                            (user_club["id"], f"%{clean.lower()}%"),
+                        )
+                    else:
+                        await cur.execute(
+                            "SELECT player_name, position, rating FROM club_players WHERE club_id = ? LIMIT 10;",
+                            (user_club["id"],),
+                        )
+                    squad_rows = await cur.fetchall()
+                    for r in squad_rows:
+                        p_name = r["player_name"]
+                        lbl = f"⭐ {p_name} ({r['rating']} {r['position']}) • Your Squad"
+                        choices.append(app_commands.Choice(name=lbl[:100], value=p_name))
+                        added_names.add(p_name.lower())
+        except Exception as e:
+            logger.debug("Squad autocomplete error: %s", e)
+
+        # 2. SoFIFA players
+        if clean:
+            results = await self.db.search_cached_sofifa_players(clean, limit=15)
+            for p in results:
+                if p["name"].lower() not in added_names:
+                    label = f"{p['name']} ({p['overall_rating']} {p['primary_pos']}) • {p['team']}"
+                    choices.append(app_commands.Choice(name=label[:100], value=p["name"]))
+                    added_names.add(p["name"].lower())
+
+        # 3. Custom player option
+        if clean and clean.lower() not in added_names:
+            choices.append(app_commands.Choice(name=f"➕ Custom: '{clean[:40]}'", value=clean))
 
         return choices[:25]
 

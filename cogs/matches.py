@@ -5,6 +5,7 @@ Interactive matchday fixtures viewer, league standings, live score sync, and HTM
 
 import io
 import logging
+import re
 from typing import Any, Dict, List, Optional
 
 import discord
@@ -16,6 +17,7 @@ from utils.embeds import (
     create_beastly_embed,
     error_embed,
     success_embed,
+)
 from utils.match_parser import parse_matchsimulator_html
 
 logger = logging.getLogger("BeastlyBank.Matches")

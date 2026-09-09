@@ -252,6 +252,149 @@ class Betting(commands.GroupCog, name="bet", description="BeastlyFC Matchday Spo
 
         asyncio.create_task(close_timer())
 
+    @app_commands.command(name="place", description="Place a wager on an upcoming match fixture.")
+    @app_commands.describe(
+        matchday="Matchday number (or use /bet open for interactive fixture select)",
+        choice="Bet outcome: Home win, Draw, or Away win",
+        amount="Wager amount (e.g. 5m, 10000000)",
+        competition="Competition type (league, ucl, cup, default: league)",
+    )
+    @app_commands.choices(
+        competition=COMPETITION_CHOICES,
+        choice=[
+            app_commands.Choice(name="Home Team Win", value="home"),
+            app_commands.Choice(name="Draw", value="draw"),
+            app_commands.Choice(name="Away Team Win", value="away"),
+        ],
+    )
+    async def bet_place(
+        self,
+        interaction: discord.Interaction,
+        matchday: int,
+        choice: str,
+        amount: str,
+        competition: str = "league",
+    ):
+        await interaction.response.defer(ephemeral=True)
+        t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+        if not t:
+            await interaction.followup.send(embed=error_embed("No Tournament", f"No active `{competition}` tournament found."), ephemeral=True)
+            return
+
+        fixtures = await self.db.get_tournament_fixtures(t["id"], matchday=matchday)
+        unplayed = [f for f in fixtures if not f["is_finished"]]
+        if not unplayed:
+            await interaction.followup.send(embed=error_embed("No Fixtures", f"No open fixtures found for Matchday {matchday}."), ephemeral=True)
+            return
+
+        parsed_amt = parse_bid_amount_or_increment(amount)
+        if not parsed_amt or parsed_amt <= 0:
+            await interaction.followup.send(embed=error_embed("Invalid Amount", "Please specify a valid wager amount (e.g. 1m, 500k)."), ephemeral=True)
+            return
+
+        # If only one unplayed fixture or need select
+        target_f = unplayed[0] if len(unplayed) == 1 else None
+        if not target_f:
+            view = MatchdayBettingView(self.bot, t["id"], matchday, unplayed)
+            embed = create_beastly_embed(
+                title=f"🎰 Select Fixture • Matchday {matchday}",
+                description=f"Choose a match below to complete your **{parsed_amt:,} Cash** wager on **{choice.upper()}**.",
+                color=COLOR_BEASTLY_GOLD,
+            )
+            await interaction.followup.send(embed=embed, view=view, ephemeral=True)
+            return
+
+        ok, msg, bet = await self.db.place_matchday_bet(
+            guild_id=interaction.guild_id,
+            tournament_id=t["id"],
+            matchday=matchday,
+            fixture_id=target_f["id"],
+            user_id=interaction.user.id,
+            bet_type=choice,
+            amount=parsed_amt,
+        )
+        if not ok:
+            await interaction.followup.send(embed=error_embed("Bet Rejected", msg), ephemeral=True)
+            return
+
+        embed = success_embed(
+            "Wager Placed Successfully!",
+            f"🎲 **Bet #{bet['id']} Recorded**\n"
+            f"• Match: **{target_f['home_team_name']} vs {target_f['away_team_name']}**\n"
+            f"• Choice: **{choice.upper()}**\n"
+            f"• Amount: **{parsed_amt:,} Cash**\n"
+            f"• Fixed Odds: **2.0x** (Potential Payout: **{int(parsed_amt * 2.0):,} Cash**)",
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="view", description="View your active matchday wagers and recent betting results.")
+    async def bet_view(self, interaction: discord.Interaction):
+        await interaction.response.defer(ephemeral=True)
+        bets = await self.db.get_user_matchday_bets(interaction.guild_id, interaction.user.id, limit=15)
+        if not bets:
+            await interaction.followup.send(
+                embed=error_embed("No Bets", "You have not placed any matchday bets yet. Use `/bet open` or `/matches upcoming` to find open games!"),
+                ephemeral=True,
+            )
+            return
+
+        lines = []
+        for b in bets:
+            status_icon = "⏳" if b["status"] == "pending" else "✅" if b["status"] == "won" else "❌"
+            match_str = f"{b.get('home_team_name', 'Home')} vs {b.get('away_team_name', 'Away')}"
+            choice_str = b["bet_type"].upper()
+            amt_str = f"{b['amount']:,} Cash"
+            lines.append(
+                f"{status_icon} **#{b['id']}** • {match_str}\n"
+                f"    Pick: **{choice_str}** | Wager: **{amt_str}** | Status: `{b['status'].upper()}`"
+            )
+
+        embed = create_beastly_embed(
+            title="🎰 Your Matchday Wagers",
+            description="\n\n".join(lines),
+            color=COLOR_BEASTLY_GOLD,
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+
+    @app_commands.command(name="resolve", description="Manually settle wagers for finished matchday fixtures.")
+    @app_commands.describe(
+        matchday="Matchday number to settle bets for",
+        competition="Competition type (league, ucl, cup, default: league)",
+    )
+    @app_commands.choices(competition=COMPETITION_CHOICES)
+    async def bet_resolve(
+        self,
+        interaction: discord.Interaction,
+        matchday: int,
+        competition: str = "league",
+    ):
+        await interaction.response.defer()
+        t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+        if not t:
+            await interaction.followup.send(embed=error_embed("No Tournament", f"No active `{competition}` tournament found."), ephemeral=True)
+            return
+
+        payouts = await self.db.settle_matchday_bets(t["id"], matchday=matchday)
+        if not payouts:
+            await interaction.followup.send(
+                embed=error_embed("No Pending Bets", f"No unsettled bets found for Matchday {matchday} in **{t['name']}**."),
+                ephemeral=True,
+            )
+            return
+
+        won_cnt = len([p for p in payouts if p["status"] == "won"])
+        lost_cnt = len([p for p in payouts if p["status"] == "lost"])
+        total_paid = sum(p.get("payout", 0) for p in payouts if p["status"] == "won")
+
+        embed = success_embed(
+            f"Bets Settled • Matchday {matchday}",
+            f"🏁 **Settlement Complete for {t['name']}**\n"
+            f"• Winning Wagers: **{won_cnt}**\n"
+            f"• Losing Wagers: **{lost_cnt}**\n"
+            f"• Total Payouts Disbursed: **{total_paid:,} Cash**",
+        )
+        await interaction.followup.send(embed=embed)
+
 
 async def setup(bot: commands.Bot):
     await bot.add_cog(Betting(bot))

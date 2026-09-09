@@ -4801,3 +4801,30 @@ class DatabaseManager:
 
             await conn.commit()
             return payouts
+
+    async def get_user_matchday_bets(
+        self,
+        guild_id: int,
+        user_id: int,
+        status: Optional[str] = None,
+        limit: int = 20,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve bets placed by a user with fixture and tournament details."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            query = """
+                SELECT b.*, f.home_team_name, f.away_team_name, f.goals_home, f.goals_away, f.is_finished, t.name as tournament_name
+                FROM matchday_bets b
+                LEFT JOIN tournament_fixtures f ON b.fixture_id = f.id
+                LEFT JOIN tournaments t ON b.tournament_id = t.id
+                WHERE (b.guild_id = ? OR b.guild_id = 0) AND b.user_id = ?
+            """
+            params: List[Any] = [guild_id, user_id]
+            if status:
+                query += " AND b.status = ?"
+                params.append(status)
+            query += " ORDER BY b.created_at DESC LIMIT ?;"
+            params.append(limit)
+            await cur.execute(query, tuple(params))
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]

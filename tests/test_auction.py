@@ -139,12 +139,7 @@ async def test_market_auction_lifecycle(temp_db):
     assert auction["status"] == "active"
     assert auction["current_bid"] == 0
 
-    # 3. Seller cannot bid on own auction
-    ok, err, _, _ = await temp_db.place_auction_bid(auction["id"], seller_id, 1_000_000, guild_id)
-    assert not ok
-    assert "own player auction" in err
-
-    # 4. Bidder A places bid of +2M (50M + 2M = 52M)
+    # 3. Bidder A places bid of +2M (50M + 2M = 52M)
     ok, msg, updated, outbid = await temp_db.place_auction_bid(auction["id"], bidder_a, 2_000_000, guild_id)
     assert ok
     assert updated["current_bid"] == 52_000_000
@@ -343,3 +338,62 @@ async def test_custom_player_auction(temp_db):
     )
     assert immi_auction["player_name"] == "immi"
     assert immi_auction["ovr"] == 75
+
+
+@pytest.mark.asyncio
+async def test_auctioneer_can_bid(temp_db):
+    """Verify that the auction creator/seller can place bids on their own auction (e.g. for server host clubs)."""
+    guild_id = 999
+    auctioneer_id = 111
+    rival_id = 222
+
+    # Give auctioneer and rival personal cash
+    await temp_db.get_or_create_user(auctioneer_id, guild_id)
+    await temp_db.get_or_create_user(rival_id, guild_id)
+    conn = await temp_db.connect()
+    async with conn.cursor() as cur:
+        await cur.execute("UPDATE users SET cash = 50000000 WHERE user_id = ? AND guild_id = ?;", (auctioneer_id, guild_id))
+        await cur.execute("UPDATE users SET cash = 50000000 WHERE user_id = ? AND guild_id = ?;", (rival_id, guild_id))
+
+    expires_at = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
+    auction = await temp_db.create_market_auction(
+        guild_id=guild_id,
+        channel_id=123,
+        seller_id=auctioneer_id,
+        player_name="Pedri",
+        ovr=86,
+        potential=92,
+        starting_bid=10_000_000,
+        max_increment=2_000_000,
+        expires_at=expires_at,
+        position="CM",
+    )
+
+    # 1. Auctioneer places bid (+1M -> 11M)
+    ok, msg, updated, outbid = await temp_db.place_auction_bid(auction["id"], auctioneer_id, 1_000_000, guild_id)
+    assert ok, f"Auctioneer bid failed: {msg}"
+    assert updated["current_bid"] == 11_000_000
+    assert updated["highest_bidder_id"] == auctioneer_id
+    assert outbid is None
+
+    # Auctioneer was debited 11M (50M - 11M = 39M)
+    u_auc = await temp_db.get_or_create_user(auctioneer_id, guild_id)
+    assert u_auc["cash"] == 39_000_000
+
+    # 2. Auctioneer cannot bid against themselves
+    ok, err, _, _ = await temp_db.place_auction_bid(auction["id"], auctioneer_id, 1_000_000, guild_id)
+    assert not ok
+    assert "already hold the highest bid" in err
+
+    # 3. Rival outbids auctioneer (+2M -> 13M)
+    ok, msg, updated, outbid = await temp_db.place_auction_bid(auction["id"], rival_id, 2_000_000, guild_id)
+    assert ok
+    assert updated["current_bid"] == 13_000_000
+    assert updated["highest_bidder_id"] == rival_id
+    assert outbid["user_id"] == auctioneer_id
+    assert outbid["amount"] == 11_000_000
+
+    # Auctioneer is 100% refunded (39M + 11M = 50M)
+    u_auc_ref = await temp_db.get_or_create_user(auctioneer_id, guild_id)
+    assert u_auc_ref["cash"] == 50_000_000
+

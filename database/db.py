@@ -3510,11 +3510,7 @@ class DatabaseManager:
                 if (now - last_dt).total_seconds() >= auction["idle_timeout_seconds"]:
                     return False, "This auction has closed due to bidding inactivity.", auction, None
 
-            # Prevent self-bidding
-            if bidder_id == auction["seller_id"]:
-                return False, "You cannot bid on your own player auction.", auction, None
-
-            # Prevent bidding against oneself
+            # Prevent bidding against oneself if already the highest bidder
             if bidder_id == auction["highest_bidder_id"]:
                 return False, "You already hold the highest bid on this player!", auction, None
 

@@ -3331,26 +3331,24 @@ class DatabaseManager:
             if row:
                 return json.loads(row["data_json"])
 
-            # 2. Substring match on normalized search_text
-            pattern = f"%{norm}%"
+            # 2. Prefix or word-boundary match (e.g. "Mbappe" matches "Kylian Mbappe", "Kimmich" matches "Joshua Kimmich")
+            # Avoid mid-word substring matches so custom names like "immi" never accidentally hijack "Joshua Kimmich"
             prefix_pattern = f"{norm}%"
             word_pattern = f"% {norm}%"
-            raw_pattern = f"%{clean.lower()}%"
             await cur.execute(
                 """
                 SELECT data_json FROM sofifa_players
-                WHERE search_text LIKE ? OR LOWER(name) LIKE ? OR LOWER(full_name) LIKE ?
+                WHERE search_text LIKE ? OR search_text LIKE ? OR LOWER(name) LIKE ? OR LOWER(full_name) LIKE ?
                 ORDER BY
                     CASE
-                        WHEN search_text LIKE ? THEN 1
+                        WHEN LOWER(name) LIKE ? THEN 1
                         WHEN search_text LIKE ? THEN 2
-                        WHEN search_text LIKE ? THEN 3
-                        ELSE 4
+                        ELSE 3
                     END,
                     overall_rating DESC
                 LIMIT 1;
                 """,
-                (pattern, raw_pattern, raw_pattern, prefix_pattern, word_pattern, pattern),
+                (prefix_pattern, word_pattern, prefix_pattern, prefix_pattern, prefix_pattern, prefix_pattern),
             )
             row = await cur.fetchone()
             if row:

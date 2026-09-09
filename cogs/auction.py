@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 
 import discord
 from discord import app_commands
@@ -472,6 +472,7 @@ class Auction(commands.GroupCog, name="auction", description="Manage BeastlyFC M
         player="Name of the player to auction",
         starting_bid="Starting base price (e.g. 50m, 10000000)",
         max_increment="Max increment per bid (e.g. 5m for [+1M]..[+5M], or 10m for [+2M]..[+10M])",
+        source="Select Auto-Detect / SoFIFA or Custom Player",
         ovr="Overall rating (1-99, optional - auto-filled from SoFIFA/squad)",
         potential="Potential rating (1-99, optional - auto-filled from SoFIFA/squad)",
         duration="Total auction duration (e.g. 15m, 30m, 1h, 6h, 12h, 24h, default: 1h)",
@@ -486,6 +487,7 @@ class Auction(commands.GroupCog, name="auction", description="Manage BeastlyFC M
         player: str,
         starting_bid: str,
         max_increment: str,
+        source: Literal["Auto-Detect / SoFIFA", "Custom Player"] = "Auto-Detect / SoFIFA",
         ovr: Optional[int] = None,
         potential: Optional[int] = None,
         duration: Optional[str] = "1h",
@@ -537,15 +539,24 @@ class Auction(commands.GroupCog, name="auction", description="Manage BeastlyFC M
         else:
             seller_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
 
-        # Check if player exists in SoFIFA or squad to auto-fill OVR/POT/photo
+        # Check if player is an explicit custom player
         import re
-        clean_name = re.sub(r"^custom\s*(?:player)?\s*:\s*['\"]?", "", player.strip(), flags=re.IGNORECASE).rstrip("'\"").strip()
+        raw_player = player.strip()
+        is_explicit_custom = (
+            source == "Custom Player"
+            or raw_player.lower().startswith("custom:")
+            or bool(re.match(r"^custom\s*(?:player)?\s*:\s*", raw_player, flags=re.IGNORECASE))
+        )
 
+        clean_name = re.sub(r"^custom\s*(?:player)?\s*:\s*['\"]?", "", raw_player, flags=re.IGNORECASE).rstrip("'\"").strip()
         photo_url = None
         resolved_pos = position.upper() if position else "ST"
 
-        # Check SoFIFA
-        sofifa_data = await self.db.get_cached_sofifa_player(clean_name)
+        # Check SoFIFA if NOT custom
+        sofifa_data = None
+        if not is_explicit_custom:
+            sofifa_data = await self.db.get_cached_sofifa_player(clean_name)
+
         if sofifa_data:
             if ovr is None:
                 ovr = sofifa_data.get("overall_rating", 75)
@@ -653,7 +664,7 @@ class Auction(commands.GroupCog, name="auction", description="Manage BeastlyFC M
 
         # 3. Custom player option
         if clean and clean.lower() not in added_names:
-            choices.append(app_commands.Choice(name=f"➕ Custom: '{clean[:40]}'", value=clean))
+            choices.append(app_commands.Choice(name=f"➕ Custom Player: '{clean[:40]}'", value=f"custom:{clean}"))
 
         return choices[:25]
 

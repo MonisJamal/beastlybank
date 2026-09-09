@@ -299,3 +299,47 @@ async def test_custom_player_auction(temp_db):
     assert auction["ovr"] == 88
     assert auction["potential"] == 95
     assert auction["position"] == "CF"
+
+    # Test that 'immi' does NOT match 'Joshua Kimmich'
+    await temp_db.cache_sofifa_players([
+        {
+            "id": 212622,
+            "name": "J. Kimmich",
+            "full_name": "Joshua Kimmich",
+            "primary_pos": "RB",
+            "positions": "RB, CDM, CM",
+            "overall_rating": 89,
+            "potential": 89,
+            "age": 30,
+            "team": "FC Bayern München",
+            "nationality": "Germany",
+            "value": "€78M",
+            "wage": "€160K",
+            "avatar_url": "https://cdn.sofifa.net/players/212/622/26_120.png",
+            "url": "https://sofifa.com/player/212622",
+        }
+    ])
+    # Exact word prefix "Kimmich" should match Joshua Kimmich
+    kimmich_match = await temp_db.get_cached_sofifa_player("Kimmich")
+    assert kimmich_match is not None
+    assert kimmich_match["full_name"] == "Joshua Kimmich"
+
+    # Mid-word substring "immi" should NOT match Joshua Kimmich!
+    immi_match = await temp_db.get_cached_sofifa_player("immi")
+    assert immi_match is None
+
+    # Auction for 'immi' as custom player retains 'immi'
+    immi_auction = await temp_db.create_market_auction(
+        guild_id=guild_id,
+        channel_id=456,
+        seller_id=seller_id,
+        player_name="immi",
+        ovr=75,
+        potential=80,
+        starting_bid=10_000_000,
+        max_increment=2_000_000,
+        expires_at=expires_at,
+        position="ST",
+    )
+    assert immi_auction["player_name"] == "immi"
+    assert immi_auction["ovr"] == 75

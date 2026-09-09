@@ -4142,6 +4142,19 @@ class DatabaseManager:
             row = await cur.fetchone()
             return dict(row) if row else None
 
+    async def get_tournament_by_season(
+        self, guild_id: int, competition_type: str = "league", season_number: int = 1
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch tournament record by guild, competition type, and season number."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM tournaments WHERE guild_id = ? AND competition_type = ? AND season_number = ? ORDER BY id DESC LIMIT 1;",
+                (guild_id, competition_type, season_number),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
     async def get_tournament_fixtures(self, tournament_id: int, matchday: Optional[int] = None) -> List[Dict[str, Any]]:
         """Fetch fixtures for a tournament, optionally filtered by matchday."""
         conn = await self.connect()
@@ -4195,10 +4208,40 @@ class DatabaseManager:
             rows = await cur.fetchall()
             return [dict(r) for r in rows]
 
-    async def get_player_profile(self, guild_id: int, player_name: str) -> Optional[Dict[str, Any]]:
-        """Fetch cumulative player stats across active/past tournaments."""
+    async def get_player_profile(
+        self, guild_id: int, player_name: str, season_number: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch cumulative player stats across active/past tournaments, with optional season filter."""
         conn = await self.connect()
         async with conn.cursor() as cur:
+            if season_number is not None:
+                await cur.execute(
+                    """
+                    SELECT
+                        s.player_name,
+                        s.team_name,
+                        s.goals as total_goals,
+                        s.assists as total_assists,
+                        s.own_goals as total_own_goals,
+                        s.yellow_cards as total_yellow_cards,
+                        s.red_cards as total_red_cards,
+                        s.clean_sheets as total_clean_sheets,
+                        s.matches_played as total_matches,
+                        s.minutes_played as total_minutes,
+                        s.rating as avg_rating,
+                        t.name as tournament_name,
+                        t.season_number
+                    FROM tournament_player_stats s
+                    JOIN tournaments t ON s.tournament_id = t.id
+                    WHERE s.guild_id = ? AND LOWER(s.player_name) LIKE ? AND t.season_number = ?
+                    LIMIT 1;
+                    """,
+                    (guild_id, f"%{player_name.strip().lower()}%", season_number),
+                )
+                row = await cur.fetchone()
+                return dict(row) if row else None
+
+            # Career query
             await cur.execute(
                 """
                 SELECT
@@ -4220,7 +4263,31 @@ class DatabaseManager:
                 (guild_id, f"%{player_name.strip().lower()}%"),
             )
             row = await cur.fetchone()
-            return dict(row) if row else None
+            if not row:
+                return None
+            res = dict(row)
+
+            # Per-season breakdown
+            await cur.execute(
+                """
+                SELECT
+                    s.team_name,
+                    s.goals,
+                    s.assists,
+                    s.rating,
+                    s.matches_played,
+                    s.clean_sheets,
+                    t.season_number,
+                    t.name as tournament_name
+                FROM tournament_player_stats s
+                JOIN tournaments t ON s.tournament_id = t.id
+                WHERE s.guild_id = ? AND LOWER(s.player_name) LIKE ?
+                ORDER BY t.season_number ASC;
+                """,
+                (guild_id, f"%{player_name.strip().lower()}%"),
+            )
+            res["seasons"] = [dict(r) for r in await cur.fetchall()]
+            return res
 
     async def conclude_tournament(self, tournament_id: int) -> Tuple[bool, str, Dict[str, Any]]:
         """Conclude and archive an active tournament, immortalizing awards in season_history."""

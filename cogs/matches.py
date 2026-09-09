@@ -151,18 +151,25 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
     @app_commands.describe(
         matchday="Specific matchday to inspect (optional)",
         competition="Competition type (league, ucl, cup, default: league)",
+        season="Specific season number to view (e.g. 1, default: active season)",
     )
     async def matches_view(
         self,
         interaction: discord.Interaction,
         matchday: Optional[int] = None,
         competition: str = "league",
+        season: Optional[int] = None,
     ):
         await interaction.response.defer()
-        t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+        if season is not None:
+            t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
+        else:
+            t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+
         if not t:
+            target_str = f"Season {season}" if season else f"active `{competition}`"
             await interaction.followup.send(
-                embed=error_embed("No Active Tournament", f"No active `{competition}` tournament found. Use `/season start` to load one!"),
+                embed=error_embed("No Tournament", f"No {target_str} tournament found."),
                 ephemeral=True,
             )
             return
@@ -305,14 +312,27 @@ class Standings(commands.Cog):
         self.bot = bot
         self.db = bot.db
 
-    @app_commands.command(name="standings", description="View the current league standings table.")
-    @app_commands.describe(competition="Competition type (league, ucl, cup, default: league)")
-    async def standings_cmd(self, interaction: discord.Interaction, competition: str = "league"):
+    @app_commands.command(name="standings", description="View the league standings table.")
+    @app_commands.describe(
+        competition="Competition type (league, ucl, cup, default: league)",
+        season="Specific season number to view (e.g. 1, default: active season)",
+    )
+    async def standings_cmd(
+        self,
+        interaction: discord.Interaction,
+        competition: str = "league",
+        season: Optional[int] = None,
+    ):
         await interaction.response.defer()
-        t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+        if season is not None:
+            t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
+        else:
+            t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+
         if not t:
+            target_str = f"Season {season}" if season else f"active `{competition}`"
             await interaction.followup.send(
-                embed=error_embed("No Standings", f"No active `{competition}` tournament found."),
+                embed=error_embed("No Standings", f"No {target_str} tournament found."),
                 ephemeral=True,
             )
             return

@@ -27,18 +27,25 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
     @app_commands.command(name="topscorers", description="View the Golden Boot top goalscorers leaderboard.")
     @app_commands.describe(
         competition="Competition type (league, ucl, cup, default: league)",
+        season="Specific season number to view (e.g. 1, default: active season)",
         limit="Number of players to show (default: 10, max: 25)",
     )
     async def stats_topscorers(
         self,
         interaction: discord.Interaction,
         competition: str = "league",
+        season: Optional[int] = None,
         limit: int = 10,
     ):
         await interaction.response.defer()
-        t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+        if season is not None:
+            t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
+        else:
+            t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+
         if not t:
-            await interaction.followup.send(embed=error_embed("No Tournament", f"No active `{competition}` tournament found."), ephemeral=True)
+            target_str = f"Season {season}" if season else f"active `{competition}`"
+            await interaction.followup.send(embed=error_embed("No Tournament", f"No {target_str} tournament found."), ephemeral=True)
             return
 
         players = await self.db.get_tournament_leaderboard(t["id"], category="goals", limit=min(25, max(1, limit)))
@@ -64,18 +71,25 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
     @app_commands.command(name="assists", description="View the Golden Playmaker top assists leaderboard.")
     @app_commands.describe(
         competition="Competition type (league, ucl, cup, default: league)",
+        season="Specific season number to view (e.g. 1, default: active season)",
         limit="Number of players to show (default: 10, max: 25)",
     )
     async def stats_assists(
         self,
         interaction: discord.Interaction,
         competition: str = "league",
+        season: Optional[int] = None,
         limit: int = 10,
     ):
         await interaction.response.defer()
-        t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+        if season is not None:
+            t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
+        else:
+            t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+
         if not t:
-            await interaction.followup.send(embed=error_embed("No Tournament", f"No active `{competition}` tournament found."), ephemeral=True)
+            target_str = f"Season {season}" if season else f"active `{competition}`"
+            await interaction.followup.send(embed=error_embed("No Tournament", f"No {target_str} tournament found."), ephemeral=True)
             return
 
         players = await self.db.get_tournament_leaderboard(t["id"], category="assists", limit=min(25, max(1, limit)))
@@ -101,18 +115,25 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
     @app_commands.command(name="ratings", description="View the Player of the Season MVP ratings leaderboard.")
     @app_commands.describe(
         competition="Competition type (league, ucl, cup, default: league)",
+        season="Specific season number to view (e.g. 1, default: active season)",
         limit="Number of players to show (default: 10, max: 25)",
     )
     async def stats_ratings(
         self,
         interaction: discord.Interaction,
         competition: str = "league",
+        season: Optional[int] = None,
         limit: int = 10,
     ):
         await interaction.response.defer()
-        t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+        if season is not None:
+            t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
+        else:
+            t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+
         if not t:
-            await interaction.followup.send(embed=error_embed("No Tournament", f"No active `{competition}` tournament found."), ephemeral=True)
+            target_str = f"Season {season}" if season else f"active `{competition}`"
+            await interaction.followup.send(embed=error_embed("No Tournament", f"No {target_str} tournament found."), ephemeral=True)
             return
 
         players = await self.db.get_tournament_leaderboard(t["id"], category="rating", limit=min(25, max(1, limit)))
@@ -136,12 +157,25 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="cleansheets", description="View the Golden Glove clean sheets leaderboard.")
-    @app_commands.describe(competition="Competition type (league, ucl, cup, default: league)")
-    async def stats_cleansheets(self, interaction: discord.Interaction, competition: str = "league"):
+    @app_commands.describe(
+        competition="Competition type (league, ucl, cup, default: league)",
+        season="Specific season number to view (e.g. 1, default: active season)",
+    )
+    async def stats_cleansheets(
+        self,
+        interaction: discord.Interaction,
+        competition: str = "league",
+        season: Optional[int] = None,
+    ):
         await interaction.response.defer()
-        t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+        if season is not None:
+            t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
+        else:
+            t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+
         if not t:
-            await interaction.followup.send(embed=error_embed("No Tournament", f"No active `{competition}` tournament found."), ephemeral=True)
+            target_str = f"Season {season}" if season else f"active `{competition}`"
+            await interaction.followup.send(embed=error_embed("No Tournament", f"No {target_str} tournament found."), ephemeral=True)
             return
 
         standings = await self.db.get_tournament_standings(t["id"])
@@ -163,20 +197,24 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         await interaction.followup.send(embed=embed)
 
     @app_commands.command(name="player", description="Inspect complete performance stats, minutes, and rating for a player.")
-    @app_commands.describe(name="Player name to search")
-    async def stats_player(self, interaction: discord.Interaction, name: str):
+    @app_commands.describe(
+        name="Player name to search",
+        season="Specific season number (optional, default: all-time career)",
+    )
+    async def stats_player(self, interaction: discord.Interaction, name: str, season: Optional[int] = None):
         await interaction.response.defer()
-        profile = await self.db.get_player_profile(interaction.guild_id, name)
+        profile = await self.db.get_player_profile(interaction.guild_id, name, season_number=season)
         if not profile:
+            season_str = f" in Season {season}" if season else ""
             await interaction.followup.send(
-                embed=error_embed("Player Not Found", f"No tournament match records found for player `{name}`."),
+                embed=error_embed("Player Not Found", f"No tournament match records found for player `{name}`{season_str}."),
                 ephemeral=True,
             )
             return
 
         p_name = profile["player_name"]
         t_name = profile["team_name"]
-        matches = profile["total_matches"] or 38
+        matches = profile["total_matches"] or 0
         mins = profile["total_minutes"] or (matches * 90)
         goals = profile["total_goals"] or 0
         assists = profile["total_assists"] or 0
@@ -186,6 +224,7 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         own_goals = profile["total_own_goals"] or 0
         avg_rating = profile["avg_rating"] or 6.50
 
+        title_suffix = f"Season {season}" if season else "Career All-Time"
         lines = [
             f"**Club**: {t_name}",
             f"**Appearances**: {matches} Matches (`{mins:,}` Minutes)",
@@ -199,8 +238,13 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         if own_goals > 0:
             lines.append(f"• 🤦 **Own Goals**: **{own_goals}**")
 
+        if "seasons" in profile and len(profile["seasons"]) > 1:
+            lines.append("\n**Season-by-Season Breakdown**:")
+            for s_rec in profile["seasons"]:
+                lines.append(f"• **S{s_rec['season_number']}** ({s_rec['team_name']}): **{s_rec['goals']}G** / **{s_rec['assists']}A** (⭐ {s_rec['rating']:.2f})")
+
         embed = create_beastly_embed(
-            title=f"⭐ Player Profile • {p_name}",
+            title=f"⭐ Player Profile • {p_name} ({title_suffix})",
             description="\n".join(lines),
             color=COLOR_BEASTLY_GOLD,
         )

@@ -199,3 +199,53 @@ async def test_tournament_conclusion_and_hall_of_fame(temp_db):
     assert record["golden_boot_goals"] == 28
     assert record["playmaker_player"] == "B. Saka"
     assert record["playmaker_assists"] == 19
+
+
+@pytest.mark.asyncio
+async def test_multi_season_stats_retention(temp_db):
+    """Test that starting Season 2 preserves Season 1 stats and career profiles aggregate across seasons."""
+    guild_id = 999
+    conn = await temp_db.connect()
+    async with conn.cursor() as cur:
+        # Create Season 1
+        await cur.execute(
+            "INSERT INTO tournaments (id, guild_id, name, season_number, competition_type, status) VALUES (10, 999, 'Season 1', 1, 'league', 'completed');"
+        )
+        # Create Season 2
+        await cur.execute(
+            "INSERT INTO tournaments (id, guild_id, name, season_number, competition_type, status) VALUES (20, 999, 'Season 2', 2, 'league', 'active');"
+        )
+        # Add Haaland stats for S1 (28 goals) and S2 (10 goals)
+        await cur.execute(
+            """
+            INSERT INTO tournament_player_stats (tournament_id, guild_id, player_name, team_name, goals, assists, rating, matches_played)
+            VALUES (10, 999, 'E. Haaland', 'Man City', 28, 5, 9.04, 38),
+                   (20, 999, 'E. Haaland', 'Man City', 10, 2, 8.80, 12);
+            """
+        )
+
+    # 1. Fetch Season 1 specific profile
+    s1_haaland = await temp_db.get_player_profile(guild_id, "E. Haaland", season_number=1)
+    assert s1_haaland is not None
+    assert s1_haaland["total_goals"] == 28
+    assert s1_haaland["season_number"] == 1
+
+    # 2. Fetch Season 2 specific profile
+    s2_haaland = await temp_db.get_player_profile(guild_id, "E. Haaland", season_number=2)
+    assert s2_haaland is not None
+    assert s2_haaland["total_goals"] == 10
+    assert s2_haaland["season_number"] == 2
+
+    # 3. Fetch Career all-time profile (sums S1 + S2)
+    career_haaland = await temp_db.get_player_profile(guild_id, "E. Haaland")
+    assert career_haaland is not None
+    assert career_haaland["total_goals"] == 38  # 28 + 10
+    assert career_haaland["total_assists"] == 7  # 5 + 2
+    assert career_haaland["total_matches"] == 50  # 38 + 12
+    assert len(career_haaland["seasons"]) == 2
+
+    # 4. Fetch tournament by season
+    t_s1 = await temp_db.get_tournament_by_season(guild_id, "league", 1)
+    assert t_s1["name"] == "Season 1"
+    t_s2 = await temp_db.get_tournament_by_season(guild_id, "league", 2)
+    assert t_s2["name"] == "Season 2"

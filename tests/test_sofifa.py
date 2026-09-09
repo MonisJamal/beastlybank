@@ -214,3 +214,112 @@ async def test_sofifa_view_button():
     assert isinstance(btn, discord.ui.Button)
     assert btn.url == "https://sofifa.com/player/231747"
     assert btn.label == "View on SoFIFA"
+
+
+@pytest.mark.asyncio
+async def test_squad_add_player_sofifa_autofill(db: DatabaseManager):
+    """Verify /player add and bb!addplayer auto-fill stats from SoFIFA database."""
+    from cogs.squad import SquadCog, squad_player_autocomplete
+
+    # Seed SoFIFA players
+    await db.cache_sofifa_players(SAMPLE_PLAYERS)
+
+    guild_id = 888111222
+    owner_id = 12345
+    role_id = 999111888
+
+    # Create club
+    c_ok, _, club = await db.create_club(guild_id, "Real Madrid", "RMA", owner_id, role_id)
+    assert c_ok is True
+
+    # Pre-populate an existing player to verify existing data is NOT altered
+    pre_ok, _, pre_p = await db.add_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="Original Player",
+        position="CB",
+        status="starting",
+        number=4,
+        rating=84,
+        potential=88,
+    )
+    assert pre_ok is True
+
+    bot = MagicMock()
+    bot.db = db
+    squad_cog = SquadCog(bot)
+
+    mock_role = MagicMock()
+    mock_role.id = role_id
+    mock_role.mention = f"<@&{role_id}>"
+
+    # 1. Autocomplete test for squad add
+    interaction_mock = MagicMock(spec=discord.Interaction)
+    client_mock = MagicMock()
+    client_mock.db = db
+    interaction_mock.client = client_mock
+
+    ac_choices = await squad_player_autocomplete(interaction_mock, "Mbappe")
+    assert len(ac_choices) >= 1
+    assert "Mbappé" in ac_choices[0].name
+    assert ac_choices[0].value == "231747"
+
+    # 2. Test prefix command auto-filling stats from SoFIFA: bb!addplayer Mbappe @RealMadrid
+    ctx = MagicMock()
+    ctx.guild.id = guild_id
+    ctx.author.id = owner_id
+    ctx.message.role_mentions = [mock_role]
+    ctx.send = AsyncMock()
+
+    await squad_cog.prefix_addplayer.callback(
+        squad_cog,
+        ctx,
+        "Mbappe",
+        mock_role.mention,
+    )
+    ctx.send.assert_called_once()
+    add_msg = ctx.send.call_args[1]["embed"].description
+    assert "91 OVR" in add_msg
+    assert "ST" in add_msg
+
+    # Verify in DB: Mbappe was auto-assigned 91 rating, 94 potential, ST position, LW alt position
+    _, _, p_info = await db.get_player_info(guild_id, "Mbappe", club_query=club["id"])
+    mbappe_row = p_info["player"]
+    assert mbappe_row["rating"] == 91
+    assert mbappe_row["potential"] == 94
+    assert mbappe_row["position"] == "ST"
+    assert mbappe_row["alt_positions"] == "LW"
+
+    # 3. Test adding custom player explicitly: bb!addcustomplayer "Fantasy Star" CAM 10 85 90
+    ctx2 = MagicMock()
+    ctx2.guild.id = guild_id
+    ctx2.author.id = owner_id
+    ctx2.message.role_mentions = [mock_role]
+    ctx2.send = AsyncMock()
+
+    await squad_cog.prefix_addcustomplayer.callback(
+        squad_cog,
+        ctx2,
+        "Fantasy Star",
+        "CAM",
+        "starting",
+        "10",
+        "85",
+        "90",
+        mock_role.mention,
+    )
+    _, _, custom_info = await db.get_player_info(guild_id, "Fantasy Star", club_query=club["id"])
+    assert custom_info["player"]["rating"] == 85
+    assert custom_info["player"]["potential"] == 90
+    assert custom_info["player"]["position"] == "CAM"
+    assert custom_info["player"]["number"] == 10
+
+    # 4. CRITICAL VERIFICATION: Verify pre-existing player was completely untouched!
+    _, _, orig_info = await db.get_player_info(guild_id, "Original Player", club_query=club["id"])
+    orig_row = orig_info["player"]
+    assert orig_row["id"] == pre_p["id"]
+    assert orig_row["player_name"] == "Original Player"
+    assert orig_row["position"] == "CB"
+    assert orig_row["rating"] == 84
+    assert orig_row["potential"] == 88
+    assert orig_row["number"] == 4

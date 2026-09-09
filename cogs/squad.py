@@ -21,6 +21,7 @@ from config import (
 )
 from utils.checks import require_beastlyfc, is_banker_or_admin
 from utils.embeds import (
+    create_beastly_embed,
     club_lineup_embed,
     player_card_embed,
     error_embed,
@@ -29,6 +30,7 @@ from utils.embeds import (
     send_msg,
 )
 from utils.lineup_image import generate_lineup_image
+from utils.sofifa import fetch_sofifa_players
 
 logger = logging.getLogger("BeastlyBank.Squad")
 
@@ -112,6 +114,107 @@ async def check_squad_permission(
         False,
         "You must be a Club Owner, Captain, Vice-Captain, Manager, or BeastlyBank Banker to manage this squad.",
     )
+
+
+async def squad_player_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete suggesting SoFIFA FC 26 players, plus a custom player option."""
+    clean = current.strip()
+    db = interaction.client.db  # type: ignore
+
+    results = await db.search_cached_sofifa_players(clean, limit=20)
+    choices: list[app_commands.Choice[str]] = []
+    for p in results:
+        label = f"{p['name']} ({p['overall_rating']} {p['primary_pos']}) • {p['team']}"
+        if len(label) > 100:
+            label = label[:97] + "..."
+        choices.append(app_commands.Choice(name=label, value=str(p["id"])))
+
+    if clean and not any(p["name"].lower() == clean.lower() for p in results):
+        custom_label = f"➕ Custom: '{clean[:40]}'"
+        choices.append(app_commands.Choice(name=custom_label, value=f"custom:{clean}"))
+
+    return choices[:25]
+
+
+class AddAsCustomPlayerView(discord.ui.View):
+    """Interactive button to confirm adding as custom player when not in SoFIFA."""
+
+    def __init__(
+        self,
+        squad_cog,
+        target_club: Dict[str, Any],
+        raw_name: str,
+        position: str,
+        status: str,
+        number: Optional[int],
+        rating: int,
+        potential: int,
+        alt_positions: Optional[str],
+        user: discord.User | discord.Member,
+    ):
+        super().__init__(timeout=120)
+        self.squad_cog = squad_cog
+        self.target_club = target_club
+        self.raw_name = raw_name
+        self.position = position
+        self.status = status
+        self.number = number
+        self.rating = rating
+        self.potential = potential
+        self.alt_positions = alt_positions
+        self.user = user
+
+    @discord.ui.button(label="Register as Custom Player", emoji="➕", style=discord.ButtonStyle.success)
+    async def confirm_custom(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("Only the manager who initiated this can confirm.", ephemeral=True)
+            return
+
+        success, msg, p_data = await self.squad_cog.db.add_club_player(
+            guild_id=interaction.guild_id,
+            club_query=self.target_club["id"],
+            player_name=self.raw_name,
+            position=self.position,
+            status=self.status,
+            number=self.number,
+            rating=self.rating,
+            potential=self.potential,
+            alt_positions=self.alt_positions,
+            default_owner_id=interaction.user.id,
+        )
+        if not success:
+            await interaction.response.edit_message(
+                embed=error_embed("Registration Failed", msg),
+                view=None,
+            )
+            return
+
+        embed = create_beastly_embed(
+            title="👤 Custom Player Registered",
+            description=(
+                f"✅ **{self.raw_name}** successfully registered as a **Custom Player**!\n\n"
+                f"• **Position:** `{self.position}`\n"
+                f"• **Rating:** ⭐ **{self.rating} OVR** (Potential: **{self.potential}**)\n"
+                f"• **Lineup Status:** `{self.status.title()}`" + (f" (Jersey #{self.number})" if self.number is not None else "") + "\n"
+                f"• **Club:** **[{self.target_club['tag']}] {self.target_club['name']}**\n\n"
+                f"💡 *You can edit this player anytime with `/player edit` or `bb!editplayer`.*"
+            ),
+            color=COLOR_SUCCESS,
+        )
+        await interaction.response.edit_message(embed=embed, view=None)
+
+    @discord.ui.button(label="Cancel", emoji="✖️", style=discord.ButtonStyle.secondary)
+    async def cancel_custom(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if interaction.user.id != self.user.id:
+            await interaction.response.send_message("Only the manager who initiated this can cancel.", ephemeral=True)
+            return
+        await interaction.response.edit_message(
+            embed=error_embed("Cancelled", "Player addition cancelled."),
+            view=None,
+        )
 
 
 class SquadCog(commands.Cog, name="Squad & Lineup"):
@@ -401,27 +504,32 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         embed = player_card_embed(player=data["player"], club=data["club"])
         await send_msg(interaction, embed=embed)
 
-    @player_group.command(name="add", description="Add a player to a club squad (Starting XI or Bench).")
+    @player_group.command(name="add", description="Add a player to your club squad (SoFIFA auto-fill or Custom).")
     @app_commands.describe(
-        player="Player name or Discord mention",
-        position="Primary position (e.g. ST, CB, CM, GK)",
-        status="Lineup status: starting or bench",
+        player="Player name or SoFIFA search (autocomplete suggestions available)",
+        source="Player source: SoFIFA FC 26 database (auto-fills stats) or Custom Player",
+        position="Primary position (optional - auto-filled from SoFIFA if recognized)",
+        status="Lineup status: starting (Starting XI) or bench (Substitutes)",
         number="Jersey number (0-99)",
-        rating="Overall player rating (1-99, default 75)",
-        potential="Player potential rating (1-99, default 80)",
-        alt_positions="Alternative positions separated by commas (e.g. 'pos1, pos2, pos3, .....')",
+        rating="Overall rating (1-99, auto-filled from SoFIFA if recognized)",
+        potential="Potential rating (1-99, auto-filled from SoFIFA if recognized)",
+        alt_positions="Alternative positions separated by commas (optional - auto-filled from SoFIFA)",
         club="Target club role (defaults to your club)",
     )
-    @app_commands.autocomplete(position=position_autocomplete)
+    @app_commands.autocomplete(
+        player=squad_player_autocomplete,
+        position=position_autocomplete,
+    )
     async def slash_player_add(
         self,
         interaction: discord.Interaction,
         player: str,
-        position: str,
+        source: Literal["SoFIFA FC 26 (Auto)", "Custom Player"] = "SoFIFA FC 26 (Auto)",
+        position: Optional[str] = None,
         status: Literal["starting", "bench"] = "starting",
         number: Optional[int] = None,
-        rating: Optional[app_commands.Range[int, 1, 99]] = 75,
-        potential: Optional[app_commands.Range[int, 1, 99]] = 80,
+        rating: Optional[app_commands.Range[int, 1, 99]] = None,
+        potential: Optional[app_commands.Range[int, 1, 99]] = None,
         alt_positions: Optional[str] = None,
         club: Optional[discord.Role] = None,
     ):
@@ -451,24 +559,178 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             await send_msg(interaction, embed=error_embed("Permission Denied", perm_msg), ephemeral=True)
             return
 
+        clean_p = player.strip()
+        is_explicit_custom = (
+            source == "Custom Player"
+            or clean_p.lower().startswith("custom:")
+            or (clean_p.startswith("<@") and clean_p.endswith(">"))
+        )
+
+        sofifa_data = None
+        if not is_explicit_custom:
+            # Check numeric ID from autocomplete choice value
+            if clean_p.isdigit():
+                sofifa_data = await self.db.get_cached_sofifa_player(clean_p)
+            elif ":" in clean_p and clean_p.split(":")[0].isdigit():
+                sofifa_data = await self.db.get_cached_sofifa_player(clean_p.split(":")[0])
+
+            if not sofifa_data:
+                sofifa_data = await self.db.get_cached_sofifa_player(clean_p)
+
+            if not sofifa_data and len(clean_p) >= 3:
+                try:
+                    fetched = await fetch_sofifa_players(keyword=clean_p, timeout=5)
+                    if fetched:
+                        await self.db.cache_sofifa_players(fetched)
+                        clean_lower = clean_p.lower()
+                        for r in fetched:
+                            if clean_lower in r["name"].lower() or clean_lower in r["full_name"].lower():
+                                sofifa_data = r
+                                break
+                        if not sofifa_data:
+                            sofifa_data = fetched[0]
+                except Exception as e:
+                    logger.debug("Live fetch error during squad add: %s", e)
+
+        # Player not found in SoFIFA and user selected SoFIFA Auto
+        if not is_explicit_custom and not sofifa_data:
+            view = AddAsCustomPlayerView(
+                squad_cog=self,
+                target_club=target_club,
+                raw_name=clean_p,
+                position=position.upper().strip() if position else "ST",
+                status=status,
+                number=number,
+                rating=rating if rating is not None else 75,
+                potential=potential if potential is not None else 80,
+                alt_positions=alt_positions,
+                user=interaction.user,
+            )
+            embed = create_beastly_embed(
+                title="🔍 Player Not Found in SoFIFA FC 26",
+                description=(
+                    f"Could not find **{clean_p}** in the official SoFIFA Sep 19, 2025 FC 26 database.\n\n"
+                    f"Would you like to register them as a **Custom Player** in **[{target_club['tag']}] {target_club['name']}**?"
+                ),
+                color=COLOR_BEASTLY_GOLD,
+            )
+            embed.add_field(name="Assigned Position", value=f"`{position or 'ST'}`", inline=True)
+            embed.add_field(name="Rating / Potential", value=f"`{rating or 75}` / `{potential or 80}`", inline=True)
+            embed.add_field(name="Lineup Status", value=f"`{status.title()}`", inline=True)
+            embed.set_footer(text="Click below to register as a custom player, or cancel to try another name.")
+            await send_msg(interaction, embed=embed, view=view)
+            return
+
+        # Prepare player fields
+        if sofifa_data:
+            final_name = clean_p if not clean_p.isdigit() else (sofifa_data.get("full_name") or sofifa_data["name"])
+            final_pos = (position.upper().strip() if position else None) or sofifa_data.get("primary_pos", "ST")
+            final_rating = rating if rating is not None else sofifa_data.get("overall_rating", 75)
+            final_pot = potential if potential is not None else sofifa_data.get("potential", final_rating)
+            if alt_positions is not None:
+                final_alts = alt_positions
+            else:
+                raw_positions = [x.strip() for x in sofifa_data.get("positions", "").split(",") if x.strip()]
+                alts = [p for p in raw_positions if p != final_pos]
+                final_alts = ", ".join(alts) if alts else None
+            avatar_url = sofifa_data.get("avatar")
+            team_origin = sofifa_data.get("team")
+        else:
+            final_name = clean_p[7:].strip() if clean_p.lower().startswith("custom:") else clean_p
+            final_pos = position.upper().strip() if position else "ST"
+            final_rating = rating if rating is not None else 75
+            final_pot = potential if potential is not None else 80
+            final_alts = alt_positions
+            avatar_url = None
+            team_origin = None
+
         success, msg, p_data = await self.db.add_club_player(
             guild_id=interaction.guild_id,
-            club_query=club if club else target_club["id"],
-            player_name=player,
-            position=position,
+            club_query=target_club["id"],
+            player_name=final_name,
+            position=final_pos,
             status=status,
             number=number,
-            rating=rating,
-            potential=potential,
-            alt_positions=alt_positions,
+            rating=final_rating,
+            potential=final_pot,
+            alt_positions=final_alts,
             default_owner_id=interaction.user.id,
         )
         if not success:
             await send_msg(interaction, embed=error_embed("Add Player Failed", msg), ephemeral=True)
             return
 
-        embed = success_embed("Player Registered", msg)
+        if sofifa_data:
+            desc = (
+                f"✅ **{final_name}** successfully registered from SoFIFA FC 26 database!\n\n"
+                f"• **Position:** `{final_pos}`" + (f" *(Alts: `{final_alts}`)*" if final_alts else "") + "\n"
+                f"• **Rating:** ⭐ **{final_rating} OVR** (Potential: **{final_pot}**)\n"
+                f"• **Original Club:** {team_origin or 'Free Agent'}\n"
+                f"• **Lineup Status:** `{status.title()}`" + (f" (Jersey #{number})" if number is not None else "") + "\n"
+                f"• **Club:** **[{target_club['tag']}] {target_club['name']}**\n\n"
+                f"💡 *You can edit this player anytime with `/player edit` or `bb!editplayer`.*"
+            )
+            embed = create_beastly_embed(
+                title="⭐ Player Registered (SoFIFA FC 26)",
+                description=desc,
+                color=COLOR_SUCCESS,
+            )
+            if avatar_url:
+                embed.set_thumbnail(url=avatar_url)
+        else:
+            desc = (
+                f"✅ **{final_name}** successfully registered as a **Custom Player**!\n\n"
+                f"• **Position:** `{final_pos}`" + (f" *(Alts: `{final_alts}`)*" if final_alts else "") + "\n"
+                f"• **Rating:** ⭐ **{final_rating} OVR** (Potential: **{final_pot}**)\n"
+                f"• **Lineup Status:** `{status.title()}`" + (f" (Jersey #{number})" if number is not None else "") + "\n"
+                f"• **Club:** **[{target_club['tag']}] {target_club['name']}**\n\n"
+                f"💡 *You can edit this player anytime with `/player edit` or `bb!editplayer`.*"
+            )
+            embed = create_beastly_embed(
+                title="👤 Custom Player Registered",
+                description=desc,
+                color=COLOR_SUCCESS,
+            )
+
         await send_msg(interaction, embed=embed)
+
+    @player_group.command(name="addcustom", description="Directly add a custom or server player to your club squad.")
+    @app_commands.describe(
+        player="Custom player name or Discord mention",
+        position="Primary position (e.g. ST, CB, CM, GK, default: ST)",
+        status="Lineup status: starting (Starting XI) or bench (Substitutes)",
+        number="Jersey number (0-99)",
+        rating="Overall rating (1-99, default: 75)",
+        potential="Potential rating (1-99, default: 80)",
+        alt_positions="Alternative positions separated by commas (e.g. 'pos1, pos2, pos3, .....')",
+        club="Target club role (defaults to your club)",
+    )
+    @app_commands.autocomplete(position=position_autocomplete)
+    async def slash_player_addcustom(
+        self,
+        interaction: discord.Interaction,
+        player: str,
+        position: Optional[str] = "ST",
+        status: Literal["starting", "bench"] = "starting",
+        number: Optional[int] = None,
+        rating: Optional[app_commands.Range[int, 1, 99]] = 75,
+        potential: Optional[app_commands.Range[int, 1, 99]] = 80,
+        alt_positions: Optional[str] = None,
+        club: Optional[discord.Role] = None,
+    ):
+        """Direct shortcut to add a custom player without SoFIFA lookup."""
+        await self.slash_player_add(
+            interaction=interaction,
+            player=player,
+            source="Custom Player",
+            position=position,
+            status=status,
+            number=number,
+            rating=rating,
+            potential=potential,
+            alt_positions=alt_positions,
+            club=club,
+        )
 
     @player_group.command(name="edit", description="Edit an existing player's details.")
     @app_commands.describe(
@@ -1115,36 +1377,47 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
     @commands.command(name="addplayer")
     async def prefix_addplayer(self, ctx: commands.Context, *args):
         """
-        Add a player to a club squad (Starting XI or Bench).
-        Usage: bb!addplayer <player> <position> [status] [number] [rating] [potential] ["pos1, pos2, pos3, ....."] [@club_role]
-        Example: bb!addplayer Mbappe ST starting 9 91 95 "LW, RW, CAM" @RealMadrid
+        Add a player to a club squad (SoFIFA FC 26 auto-fill or Custom Player).
+        Usage:
+        • bb!addplayer <player_name> [@club_role]
+        • bb!addplayer <player_name> <position> [status] [number] [rating] [potential] [@club_role]
         """
         target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
         clean_args = [a for a in args if not (a.startswith("<@&") and a.endswith(">"))]
 
-        if len(clean_args) < 2:
+        if not clean_args:
             await ctx.send(
                 embed=error_embed(
-                    "Missing Parameters",
-                    "Usage: `bb!addplayer <player> <position> [status] [number] [rating] [potential] [\"pos1, pos2, pos3, .....\"] [@club_role]`\n"
-                    f"Valid Positions: {', '.join(VALID_POSITIONS)}",
+                    "Missing Player Name",
+                    "**Usage:** `bb!addplayer <player_name> [position] [status] [number] [rating] [potential] [@club_role]`\n\n"
+                    "**Examples:**\n"
+                    "• `bb!addplayer Mbappe` *(auto-fills 91 ST from SoFIFA)*\n"
+                    "• `bb!addplayer Haaland 9 starting`\n"
+                    "• `bb!addplayer \"Custom Guy\" ST 80 85`\n"
+                    "• `bb!addcustomplayer <name> <pos>` *(direct custom player)*",
                 )
             )
             return
 
-        player = clean_args[0]
-        position = clean_args[1]
+        raw_player = clean_args[0]
+        remaining = clean_args[1:]
+
+        # Check if next argument is an explicit position
+        position = None
+        if remaining and remaining[0].upper().strip() in VALID_POSITIONS:
+            position = remaining[0].upper().strip()
+            remaining = remaining[1:]
 
         status = "starting"
         number = None
-        rating = 75
-        potential = 80
+        rating = None
+        potential = None
         alt_positions = None
 
         nums = []
         text_alts = []
 
-        for arg in clean_args[2:]:
+        for arg in remaining:
             al = arg.lower().strip()
             if al in ("starting", "bench"):
                 status = al
@@ -1172,7 +1445,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         if len(nums) == 1:
             if number is None:
                 number = nums[0]
-            elif rating == 75:
+            elif rating is None:
                 rating = nums[0]
         elif len(nums) == 2:
             if number is None:
@@ -1216,24 +1489,127 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             await ctx.send(embed=error_embed("Permission Denied", perm_msg))
             return
 
+        # Check SoFIFA if not Discord mention or explicit custom
+        sofifa_data = None
+        clean_name = raw_player.strip()
+        is_custom_prefix = clean_name.lower().startswith("custom:")
+        is_mention = clean_name.startswith("<@") and clean_name.endswith(">")
+
+        if not is_custom_prefix and not is_mention:
+            if clean_name.isdigit():
+                sofifa_data = await self.db.get_cached_sofifa_player(clean_name)
+            elif ":" in clean_name and clean_name.split(":")[0].isdigit():
+                sofifa_data = await self.db.get_cached_sofifa_player(clean_name.split(":")[0])
+
+            if not sofifa_data:
+                sofifa_data = await self.db.get_cached_sofifa_player(clean_name)
+
+            if not sofifa_data and len(clean_name) >= 3:
+                try:
+                    fetched = await fetch_sofifa_players(keyword=clean_name, timeout=5)
+                    if fetched:
+                        await self.db.cache_sofifa_players(fetched)
+                        clean_lower = clean_name.lower()
+                        for r in fetched:
+                            if clean_lower in r["name"].lower() or clean_lower in r["full_name"].lower():
+                                sofifa_data = r
+                                break
+                        if not sofifa_data:
+                            sofifa_data = fetched[0]
+                except Exception:
+                    pass
+
+        if sofifa_data:
+            final_name = clean_name if not clean_name.isdigit() else (sofifa_data.get("full_name") or sofifa_data["name"])
+            final_pos = position or sofifa_data.get("primary_pos", "ST")
+            final_rating = rating if rating is not None else sofifa_data.get("overall_rating", 75)
+            final_pot = potential if potential is not None else sofifa_data.get("potential", final_rating)
+            if alt_positions is not None:
+                final_alts = alt_positions
+            else:
+                raw_positions = [x.strip() for x in sofifa_data.get("positions", "").split(",") if x.strip()]
+                alts = [p for p in raw_positions if p != final_pos]
+                final_alts = ", ".join(alts) if alts else None
+            avatar_url = sofifa_data.get("avatar")
+            team_origin = sofifa_data.get("team")
+        else:
+            final_name = clean_name[7:].strip() if is_custom_prefix else clean_name
+            final_pos = position or "ST"
+            final_rating = rating if rating is not None else 75
+            final_pot = potential if potential is not None else 80
+            final_alts = alt_positions
+            avatar_url = None
+            team_origin = None
+
         success, msg, p_data = await self.db.add_club_player(
             guild_id=ctx.guild.id,
             club_query=target_role if target_role else target_club["id"],
-            player_name=player,
-            position=position,
+            player_name=final_name,
+            position=final_pos,
             status=status,
             number=number,
-            rating=rating,
-            potential=potential,
-            alt_positions=alt_positions,
+            rating=final_rating,
+            potential=final_pot,
+            alt_positions=final_alts,
             default_owner_id=ctx.author.id,
         )
         if not success:
             await ctx.send(embed=error_embed("Add Player Failed", msg))
             return
 
-        embed = success_embed("Player Registered", msg)
+        if sofifa_data:
+            desc = (
+                f"✅ **{final_name}** registered from SoFIFA FC 26 database!\n\n"
+                f"• **Position:** `{final_pos}`" + (f" *(Alts: `{final_alts}`)*" if final_alts else "") + "\n"
+                f"• **Rating:** ⭐ **{final_rating} OVR** (Potential: **{final_pot}**)\n"
+                f"• **Original Club:** {team_origin or 'Free Agent'}\n"
+                f"• **Lineup Status:** `{status.title()}`" + (f" (Jersey #{number})" if number is not None else "") + "\n"
+                f"• **Club:** **[{target_club['tag']}] {target_club['name']}**\n\n"
+                f"💡 *You can edit this player anytime with `/player edit` or `bb!editplayer`.*"
+            )
+            embed = create_beastly_embed(
+                title="⭐ Player Registered (SoFIFA FC 26)",
+                description=desc,
+                color=COLOR_SUCCESS,
+            )
+            if avatar_url:
+                embed.set_thumbnail(url=avatar_url)
+        else:
+            desc = (
+                f"✅ **{final_name}** registered as a **Custom Player**!\n\n"
+                f"• **Position:** `{final_pos}`" + (f" *(Alts: `{final_alts}`)*" if final_alts else "") + "\n"
+                f"• **Rating:** ⭐ **{final_rating} OVR** (Potential: **{final_pot}**)\n"
+                f"• **Lineup Status:** `{status.title()}`" + (f" (Jersey #{number})" if number is not None else "") + "\n"
+                f"• **Club:** **[{target_club['tag']}] {target_club['name']}**\n\n"
+                f"💡 *You can edit this player anytime with `/player edit` or `bb!editplayer`.*"
+            )
+            embed = create_beastly_embed(
+                title="👤 Custom Player Registered",
+                description=desc,
+                color=COLOR_SUCCESS,
+            )
+
         await ctx.send(embed=embed)
+
+    @commands.command(name="addcustomplayer", aliases=["customplayer"])
+    async def prefix_addcustomplayer(self, ctx: commands.Context, *args):
+        """
+        Directly add a custom or server player to your squad.
+        Usage: bb!addcustomplayer <name> [position] [status] [number] [rating] [potential] [@club]
+        Example: bb!addcustomplayer "John Doe" CAM starting 10 82 86
+        """
+        if not args:
+            await ctx.send(
+                embed=error_embed(
+                    "Missing Parameters",
+                    "**Usage:** `bb!addcustomplayer <player_name> [position] [status] [number] [rating] [potential] [@club]`\n"
+                    "**Example:** `bb!addcustomplayer \"John Doe\" CAM starting 10 82 86`",
+                )
+            )
+            return
+        new_args = list(args)
+        new_args[0] = f"custom:{new_args[0]}"
+        await self.prefix_addplayer.callback(self, ctx, *new_args)
 
     @commands.command(name="editplayer")
     async def prefix_editplayer(self, ctx: commands.Context, *args):

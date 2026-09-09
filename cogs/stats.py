@@ -15,6 +15,7 @@ from utils.embeds import (
     create_beastly_embed,
     error_embed,
 )
+from utils.name_matcher import autocomplete_players_search, autocomplete_clubs_search
 
 logger = logging.getLogger("BeastlyBank.Stats")
 
@@ -24,6 +25,43 @@ COMPETITION_CHOICES = [
     app_commands.Choice(name="Champions League (UCL)", value="ucl"),
     app_commands.Choice(name="Cup", value="cup"),
 ]
+
+
+async def tournament_player_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    """Fast keystroke autocomplete suggesting tournament players with club names."""
+    db = interaction.client.db  # type: ignore
+    try:
+        players = await db.get_distinct_tournament_players(interaction.guild_id)
+        player_pairs = [(p["player_name"], p["team_name"]) for p in players]
+        matches = autocomplete_players_search(current, player_pairs, limit=25)
+        return [
+            app_commands.Choice(name=f"{p} ({t})"[:100], value=p)
+            for p, t in matches
+        ]
+    except Exception as e:
+        logger.debug("Player autocomplete error: %s", e)
+        return []
+
+
+async def tournament_club_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> List[app_commands.Choice[str]]:
+    """Keystroke autocomplete suggesting tournament clubs."""
+    db = interaction.client.db  # type: ignore
+    try:
+        clubs = await db.get_distinct_tournament_clubs(guild_id=interaction.guild_id)
+        matches = autocomplete_clubs_search(current, clubs, limit=25)
+        return [
+            app_commands.Choice(name=c[:100], value=c)
+            for c in matches
+        ]
+    except Exception as e:
+        logger.debug("Club autocomplete error: %s", e)
+        return []
 
 
 class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament Player Stats & Leaderboards"):
@@ -223,17 +261,26 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
 
     @app_commands.command(name="player", description="Inspect complete performance stats, minutes, and rating for a player.")
     @app_commands.describe(
-        name="Player name to search",
+        name="Player name to search (autocomplete suggestions as you type)",
         season="Specific season number (optional, default: all-time career)",
     )
+    @app_commands.autocomplete(name=tournament_player_autocomplete)
     async def stats_player(self, interaction: discord.Interaction, name: str, season: Optional[int] = None):
         await interaction.response.defer()
         await self.db.ensure_tournament_seeded(interaction.guild_id)
         profile = await self.db.get_player_profile(interaction.guild_id, name, season_number=season)
         if not profile:
             season_str = f" in Season {season}" if season else ""
+            suggestions = await self.db.get_player_name_suggestions(interaction.guild_id, name, season_number=season)
+
+            desc = f"No tournament match records found for player **{name}**{season_str}."
+            if suggestions:
+                sugg_str = ", ".join(f"**{s}**" for s in suggestions)
+                desc += f"\n\n💡 **Did you mean**: {sugg_str}?"
+            desc += "\n\n*(Tip: Use autocomplete suggestions as you type `/stats player` or check squad rosters with `/stats club`)*"
+
             await interaction.followup.send(
-                embed=error_embed("Player Not Found", f"No tournament match records found for player `{name}`{season_str}."),
+                embed=error_embed("Player Not Found", desc),
                 ephemeral=True,
             )
             return
@@ -286,11 +333,12 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
 
     @app_commands.command(name="club", description="Inspect all player stats, minutes, and matches for a club in a tournament.")
     @app_commands.describe(
-        club="Name of the club (e.g. Manchester City, Chelsea, PSG)",
+        club="Name of the club (e.g. Manchester City, Chelsea, PSG, Bayern)",
         competition="Competition type (league, ucl, cup, default: league)",
         season="Specific season number to view (e.g. 1, default: active season)",
     )
     @app_commands.choices(competition=COMPETITION_CHOICES)
+    @app_commands.autocomplete(club=tournament_club_autocomplete)
     async def stats_club(
         self,
         interaction: discord.Interaction,
@@ -312,8 +360,14 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
 
         players = await self.db.get_club_player_stats(t["id"], club)
         if not players:
+            available_clubs = await self.db.get_distinct_tournament_clubs(tournament_id=t["id"])
+            clubs_sample = ", ".join(f"**{c}**" for c in available_clubs[:6])
+            desc = f"No tournament match records found for club matching `{club}` in **{t['name']}**."
+            if available_clubs:
+                desc += f"\n\n📋 **Available clubs in this tournament**: {clubs_sample}..."
+            desc += "\n*(Tip: Use autocomplete suggestions as you type `/stats club`)*"
             await interaction.followup.send(
-                embed=error_embed("No Club Records", f"No tournament match records found for club matching `{club}` in **{t['name']}**."),
+                embed=error_embed("No Club Records", desc),
                 ephemeral=True,
             )
             return

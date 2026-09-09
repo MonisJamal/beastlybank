@@ -76,7 +76,7 @@ class FixtureSelect(discord.ui.Select):
 
         embed = create_beastly_embed(
             title=f"🏟️ Match Center • Matchday {f['matchday']}",
-            description="\\n".join(desc_lines),
+            description="\n".join(desc_lines),
             color=COLOR_BEASTLY_GOLD,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -95,13 +95,13 @@ class MatchdayNavigatorView(discord.ui.View):
         t = await self.bot.db.get_tournament_by_id(self.tournament_id)
         t_name = t["name"] if t else "League"
 
-        lines = [f"**Matchday {self.current_md} of {self.max_md}**\\n"]
+        lines = [f"**Matchday {self.current_md} of {self.max_md}**\n"]
         for f in fixtures:
             lines.append(format_fixture_line(f))
 
         embed = create_beastly_embed(
             title=f"📅 {t_name} • Matchday {self.current_md}",
-            description="\\n".join(lines),
+            description="\n".join(lines),
             color=COLOR_BEASTLY_GOLD,
         )
 
@@ -179,13 +179,13 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
         max_md = t["total_matchdays"] or 38
         fixtures = await self.db.get_tournament_fixtures(t["id"], matchday=target_md)
 
-        lines = [f"**Matchday {target_md} of {max_md}**\\n"]
+        lines = [f"**Matchday {target_md} of {max_md}**\n"]
         for f in fixtures:
             lines.append(format_fixture_line(f))
 
         embed = create_beastly_embed(
             title=f"📅 {t['name']} • Matchday {target_md}",
-            description="\\n".join(lines),
+            description="\n".join(lines),
             color=COLOR_BEASTLY_GOLD,
         )
 
@@ -246,14 +246,14 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
                 payouts = await self.db.settle_matchday_bets(saved["id"], matchday=md)
                 settled_total += len([p for p in payouts if p["status"] == "won"])
 
-            champ_msg = f"• Champion: **{saved.get('champion', 'TBD')}**\\n" if saved.get("champion") else ""
+            champ_msg = f"• Champion: **{saved.get('champion', 'TBD')}**\n" if saved.get("champion") else ""
             await interaction.followup.send(
                 embed=success_embed(
                     "Tournament Imported Successfully!",
-                    f"🏆 **{saved['name']}**\\n"
-                    f"• Fixtures Loaded: **{parsed['total_fixtures']}**\\n"
-                    f"• Total Matchdays: **{saved['total_matchdays']}**\\n"
-                    f"• Teams: **{len(parsed['standings'])}**\\n"
+                    f"🏆 **{saved['name']}**\n"
+                    f"• Fixtures Loaded: **{parsed['total_fixtures']}**\n"
+                    f"• Total Matchdays: **{saved['total_matchdays']}**\n"
+                    f"• Teams: **{len(parsed['standings'])}**\n"
                     f"{champ_msg}"
                     f"• Winning Bets Settled: **{settled_total}**",
                 )
@@ -300,9 +300,9 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
         await interaction.followup.send(
             embed=success_embed(
                 "Live Match Scores Synced!",
-                f"⚡ **{saved['name']}** is up to date!\\n"
-                f"• Latest Matchday: **{parsed['highest_matchday']}**\\n"
-                f"• Fixtures Synced: **{parsed['total_fixtures']}**\\n"
+                f"⚡ **{saved['name']}** is up to date!\n"
+                f"• Latest Matchday: **{parsed['highest_matchday']}**\n"
+                f"• Fixtures Synced: **{parsed['total_fixtures']}**\n"
                 f"• Bets Paid Out: **{settled_total}**",
             )
         )
@@ -363,7 +363,7 @@ class Standings(commands.Cog):
 
         embed = create_beastly_embed(
             title=f"🏆 {t['name']} • Standings Table",
-            description="\\n".join(lines),
+            description="\n".join(lines),
             color=COLOR_BEASTLY_GOLD,
         )
         await interaction.followup.send(embed=embed)

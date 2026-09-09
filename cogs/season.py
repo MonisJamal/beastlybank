@@ -48,7 +48,7 @@ class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Sea
         if existing:
             ok, msg, settled = await self.db.conclude_tournament(existing["id"])
             if ok:
-                archived_msg = f"📦 **{existing['name']}** concluded & archived to Hall of Fame!\\n"
+                archived_msg = f"📦 **{existing['name']}** concluded & archived to Hall of Fame!\n"
 
         # 2. Determine season number
         hist = await self.db.get_season_history(interaction.guild_id)

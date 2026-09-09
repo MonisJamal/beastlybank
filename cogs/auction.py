@@ -210,28 +210,42 @@ def auction_embed(auction: Dict[str, Any], seller_club: Optional[Dict[str, Any]]
 class AuctionBidButton(discord.ui.Button):
     """Button to place a specific increment bid."""
 
-    def __init__(self, increment: int, label: str):
+    def __init__(self, auction_id: int, increment: int, label: str):
         super().__init__(
             label=label,
             style=discord.ButtonStyle.success,
-            custom_id=f"auc_bid:{increment}",
+            custom_id=f"auc_bid:{auction_id}:{increment}",
         )
+        self.auction_id = auction_id
         self.increment = increment
 
     async def callback(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        cog: Auction = interaction.client.get_cog("Auction")  # type: ignore
-        if not cog:
-            await interaction.followup.send("Auction system unavailable.", ephemeral=True)
-            return
 
-        auction_view: MarketAuctionView = self.view  # type: ignore
-        auction_id = auction_view.auction_id
+        auction_id = getattr(self, "auction_id", None)
+        if auction_id is None and self.custom_id:
+            try:
+                auction_id = int(self.custom_id.split(":")[1])
+            except (IndexError, ValueError):
+                pass
+        if auction_id is None and hasattr(self, "view") and getattr(self.view, "auction_id", None):
+            auction_id = self.view.auction_id
+
+        increment = getattr(self, "increment", None)
+        if increment is None and self.custom_id:
+            try:
+                increment = int(self.custom_id.split(":")[2])
+            except (IndexError, ValueError):
+                pass
+
+        if not auction_id or not increment:
+            await interaction.followup.send(embed=error_embed("Error", "Could not identify auction."), ephemeral=True)
+            return
 
         success, msg, updated_auction, outbid_info = await interaction.client.db.place_auction_bid(  # type: ignore
             auction_id=auction_id,
             bidder_id=interaction.user.id,
-            increment=self.increment,
+            increment=increment,
             guild_id=interaction.guild_id,
         )
 
@@ -254,14 +268,15 @@ class AuctionBidButton(discord.ui.Button):
 
         new_embed = auction_embed(updated_auction, seller_club=seller_club)
         try:
-            await interaction.message.edit(embed=new_embed, view=auction_view)
+            view = getattr(self, "view", None) or MarketAuctionView(auction_id, updated_auction["max_increment"], is_active=True)
+            await interaction.message.edit(embed=new_embed, view=view)
         except Exception as e:
             logger.warning("Failed to edit auction message: %s", e)
 
         await interaction.followup.send(
             embed=success_embed(
                 "Bid Accepted!",
-                f"You successfully placed a bid of **{format_increment_label(self.increment)}**!\n"
+                f"You successfully placed a bid of **{format_increment_label(increment)}**!\n"
                 f"• Current high bid: **{updated_auction['current_bid']:,} Cash**\n"
                 f"• Escrow deducted from: **{updated_auction.get('escrow_source', 'treasury').capitalize()}**",
             ),
@@ -283,19 +298,28 @@ class AuctionBidButton(discord.ui.Button):
 class AuctionHistoryButton(discord.ui.Button):
     """Button to view recent bids."""
 
-    def __init__(self):
+    def __init__(self, auction_id: int):
         super().__init__(
             label="Bid History",
             emoji="📜",
             style=discord.ButtonStyle.secondary,
-            custom_id="auc_hist",
+            custom_id=f"auc_hist:{auction_id}",
             row=1,
         )
+        self.auction_id = auction_id
 
     async def callback(self, interaction: discord.Interaction):
-        auction_view: MarketAuctionView = self.view  # type: ignore
+        auction_id = getattr(self, "auction_id", None)
+        if auction_id is None and self.custom_id:
+            try:
+                auction_id = int(self.custom_id.split(":")[1])
+            except (IndexError, ValueError):
+                pass
+        if auction_id is None and hasattr(self, "view") and getattr(self.view, "auction_id", None):
+            auction_id = self.view.auction_id
+
         db = interaction.client.db  # type: ignore
-        bids = await db.get_auction_bids(auction_view.auction_id, limit=10)
+        bids = await db.get_auction_bids(auction_id, limit=10)
 
         if not bids:
             await interaction.response.send_message(
@@ -321,7 +345,7 @@ class AuctionHistoryButton(discord.ui.Button):
             lines.append(f"**#{i}** • **{amt:,} Cash** (+{format_increment_label(inc)}) by {bidder} ({src}) • <t:{ts}:R>")
 
         embed = create_beastly_embed(
-            title=f"📜 Bid History • Auction #{auction_view.auction_id}",
+            title=f"📜 Bid History • Auction #{auction_id}",
             description="\n".join(lines),
             color=COLOR_BEASTLY_GOLD,
         )
@@ -331,18 +355,26 @@ class AuctionHistoryButton(discord.ui.Button):
 class AuctionCancelButton(discord.ui.Button):
     """Button to cancel the auction (seller or admin)."""
 
-    def __init__(self):
+    def __init__(self, auction_id: int):
         super().__init__(
             label="Cancel Auction",
             emoji="❌",
             style=discord.ButtonStyle.danger,
-            custom_id="auc_cancel",
+            custom_id=f"auc_cancel:{auction_id}",
             row=1,
         )
+        self.auction_id = auction_id
 
     async def callback(self, interaction: discord.Interaction):
-        auction_view: MarketAuctionView = self.view  # type: ignore
-        auction_id = auction_view.auction_id
+        auction_id = getattr(self, "auction_id", None)
+        if auction_id is None and self.custom_id:
+            try:
+                auction_id = int(self.custom_id.split(":")[1])
+            except (IndexError, ValueError):
+                pass
+        if auction_id is None and hasattr(self, "view") and getattr(self.view, "auction_id", None):
+            auction_id = self.view.auction_id
+
         db = interaction.client.db  # type: ignore
         auction = await db.get_auction(auction_id)
 
@@ -368,13 +400,15 @@ class AuctionCancelButton(discord.ui.Button):
             await interaction.response.send_message(embed=error_embed("Cannot Cancel", msg), ephemeral=True)
             return
 
-        # Disable all buttons
-        for child in auction_view.children:
-            child.disabled = True
+        # Disable all buttons if view is accessible
+        if hasattr(self, "view") and self.view:
+            for child in self.view.children:
+                child.disabled = True
 
         cancelled_embed = auction_embed(updated_auction)
         try:
-            await interaction.message.edit(embed=cancelled_embed, view=auction_view)
+            view = getattr(self, "view", None) or MarketAuctionView(auction_id, updated_auction["max_increment"], is_active=False)
+            await interaction.message.edit(embed=cancelled_embed, view=view)
         except Exception:
             pass
 
@@ -394,12 +428,12 @@ class MarketAuctionView(discord.ui.View):
 
         increments = calculate_auction_increments(max_increment)
         for inc in increments:
-            btn = AuctionBidButton(increment=inc, label=format_increment_label(inc))
+            btn = AuctionBidButton(auction_id=auction_id, increment=inc, label=format_increment_label(inc))
             btn.disabled = not is_active
             self.add_item(btn)
 
-        hist_btn = AuctionHistoryButton()
-        cancel_btn = AuctionCancelButton()
+        hist_btn = AuctionHistoryButton(auction_id=auction_id)
+        cancel_btn = AuctionCancelButton(auction_id=auction_id)
         cancel_btn.disabled = not is_active
         self.add_item(hist_btn)
         self.add_item(cancel_btn)
@@ -611,6 +645,7 @@ class Auction(commands.GroupCog, name="auction", description="Manage BeastlyFC M
         )
 
         view = MarketAuctionView(auction["id"], parsed_inc, is_active=True)
+        self.bot.add_view(view)
         embed = auction_embed(auction, seller_club=seller_club)
 
         msg = await interaction.followup.send(embed=embed, view=view)
@@ -829,6 +864,7 @@ class Auction(commands.GroupCog, name="auction", description="Manage BeastlyFC M
         )
 
         view = MarketAuctionView(auction["id"], parsed_inc, is_active=True)
+        self.bot.add_view(view)
         embed = auction_embed(auction, seller_club=seller_club)
         msg = await ctx.send(embed=embed, view=view)
         await self.db.set_auction_message_id(auction["id"], msg.id)

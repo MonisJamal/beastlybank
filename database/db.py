@@ -384,6 +384,159 @@ class DatabaseManager:
                 "CREATE INDEX IF NOT EXISTS idx_auction_expires ON market_auctions (status, expires_at);"
             )
 
+            # Tournament & Match Simulator Tables
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tournaments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    name TEXT NOT NULL,
+                    season_number INTEGER NOT NULL DEFAULT 1,
+                    competition_type TEXT NOT NULL DEFAULT 'league',
+                    url TEXT DEFAULT NULL,
+                    current_matchday INTEGER NOT NULL DEFAULT 1,
+                    total_matchdays INTEGER NOT NULL DEFAULT 38,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    champion TEXT DEFAULT NULL,
+                    runner_up TEXT DEFAULT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tournament_fixtures (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tournament_id INTEGER NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    matchday INTEGER NOT NULL,
+                    match_uid TEXT DEFAULT NULL,
+                    home_team_id TEXT NOT NULL,
+                    away_team_id TEXT NOT NULL,
+                    home_team_name TEXT NOT NULL,
+                    away_team_name TEXT NOT NULL,
+                    home_team_short TEXT DEFAULT NULL,
+                    away_team_short TEXT DEFAULT NULL,
+                    goals_home INTEGER DEFAULT NULL,
+                    goals_away INTEGER DEFAULT NULL,
+                    penalties_home INTEGER DEFAULT 0,
+                    penalties_away INTEGER DEFAULT 0,
+                    is_finished INTEGER NOT NULL DEFAULT 0,
+                    replay_exists INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
+                );
+                """
+            )
+
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tournament_player_stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tournament_id INTEGER NOT NULL,
+                    guild_id INTEGER NOT NULL,
+                    player_name TEXT NOT NULL,
+                    team_name TEXT NOT NULL,
+                    club_id INTEGER DEFAULT NULL,
+                    goals INTEGER NOT NULL DEFAULT 0,
+                    assists INTEGER NOT NULL DEFAULT 0,
+                    own_goals INTEGER NOT NULL DEFAULT 0,
+                    yellow_cards INTEGER NOT NULL DEFAULT 0,
+                    red_cards INTEGER NOT NULL DEFAULT 0,
+                    clean_sheets INTEGER NOT NULL DEFAULT 0,
+                    matches_played INTEGER NOT NULL DEFAULT 0,
+                    minutes_played INTEGER NOT NULL DEFAULT 0,
+                    rating REAL NOT NULL DEFAULT 6.5,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
+                );
+                """
+            )
+
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tournament_standings (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    tournament_id INTEGER NOT NULL,
+                    team_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    short TEXT DEFAULT NULL,
+                    rank INTEGER NOT NULL,
+                    played INTEGER NOT NULL DEFAULT 0,
+                    won INTEGER NOT NULL DEFAULT 0,
+                    drawn INTEGER NOT NULL DEFAULT 0,
+                    lost INTEGER NOT NULL DEFAULT 0,
+                    goals_for INTEGER NOT NULL DEFAULT 0,
+                    goals_against INTEGER NOT NULL DEFAULT 0,
+                    goal_difference INTEGER NOT NULL DEFAULT 0,
+                    clean_sheets INTEGER NOT NULL DEFAULT 0,
+                    points INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
+                );
+                """
+            )
+
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS matchday_bets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    tournament_id INTEGER NOT NULL,
+                    matchday INTEGER NOT NULL,
+                    fixture_id INTEGER DEFAULT NULL,
+                    match_uid TEXT DEFAULT NULL,
+                    user_id INTEGER NOT NULL,
+                    bet_type TEXT NOT NULL,
+                    amount INTEGER NOT NULL,
+                    odds REAL NOT NULL DEFAULT 2.0,
+                    escrow_source TEXT NOT NULL DEFAULT 'personal',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    payout_amount INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    settled_at TEXT DEFAULT NULL,
+                    FOREIGN KEY (tournament_id) REFERENCES tournaments(id) ON DELETE CASCADE
+                );
+                """
+            )
+
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS season_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    season_number INTEGER NOT NULL,
+                    competition_name TEXT NOT NULL,
+                    champion TEXT NOT NULL,
+                    runner_up TEXT DEFAULT NULL,
+                    golden_boot_player TEXT DEFAULT NULL,
+                    golden_boot_goals INTEGER DEFAULT NULL,
+                    playmaker_player TEXT DEFAULT NULL,
+                    playmaker_assists INTEGER DEFAULT NULL,
+                    golden_glove_team TEXT DEFAULT NULL,
+                    golden_glove_clean_sheets INTEGER DEFAULT NULL,
+                    mvp_player TEXT DEFAULT NULL,
+                    mvp_rating REAL DEFAULT NULL,
+                    archived_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
+            await cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_tournament_guild_status ON tournaments (guild_id, status);"
+            )
+            await cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_fixture_tourn_md ON tournament_fixtures (tournament_id, matchday);"
+            )
+            await cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_player_stats_tourn ON tournament_player_stats (tournament_id, player_name);"
+            )
+            await cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_bets_tourn_md ON matchday_bets (tournament_id, matchday, status);"
+            )
+
             # Performance Indices
             await cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions (guild_id, sender_id, receiver_id);"
@@ -3780,3 +3933,549 @@ class DatabaseManager:
             await cur.execute("UPDATE market_auctions SET status = 'cancelled' WHERE id = ?;", (auction_id,))
             auction["status"] = "cancelled"
             return True, "Auction successfully cancelled and funds refunded.", auction
+
+
+    # =========================================================================
+    # TOURNAMENTS, MATCHES & MATCHDAY BETTING
+    # =========================================================================
+
+    async def save_parsed_tournament(
+        self,
+        guild_id: int,
+        tournament_data: Dict[str, Any],
+        url: Optional[str] = None,
+        season_number: int = 1,
+        competition_type: str = "league",
+    ) -> Dict[str, Any]:
+        """Insert or update parsed tournament, fixtures, standings, and player stats."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            name = tournament_data.get("tournament_name", "Tournament")
+            tot_md = tournament_data.get("highest_matchday", 38)
+            champion = tournament_data.get("champion")
+            runner_up = tournament_data.get("runner_up")
+
+            # Check if active tournament exists for this guild and competition_type
+            await cur.execute(
+                "SELECT * FROM tournaments WHERE guild_id = ? AND competition_type = ? AND status = 'active';",
+                (guild_id, competition_type),
+            )
+            existing = await cur.fetchone()
+            if existing:
+                tournament_id = existing["id"]
+                await cur.execute(
+                    """
+                    UPDATE tournaments
+                    SET name = ?, season_number = ?, url = COALESCE(?, url),
+                        total_matchdays = ?, champion = ?, runner_up = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?;
+                    """,
+                    (name, season_number, url, tot_md, champion, runner_up, tournament_id),
+                )
+            else:
+                await cur.execute(
+                    """
+                    INSERT INTO tournaments (
+                        guild_id, name, season_number, competition_type,
+                        url, current_matchday, total_matchdays, status, champion, runner_up
+                    ) VALUES (?, ?, ?, ?, ?, 1, ?, 'active', ?, ?);
+                    """,
+                    (guild_id, name, season_number, competition_type, url, tot_md, champion, runner_up),
+                )
+                tournament_id = cur.lastrowid
+
+            # Save Fixtures
+            fixtures_by_md = tournament_data.get("fixtures_by_matchday", {})
+            for md, match_list in fixtures_by_md.items():
+                for m in match_list:
+                    await cur.execute(
+                        """
+                        SELECT id FROM tournament_fixtures
+                        WHERE tournament_id = ? AND matchday = ? AND home_team_id = ? AND away_team_id = ?;
+                        """,
+                        (tournament_id, md, m["home_team_id"], m["away_team_id"]),
+                    )
+                    fix_row = await cur.fetchone()
+                    if fix_row:
+                        await cur.execute(
+                            """
+                            UPDATE tournament_fixtures
+                            SET goals_home = ?, goals_away = ?, penalties_home = ?, penalties_away = ?,
+                                is_finished = ?, replay_exists = ?, match_uid = COALESCE(?, match_uid)
+                            WHERE id = ?;
+                            """,
+                            (
+                                m["goals_home"], m["goals_away"], m["penalties_home"], m["penalties_away"],
+                                1 if m["is_finished"] else 0, 1 if m["replay_exists"] else 0,
+                                m.get("match_uid"), fix_row["id"],
+                            ),
+                        )
+                    else:
+                        await cur.execute(
+                            """
+                            INSERT INTO tournament_fixtures (
+                                tournament_id, guild_id, matchday, match_uid,
+                                home_team_id, away_team_id, home_team_name, away_team_name,
+                                home_team_short, away_team_short, goals_home, goals_away,
+                                penalties_home, penalties_away, is_finished, replay_exists
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                            """,
+                            (
+                                tournament_id, guild_id, md, m.get("match_uid"),
+                                m["home_team_id"], m["away_team_id"], m["home_team_name"], m["away_team_name"],
+                                m["home_team_short"], m["away_team_short"], m["goals_home"], m["goals_away"],
+                                m["penalties_home"], m["penalties_away"], 1 if m["is_finished"] else 0,
+                                1 if m["replay_exists"] else 0,
+                            ),
+                        )
+
+            # Save Standings
+            standings = tournament_data.get("standings", [])
+            for s in standings:
+                await cur.execute(
+                    "SELECT id FROM tournament_standings WHERE tournament_id = ? AND team_id = ?;",
+                    (tournament_id, s["team_id"]),
+                )
+                st_row = await cur.fetchone()
+                if st_row:
+                    await cur.execute(
+                        """
+                        UPDATE tournament_standings
+                        SET rank = ?, played = ?, won = ?, drawn = ?, lost = ?,
+                            goals_for = ?, goals_against = ?, goal_difference = ?,
+                            clean_sheets = ?, points = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?;
+                        """,
+                        (
+                            s["rank"], s["played"], s["won"], s["drawn"], s["lost"],
+                            s["goals_for"], s["goals_against"], s["goal_difference"],
+                            s["clean_sheets"], s["points"], st_row["id"],
+                        ),
+                    )
+                else:
+                    await cur.execute(
+                        """
+                        INSERT INTO tournament_standings (
+                            tournament_id, team_id, name, short, rank,
+                            played, won, drawn, lost, goals_for, goals_against,
+                            goal_difference, clean_sheets, points
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        """,
+                        (
+                            tournament_id, s["team_id"], s["name"], s["short"], s["rank"],
+                            s["played"], s["won"], s["drawn"], s["lost"], s["goals_for"],
+                            s["goals_against"], s["goal_difference"], s["clean_sheets"], s["points"],
+                        ),
+                    )
+
+            # Save Player Stats
+            all_players = tournament_data.get("player_stats", {}).get("all_players", [])
+            for p in all_players:
+                # Link club if exists
+                await cur.execute(
+                    "SELECT id FROM clubs WHERE guild_id = ? AND LOWER(name) LIKE ?;",
+                    (guild_id, f"%{p['team_name'].lower()}%"),
+                )
+                c_row = await cur.fetchone()
+                linked_club_id = c_row["id"] if c_row else None
+
+                await cur.execute(
+                    """
+                    SELECT id FROM tournament_player_stats
+                    WHERE tournament_id = ? AND LOWER(player_name) = LOWER(?) AND LOWER(team_name) = LOWER(?);
+                    """,
+                    (tournament_id, p["player_name"], p["team_name"]),
+                )
+                ps_row = await cur.fetchone()
+                if ps_row:
+                    await cur.execute(
+                        """
+                        UPDATE tournament_player_stats
+                        SET goals = ?, assists = ?, own_goals = ?, yellow_cards = ?,
+                            red_cards = ?, clean_sheets = ?, matches_played = ?,
+                            minutes_played = ?, rating = ?, club_id = COALESCE(?, club_id)
+                        WHERE id = ?;
+                        """,
+                        (
+                            p["goals"], p["assists"], p["own_goals"], p["yellow_cards"],
+                            p["red_cards"], p["clean_sheets"], p["matches_played"],
+                            p["minutes_played"], p["rating"], linked_club_id, ps_row["id"],
+                        ),
+                    )
+                else:
+                    await cur.execute(
+                        """
+                        INSERT INTO tournament_player_stats (
+                            tournament_id, guild_id, player_name, team_name, club_id,
+                            goals, assists, own_goals, yellow_cards, red_cards,
+                            clean_sheets, matches_played, minutes_played, rating
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                        """,
+                        (
+                            tournament_id, guild_id, p["player_name"], p["team_name"], linked_club_id,
+                            p["goals"], p["assists"], p["own_goals"], p["yellow_cards"], p["red_cards"],
+                            p["clean_sheets"], p["matches_played"], p["minutes_played"], p["rating"],
+                        ),
+                    )
+
+            await cur.execute("SELECT * FROM tournaments WHERE id = ?;", (tournament_id,))
+            t_row = await cur.fetchone()
+            return dict(t_row)
+
+    async def get_active_tournament(self, guild_id: int, competition_type: str = "league") -> Optional[Dict[str, Any]]:
+        """Fetch the currently active tournament for a given competition type in a guild."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM tournaments WHERE guild_id = ? AND competition_type = ? AND status = 'active' ORDER BY id DESC LIMIT 1;",
+                (guild_id, competition_type),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def get_tournament_by_id(self, tournament_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch tournament record by its ID."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT * FROM tournaments WHERE id = ?;", (tournament_id,))
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def get_tournament_fixtures(self, tournament_id: int, matchday: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Fetch fixtures for a tournament, optionally filtered by matchday."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            if matchday is not None:
+                await cur.execute(
+                    "SELECT * FROM tournament_fixtures WHERE tournament_id = ? AND matchday = ? ORDER BY id ASC;",
+                    (tournament_id, matchday),
+                )
+            else:
+                await cur.execute(
+                    "SELECT * FROM tournament_fixtures WHERE tournament_id = ? ORDER BY matchday ASC, id ASC;",
+                    (tournament_id,),
+                )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_tournament_standings(self, tournament_id: int) -> List[Dict[str, Any]]:
+        """Fetch sorted league standings for a tournament."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM tournament_standings WHERE tournament_id = ? ORDER BY rank ASC;",
+                (tournament_id,),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_tournament_leaderboard(
+        self, tournament_id: int, category: str = "goals", limit: int = 10
+    ) -> List[Dict[str, Any]]:
+        """Fetch player stat leaderboard (goals, assists, rating, clean_sheets, yellow_cards, red_cards)."""
+        valid_cats = {
+            "goals": "goals DESC, rating DESC",
+            "assists": "assists DESC, rating DESC",
+            "rating": "rating DESC, goals DESC",
+            "clean_sheets": "clean_sheets DESC, rating DESC",
+            "yellow_cards": "yellow_cards DESC",
+            "red_cards": "red_cards DESC",
+        }
+        order_clause = valid_cats.get(category, "goals DESC")
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            query = f"""
+                SELECT * FROM tournament_player_stats
+                WHERE tournament_id = ?
+                ORDER BY {order_clause}
+                LIMIT ?;
+            """
+            await cur.execute(query, (tournament_id, limit))
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_player_profile(self, guild_id: int, player_name: str) -> Optional[Dict[str, Any]]:
+        """Fetch cumulative player stats across active/past tournaments."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT
+                    player_name,
+                    team_name,
+                    SUM(goals) as total_goals,
+                    SUM(assists) as total_assists,
+                    SUM(own_goals) as total_own_goals,
+                    SUM(yellow_cards) as total_yellow_cards,
+                    SUM(red_cards) as total_red_cards,
+                    SUM(clean_sheets) as total_clean_sheets,
+                    SUM(matches_played) as total_matches,
+                    SUM(minutes_played) as total_minutes,
+                    AVG(rating) as avg_rating
+                FROM tournament_player_stats
+                WHERE guild_id = ? AND LOWER(player_name) LIKE ?
+                GROUP BY LOWER(player_name);
+                """,
+                (guild_id, f"%{player_name.strip().lower()}%"),
+            )
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def conclude_tournament(self, tournament_id: int) -> Tuple[bool, str, Dict[str, Any]]:
+        """Conclude and archive an active tournament, immortalizing awards in season_history."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT * FROM tournaments WHERE id = ?;", (tournament_id,))
+            row = await cur.fetchone()
+            if not row:
+                return False, "Tournament not found.", {}
+            t = dict(row)
+
+            # Get Standings & Awards
+            await cur.execute("SELECT * FROM tournament_standings WHERE tournament_id = ? ORDER BY rank ASC;", (tournament_id,))
+            standings = [dict(r) for r in await cur.fetchall()]
+            champ = t.get("champion") or (standings[0]["name"] if standings else "Unknown")
+            runner = t.get("runner_up") or (standings[1]["name"] if len(standings) > 1 else "Unknown")
+
+            # Golden Boot
+            await cur.execute("SELECT * FROM tournament_player_stats WHERE tournament_id = ? ORDER BY goals DESC LIMIT 1;", (tournament_id,))
+            gb_row = await cur.fetchone()
+            gb_p = gb_row["player_name"] if gb_row else None
+            gb_g = gb_row["goals"] if gb_row else 0
+
+            # Playmaker
+            await cur.execute("SELECT * FROM tournament_player_stats WHERE tournament_id = ? ORDER BY assists DESC LIMIT 1;", (tournament_id,))
+            pm_row = await cur.fetchone()
+            pm_p = pm_row["player_name"] if pm_row else None
+            pm_a = pm_row["assists"] if pm_row else 0
+
+            # Golden Glove
+            await cur.execute("SELECT * FROM tournament_standings WHERE tournament_id = ? ORDER BY clean_sheets DESC LIMIT 1;", (tournament_id,))
+            gg_row = await cur.fetchone()
+            gg_t = gg_row["name"] if gg_row else None
+            gg_cs = gg_row["clean_sheets"] if gg_row else 0
+
+            # MVP
+            await cur.execute("SELECT * FROM tournament_player_stats WHERE tournament_id = ? ORDER BY rating DESC LIMIT 1;", (tournament_id,))
+            mvp_row = await cur.fetchone()
+            mvp_p = mvp_row["player_name"] if mvp_row else None
+            mvp_r = mvp_row["rating"] if mvp_row else 6.5
+
+            # Save in season_history
+            await cur.execute(
+                """
+                INSERT INTO season_history (
+                    guild_id, season_number, competition_name, champion, runner_up,
+                    golden_boot_player, golden_boot_goals, playmaker_player, playmaker_assists,
+                    golden_glove_team, golden_glove_clean_sheets, mvp_player, mvp_rating
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    t["guild_id"], t["season_number"], t["name"], champ, runner,
+                    gb_p, gb_g, pm_p, pm_a, gg_t, gg_cs, mvp_p, mvp_r,
+                ),
+            )
+
+            # Mark completed
+            await cur.execute(
+                "UPDATE tournaments SET status = 'completed', champion = ?, runner_up = ? WHERE id = ?;",
+                (champ, runner, tournament_id),
+            )
+            t["status"] = "completed"
+            t["champion"] = champ
+            t["runner_up"] = runner
+            return True, f"Season {t['season_number']} concluded! {champ} crowned Champions!", t
+
+    async def get_season_history(self, guild_id: int, season_number: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Fetch archived season history for the Hall of Fame."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            if season_number is not None:
+                await cur.execute(
+                    "SELECT * FROM season_history WHERE guild_id = ? AND season_number = ? ORDER BY id DESC;",
+                    (guild_id, season_number),
+                )
+            else:
+                await cur.execute(
+                    "SELECT * FROM season_history WHERE guild_id = ? ORDER BY season_number DESC, id DESC;",
+                    (guild_id,),
+                )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def place_matchday_bet(
+        self,
+        guild_id: int,
+        tournament_id: int,
+        matchday: int,
+        fixture_id: int,
+        user_id: int,
+        bet_type: str,
+        amount: int,
+        odds: float = 2.0,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """Place a bet on a match fixture with escrow funding from Club Treasury or Personal Cash."""
+        if amount <= 0:
+            return False, "Bet amount must be positive.", {}
+
+        bet_type = bet_type.lower()
+        if bet_type not in ("home", "draw", "away"):
+            return False, "Bet choice must be 'home', 'draw', or 'away'.", {}
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            # Check fixture exists and is unfinished
+            await cur.execute("SELECT * FROM tournament_fixtures WHERE id = ?;", (fixture_id,))
+            f_row = await cur.fetchone()
+            if not f_row:
+                return False, "Fixture not found.", {}
+            fixture = dict(f_row)
+
+            if fixture["is_finished"]:
+                return False, "This match has already concluded. Bets can only be placed on unplayed fixtures.", {}
+
+            # Check funding: Club Treasury first, then Personal Cash
+            user_club = await self.get_club_by_user(guild_id, user_id)
+            user_club_id = user_club["id"] if user_club else None
+            funding_source = None
+
+            await self.get_or_create_user(user_id, guild_id)
+            await cur.execute("SELECT cash FROM users WHERE user_id = ? AND guild_id = ?;", (user_id, guild_id))
+            u_row = await cur.fetchone()
+            p_cash = u_row["cash"] if u_row else 0
+
+            if user_club and user_club.get("treasury_cash", 0) >= amount:
+                funding_source = "treasury"
+                await cur.execute("UPDATE clubs SET treasury_cash = treasury_cash - ? WHERE id = ?;", (amount, user_club_id))
+            elif p_cash >= amount:
+                funding_source = "personal"
+                await cur.execute("UPDATE users SET cash = cash - ? WHERE user_id = ? AND guild_id = ?;", (amount, user_id, guild_id))
+            else:
+                return False, f"Insufficient funds. You need **{amount:,} Cash** to place this bet.", {}
+
+            # Insert transaction
+            await cur.execute(
+                """
+                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                VALUES (?, ?, NULL, 'cash', ?, 'match_bet_escrow', ?);
+                """,
+                (guild_id, user_id, amount, f"Bet Escrow: {fixture['home_team_name']} vs {fixture['away_team_name']} ({bet_type.upper()})"),
+            )
+
+            # Insert bet
+            await cur.execute(
+                """
+                INSERT INTO matchday_bets (
+                    guild_id, tournament_id, matchday, fixture_id, match_uid,
+                    user_id, bet_type, amount, odds, escrow_source, status
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending');
+                """,
+                (
+                    guild_id, tournament_id, matchday, fixture_id, fixture.get("match_uid"),
+                    user_id, bet_type, amount, odds, funding_source,
+                ),
+            )
+            bet_id = cur.lastrowid
+            await cur.execute("SELECT * FROM matchday_bets WHERE id = ?;", (bet_id,))
+            bet_data = dict(await cur.fetchone())
+            return True, f"Bet placed! Choice: **{bet_type.upper()}**, Amount: **{amount:,} Cash** ({funding_source.capitalize()}).", bet_data
+
+    async def settle_matchday_bets(self, tournament_id: int, matchday: int) -> List[Dict[str, Any]]:
+        """Evaluate and disburse winning payouts for finished matchday fixtures."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT * FROM tournament_fixtures
+                WHERE tournament_id = ? AND matchday = ? AND is_finished = 1;
+                """,
+                (tournament_id, matchday),
+            )
+            finished_fixtures = [dict(r) for r in await cur.fetchall()]
+            if not finished_fixtures:
+                return []
+
+            fix_outcomes = {}
+            for f in finished_fixtures:
+                if f["goals_home"] > f["goals_away"]:
+                    outcome = "home"
+                elif f["goals_home"] < f["goals_away"]:
+                    outcome = "away"
+                else:
+                    outcome = "draw"
+                fix_outcomes[f["id"]] = outcome
+
+            await cur.execute(
+                """
+                SELECT * FROM matchday_bets
+                WHERE tournament_id = ? AND matchday = ? AND status = 'pending';
+                """,
+                (tournament_id, matchday),
+            )
+            pending_bets = [dict(r) for r in await cur.fetchall()]
+            payouts = []
+
+            for bet in pending_bets:
+                f_id = bet["fixture_id"]
+                if f_id not in fix_outcomes:
+                    continue
+
+                actual = fix_outcomes[f_id]
+                bet_id = bet["id"]
+                u_id = bet["user_id"]
+                g_id = bet["guild_id"]
+                src = bet["escrow_source"]
+                amt = bet["amount"]
+                odds = bet["odds"]
+
+                if bet["bet_type"] == actual:
+                    # Won!
+                    winnings = int(amt * odds)
+                    if src == "treasury":
+                        # Credit user's club treasury
+                        u_club = await self.get_club_by_user(g_id, u_id)
+                        if u_club:
+                            await cur.execute("UPDATE clubs SET treasury_cash = treasury_cash + ? WHERE id = ?;", (winnings, u_club["id"]))
+                        else:
+                            await cur.execute("UPDATE users SET cash = cash + ? WHERE user_id = ? AND guild_id = ?;", (winnings, u_id, g_id))
+                    else:
+                        await cur.execute("UPDATE users SET cash = cash + ? WHERE user_id = ? AND guild_id = ?;", (winnings, u_id, g_id))
+
+                    await cur.execute(
+                        """
+                        UPDATE matchday_bets
+                        SET status = 'won', payout_amount = ?, settled_at = CURRENT_TIMESTAMP
+                        WHERE id = ?;
+                        """,
+                        (winnings, bet_id),
+                    )
+                    await cur.execute(
+                        """
+                        INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                        VALUES (?, NULL, ?, 'cash', ?, 'match_bet_win', ?);
+                        """,
+                        (g_id, u_id, winnings, f"Matchday {matchday} Bet Win! ({winnings:,} Cash paid to {src})"),
+                    )
+                    payouts.append({
+                        "bet_id": bet_id,
+                        "user_id": u_id,
+                        "status": "won",
+                        "payout": winnings,
+                        "source": src,
+                    })
+                else:
+                    # Lost
+                    await cur.execute(
+                        "UPDATE matchday_bets SET status = 'lost', settled_at = CURRENT_TIMESTAMP WHERE id = ?;",
+                        (bet_id,),
+                    )
+                    payouts.append({
+                        "bet_id": bet_id,
+                        "user_id": u_id,
+                        "status": "lost",
+                        "payout": 0,
+                        "source": src,
+                    })
+
+            return payouts

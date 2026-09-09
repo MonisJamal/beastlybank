@@ -40,6 +40,10 @@ COGS = [
     "cogs.admin",
     "cogs.sofifa",
     "cogs.auction",
+    "cogs.matches",
+    "cogs.stats",
+    "cogs.betting",
+    "cogs.season",
     "utils.backup",
 ]
 
@@ -142,6 +146,28 @@ class BeastlyBankBot(commands.Bot):
             logger.info("Restored %d active auction views", len(active_aucs))
         except Exception as e:
             logger.warning("Could not restore active auction views: %s", e)
+
+        # Seed Season 1 data if no tournament exists yet
+        try:
+            s1_file = Path("data/beastly_s1_cup.html")
+            if s1_file.exists():
+                guild_target = BEASTLYFC_GUILD_ID if BEASTLYFC_GUILD_ID != 0 else 0
+                existing_t = await self.db.get_active_tournament(guild_target, "league")
+                if not existing_t:
+                    with open(s1_file, "r", encoding="utf-8") as f:
+                        html_text = f.read()
+                    from utils.match_parser import parse_matchsimulator_html
+                    parsed_s1 = parse_matchsimulator_html(html_text)
+                    saved_s1 = await self.db.save_parsed_tournament(
+                        guild_id=guild_target,
+                        tournament_data=parsed_s1,
+                        url="https://matchsimulator.com/cup/2859670/beastly-s1-league",
+                        season_number=1,
+                        competition_type="league",
+                    )
+                    logger.info("Auto-seeded Season 1 tournament (%s, %d fixtures)", saved_s1["name"], parsed_s1["total_fixtures"])
+        except Exception as e:
+            logger.warning("Could not auto-seed Season 1: %s", e)
 
         # Sync Slash Commands
         try:

@@ -1,0 +1,352 @@
+"""
+BeastlyFC Match Center Cog
+Interactive matchday fixtures viewer, league standings, live score sync, and HTML import.
+"""
+
+import io
+import logging
+from typing import Any, Dict, List, Optional
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+
+from utils.embeds import (
+    COLOR_BEASTLY_GOLD,
+    create_beastly_embed,
+    error_embed,
+    success_embed,
+)
+from utils.match_parser import fetch_tournament_html, parse_matchsimulator_html
+
+logger = logging.getLogger("BeastlyBank.Matches")
+
+
+def format_fixture_line(f: Dict[str, Any]) -> str:
+    h_team = f["home_team_name"]
+    a_team = f["away_team_name"]
+    if f["is_finished"]:
+        g_h = f.get("goals_home", 0)
+        g_a = f.get("goals_away", 0)
+        return f"⚽ **{h_team}** `{g_h} - {g_a}` **{a_team}**"
+    return f"⏳ **{h_team}** `vs` **{a_team}** *(Upcoming)*"
+
+
+class FixtureSelect(discord.ui.Select):
+    def __init__(self, fixtures: List[Dict[str, Any]]):
+        options = []
+        for i, f in enumerate(fixtures[:25]):
+            score_str = f"{f['goals_home']}-{f['goals_away']}" if f["is_finished"] else "vs"
+            label = f"{f['home_team_short'] or f['home_team_name'][:3]} {score_str} {f['away_team_short'] or f['away_team_name'][:3]}"
+            desc = f"{f['home_team_name']} vs {f['away_team_name']}"
+            options.append(discord.SelectOption(label=label, description=desc[:100], value=str(f["id"])))
+        super().__init__(placeholder="Select a fixture for match details...", min_values=1, max_values=1, options=options)
+        self.fixtures_map = {str(f["id"]): f for f in fixtures}
+
+    async def callback(self, interaction: discord.Interaction):
+        fixture_id = self.values[0]
+        f = self.fixtures_map.get(fixture_id)
+        if not f:
+            await interaction.response.send_message("Fixture details unavailable.", ephemeral=True)
+            return
+
+        h = f["home_team_name"]
+        a = f["away_team_name"]
+        finished = f["is_finished"]
+        gh = f.get("goals_home", 0)
+        ga = f.get("goals_away", 0)
+
+        desc_lines = []
+        if finished:
+            desc_lines.append(f"# {h}  `{gh} - {ga}`  {a}")
+            desc_lines.append("")
+            if gh > ga:
+                desc_lines.append(f"🏆 **Winner**: **{h}**")
+            elif gh < ga:
+                desc_lines.append(f"🏆 **Winner**: **{a}**")
+            else:
+                desc_lines.append("🤝 **Result**: **Draw**")
+
+            if ga == 0:
+                desc_lines.append(f"🧤 Clean Sheet: **{h}**")
+            if gh == 0:
+                desc_lines.append(f"🧤 Clean Sheet: **{a}**")
+        else:
+            desc_lines.append(f"# {h}  `vs`  {a}\nStatus: **Upcoming**")
+
+        embed = create_beastly_embed(
+            title=f"🏟️ Match Center • Matchday {f['matchday']}",
+            description="\\n".join(desc_lines),
+            color=COLOR_BEASTLY_GOLD,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+class MatchdayNavigatorView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, tournament_id: int, current_md: int, max_md: int):
+        super().__init__(timeout=180)
+        self.bot = bot
+        self.tournament_id = tournament_id
+        self.current_md = current_md
+        self.max_md = max_md
+
+    async def refresh_embed(self, interaction: discord.Interaction):
+        fixtures = await self.bot.db.get_tournament_fixtures(self.tournament_id, matchday=self.current_md)
+        t = await self.bot.db.get_tournament_by_id(self.tournament_id)
+        t_name = t["name"] if t else "League"
+
+        lines = [f"**Matchday {self.current_md} of {self.max_md}**\\n"]
+        for f in fixtures:
+            lines.append(format_fixture_line(f))
+
+        embed = create_beastly_embed(
+            title=f"📅 {t_name} • Matchday {self.current_md}",
+            description="\\n".join(lines),
+            color=COLOR_BEASTLY_GOLD,
+        )
+
+        # Update items
+        self.clear_items()
+        prev_btn = discord.ui.Button(label="◀ Previous", style=discord.ButtonStyle.secondary, disabled=(self.current_md <= 1))
+        next_btn = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, disabled=(self.current_md >= self.max_md))
+
+        async def prev_cb(itx: discord.Interaction):
+            self.current_md = max(1, self.current_md - 1)
+            await self.refresh_embed(itx)
+
+        async def next_cb(itx: discord.Interaction):
+            self.current_md = min(self.max_md, self.current_md + 1)
+            await self.refresh_embed(itx)
+
+        prev_btn.callback = prev_cb
+        next_btn.callback = next_cb
+        self.add_item(prev_btn)
+        self.add_item(next_btn)
+
+        if fixtures:
+            self.add_item(FixtureSelect(fixtures))
+
+        if not interaction.response.is_done():
+            await interaction.response.edit_message(embed=embed, view=self)
+        else:
+            await interaction.message.edit(embed=embed, view=self)
+
+    @discord.ui.button(label="◀ Previous", style=discord.ButtonStyle.secondary)
+    async def prev_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_md = max(1, self.current_md - 1)
+        await self.refresh_embed(interaction)
+
+    @discord.ui.button(label="Next ▶", style=discord.ButtonStyle.secondary)
+    async def next_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        self.current_md = min(self.max_md, self.current_md + 1)
+        await self.refresh_embed(interaction)
+
+
+class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Center & Fixtures"):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db = bot.db
+
+    @app_commands.command(name="view", description="Browse matchday fixtures and detailed match reports.")
+    @app_commands.describe(
+        matchday="Specific matchday to inspect (optional)",
+        competition="Competition type (league, ucl, cup, default: league)",
+    )
+    async def matches_view(
+        self,
+        interaction: discord.Interaction,
+        matchday: Optional[int] = None,
+        competition: str = "league",
+    ):
+        await interaction.response.defer()
+        t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+        if not t:
+            await interaction.followup.send(
+                embed=error_embed("No Active Tournament", f"No active `{competition}` tournament found. Use `/season start` to load one!"),
+                ephemeral=True,
+            )
+            return
+
+        target_md = matchday or t["current_matchday"] or 1
+        max_md = t["total_matchdays"] or 38
+        fixtures = await self.db.get_tournament_fixtures(t["id"], matchday=target_md)
+
+        lines = [f"**Matchday {target_md} of {max_md}**\\n"]
+        for f in fixtures:
+            lines.append(format_fixture_line(f))
+
+        embed = create_beastly_embed(
+            title=f"📅 {t['name']} • Matchday {target_md}",
+            description="\\n".join(lines),
+            color=COLOR_BEASTLY_GOLD,
+        )
+
+        view = MatchdayNavigatorView(self.bot, t["id"], target_md, max_md)
+        view.clear_items()
+        prev_btn = discord.ui.Button(label="◀ Previous", style=discord.ButtonStyle.secondary, disabled=(target_md <= 1))
+        next_btn = discord.ui.Button(label="Next ▶", style=discord.ButtonStyle.secondary, disabled=(target_md >= max_md))
+
+        async def prev_cb(itx: discord.Interaction):
+            view.current_md = max(1, view.current_md - 1)
+            await view.refresh_embed(itx)
+
+        async def next_cb(itx: discord.Interaction):
+            view.current_md = min(max_md, view.current_md + 1)
+            await view.refresh_embed(itx)
+
+        prev_btn.callback = prev_cb
+        next_btn.callback = next_cb
+        view.add_item(prev_btn)
+        view.add_item(next_btn)
+
+        if fixtures:
+            view.add_item(FixtureSelect(fixtures))
+
+        await interaction.followup.send(embed=embed, view=view)
+
+    @app_commands.command(name="import", description="Upload a saved tournament .html file from matchsimulator.com.")
+    @app_commands.describe(
+        file="Attach the saved .html webpage file from matchsimulator.com",
+        competition="Competition type (league, ucl, cup, default: league)",
+    )
+    async def matches_import(
+        self,
+        interaction: discord.Interaction,
+        file: discord.Attachment,
+        competition: str = "league",
+    ):
+        await interaction.response.defer()
+        if not file.filename.endswith((".html", ".htm")):
+            await interaction.followup.send(embed=error_embed("Invalid File", "Please upload a valid `.html` file."), ephemeral=True)
+            return
+
+        try:
+            content_bytes = await file.read()
+            html_text = content_bytes.decode("utf-8", errors="replace")
+            parsed = parse_matchsimulator_html(html_text)
+
+            saved = await self.db.save_parsed_tournament(
+                guild_id=interaction.guild_id,
+                tournament_data=parsed,
+                season_number=1,
+                competition_type=competition.lower(),
+            )
+
+            # Auto-settle pending bets for finished matchdays
+            settled_total = 0
+            for md in range(1, parsed.get("highest_matchday", 38) + 1):
+                payouts = await self.db.settle_matchday_bets(saved["id"], matchday=md)
+                settled_total += len([p for p in payouts if p["status"] == "won"])
+
+            champ_msg = f"• Champion: **{saved.get('champion', 'TBD')}**\\n" if saved.get("champion") else ""
+            await interaction.followup.send(
+                embed=success_embed(
+                    "Tournament Imported Successfully!",
+                    f"🏆 **{saved['name']}**\\n"
+                    f"• Fixtures Loaded: **{parsed['total_fixtures']}**\\n"
+                    f"• Total Matchdays: **{saved['total_matchdays']}**\\n"
+                    f"• Teams: **{len(parsed['standings'])}**\\n"
+                    f"{champ_msg}"
+                    f"• Winning Bets Settled: **{settled_total}**",
+                )
+            )
+        except Exception as e:
+            logger.error("Error importing tournament HTML: %s", e, exc_info=True)
+            await interaction.followup.send(embed=error_embed("Import Failed", f"Could not parse file: `{str(e)}`"), ephemeral=True)
+
+    @app_commands.command(name="sync", description="Fetch latest live scores from the saved tournament URL.")
+    @app_commands.describe(competition="Competition type (league, ucl, cup, default: league)")
+    async def matches_sync(self, interaction: discord.Interaction, competition: str = "league"):
+        await interaction.response.defer()
+        t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+        if not t or not t.get("url"):
+            await interaction.followup.send(
+                embed=error_embed("No URL Configured", "No saved tournament URL found. Use `/season start link: [url]` or `/matches import`."),
+                ephemeral=True,
+            )
+            return
+
+        import os
+        proxy_key = os.getenv("SCRAPER_API_KEY") or os.getenv("ZENROWS_API_KEY")
+        proxy_service = "zenrows" if os.getenv("ZENROWS_API_KEY") else "scraperapi"
+
+        ok, msg, html = await fetch_tournament_html(t["url"], proxy_api_key=proxy_key, proxy_service=proxy_service)
+        if not ok:
+            await interaction.followup.send(embed=error_embed("Sync Failed", msg), ephemeral=True)
+            return
+
+        parsed = parse_matchsimulator_html(html)
+        saved = await self.db.save_parsed_tournament(
+            guild_id=interaction.guild_id,
+            tournament_data=parsed,
+            url=t["url"],
+            season_number=t.get("season_number", 1),
+            competition_type=competition.lower(),
+        )
+
+        settled_total = 0
+        for md in range(1, parsed.get("highest_matchday", 38) + 1):
+            payouts = await self.db.settle_matchday_bets(saved["id"], matchday=md)
+            settled_total += len([p for p in payouts if p["status"] == "won"])
+
+        await interaction.followup.send(
+            embed=success_embed(
+                "Live Match Scores Synced!",
+                f"⚡ **{saved['name']}** is up to date!\\n"
+                f"• Latest Matchday: **{parsed['highest_matchday']}**\\n"
+                f"• Fixtures Synced: **{parsed['total_fixtures']}**\\n"
+                f"• Bets Paid Out: **{settled_total}**",
+            )
+        )
+
+
+class Standings(commands.Cog):
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db = bot.db
+
+    @app_commands.command(name="standings", description="View the current league standings table.")
+    @app_commands.describe(competition="Competition type (league, ucl, cup, default: league)")
+    async def standings_cmd(self, interaction: discord.Interaction, competition: str = "league"):
+        await interaction.response.defer()
+        t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+        if not t:
+            await interaction.followup.send(
+                embed=error_embed("No Standings", f"No active `{competition}` tournament found."),
+                ephemeral=True,
+            )
+            return
+
+        standings = await self.db.get_tournament_standings(t["id"])
+        if not standings:
+            await interaction.followup.send(
+                embed=error_embed("Empty Table", "No standings available yet for this tournament."),
+                ephemeral=True,
+            )
+            return
+
+        header = "`#  Team                  P   W  D  L   GD  CS  PTS`"
+        lines = [header]
+        for s in standings:
+            r = s["rank"]
+            name = (s["name"][:18]).ljust(18)
+            p = str(s["played"]).rjust(2)
+            w = str(s["won"]).rjust(2)
+            d = str(s["drawn"]).rjust(2)
+            l = str(s["lost"]).rjust(2)
+            gd = f"{s['goal_difference']:+d}".rjust(4)
+            cs = str(s["clean_sheets"]).rjust(2)
+            pts = str(s["points"]).rjust(3)
+            lines.append(f"`{r:<2} {name} {p} {w} {d} {l} {gd} {cs} {pts}`")
+
+        embed = create_beastly_embed(
+            title=f"🏆 {t['name']} • Standings Table",
+            description="\\n".join(lines),
+            color=COLOR_BEASTLY_GOLD,
+        )
+        await interaction.followup.send(embed=embed)
+
+
+async def setup(bot: commands.Bot):
+    await bot.add_cog(Matches(bot))
+    await bot.add_cog(Standings(bot))

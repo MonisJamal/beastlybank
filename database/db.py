@@ -3365,6 +3365,8 @@ class DatabaseManager:
             row = await cur.fetchone()
             return row["cnt"] if row else 0
 
+    get_cached_sofifa_player_by_name = get_cached_sofifa_player
+
     # ── Market Auction System ──
 
     async def create_market_auction(

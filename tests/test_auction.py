@@ -268,3 +268,34 @@ async def test_auction_cancellation(temp_db):
     # Bidder refunded: 8M + 12M = 20M
     b_user_after = await temp_db.get_or_create_user(bidder_id, guild_id)
     assert b_user_after["cash"] == 20_000_000
+
+
+@pytest.mark.asyncio
+async def test_custom_player_auction(temp_db):
+    guild_id = 777
+    seller_id = 555
+    bidder_id = 666
+
+    # Test alias get_cached_sofifa_player_by_name works on custom player (returns None without throwing error)
+    res = await temp_db.get_cached_sofifa_player_by_name("NonExistentCustomPlayer")
+    assert res is None
+
+    # Create custom player auction
+    now = datetime.now(timezone.utc)
+    expires_at = (now + timedelta(hours=2)).isoformat()
+    auction = await temp_db.create_market_auction(
+        guild_id=guild_id,
+        channel_id=456,
+        seller_id=seller_id,
+        player_name="Shadow Striker",
+        ovr=88,
+        potential=95,
+        starting_bid=25_000_000,
+        max_increment=5_000_000,
+        expires_at=expires_at,
+        position="CF",
+    )
+    assert auction["player_name"] == "Shadow Striker"
+    assert auction["ovr"] == 88
+    assert auction["potential"] == 95
+    assert auction["position"] == "CF"

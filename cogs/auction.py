@@ -539,11 +539,16 @@ class Auction(commands.GroupCog, name="auction", description="Manage BeastlyFC M
 
         # Check if player exists in SoFIFA or squad to auto-fill OVR/POT/photo
         clean_name = player.strip()
+        if clean_name.lower().startswith("custom:"):
+            clean_name = clean_name[7:].strip().strip("'\"")
+        elif clean_name.lower().startswith("custom: '") and clean_name.endswith("'"):
+            clean_name = clean_name[9:-1].strip()
+
         photo_url = None
         resolved_pos = position.upper() if position else "ST"
 
         # Check SoFIFA
-        sofifa_data = await self.db.get_cached_sofifa_player_by_name(clean_name)
+        sofifa_data = await self.db.get_cached_sofifa_player(clean_name)
         if sofifa_data:
             if ovr is None:
                 ovr = sofifa_data.get("overall_rating", 75)
@@ -713,8 +718,17 @@ class Auction(commands.GroupCog, name="auction", description="Manage BeastlyFC M
             await ctx.send(embed=error_embed("Invalid Increment", f"Invalid increment: `{inc_str}`"))
             return
 
-        ovr = int(args[3]) if len(args) > 3 and args[3].isdigit() else 75
-        potential = int(args[4]) if len(args) > 4 and args[4].isdigit() else max(ovr, 80)
+        clean_name = player.strip()
+        if clean_name.lower().startswith("custom:"):
+            clean_name = clean_name[7:].strip().strip("'\"")
+        elif clean_name.lower().startswith("custom: '") and clean_name.endswith("'"):
+            clean_name = clean_name[9:-1].strip()
+
+        photo_url = None
+        resolved_pos = "ST"
+
+        ovr = int(args[3]) if len(args) > 3 and args[3].isdigit() else None
+        potential = int(args[4]) if len(args) > 4 and args[4].isdigit() else None
         duration = args[5] if len(args) > 5 else "1h"
         idle_timeout = args[6] if len(args) > 6 else None
 
@@ -722,6 +736,39 @@ class Auction(commands.GroupCog, name="auction", description="Manage BeastlyFC M
         idle_secs = parse_time_duration(idle_timeout)
 
         seller_club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+
+        # Check SoFIFA
+        sofifa_data = await self.db.get_cached_sofifa_player(clean_name)
+        if sofifa_data:
+            if ovr is None:
+                ovr = sofifa_data.get("overall_rating", 75)
+            if potential is None:
+                potential = sofifa_data.get("potential", 80)
+            if sofifa_data.get("primary_pos"):
+                resolved_pos = sofifa_data["primary_pos"]
+            photo_url = sofifa_data.get("avatar_url")
+            clean_name = sofifa_data.get("full_name") or sofifa_data.get("name") or clean_name
+        else:
+            if seller_club:
+                conn = await self.db.connect()
+                async with conn.cursor() as cur:
+                    await cur.execute(
+                        "SELECT * FROM club_players WHERE club_id = ? AND LOWER(player_name) = LOWER(?);",
+                        (seller_club["id"], clean_name),
+                    )
+                    row = await cur.fetchone()
+                    if row:
+                        if ovr is None:
+                            ovr = row["rating"]
+                        if potential is None:
+                            potential = row["potential"]
+                        if row["position"]:
+                            resolved_pos = row["position"]
+
+        if ovr is None:
+            ovr = 75
+        if potential is None:
+            potential = max(ovr, 80)
 
         now = datetime.now(timezone.utc)
         expires_at_dt = now + timedelta(seconds=duration_secs)
@@ -731,14 +778,15 @@ class Auction(commands.GroupCog, name="auction", description="Manage BeastlyFC M
             channel_id=ctx.channel.id,
             seller_id=ctx.author.id,
             seller_club_id=seller_club["id"] if seller_club else None,
-            player_name=player,
+            player_name=clean_name,
             ovr=ovr,
             potential=potential,
             starting_bid=parsed_start,
             max_increment=parsed_inc,
             expires_at=expires_at_dt.isoformat(),
             idle_timeout_seconds=idle_secs,
-            position="ST",
+            position=resolved_pos,
+            photo_url=photo_url,
         )
 
         view = MarketAuctionView(auction["id"], parsed_inc, is_active=True)

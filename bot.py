@@ -137,15 +137,14 @@ class BeastlyBankBot(commands.Bot):
             if BEASTLYFC_GUILD_ID != 0:
                 guild_obj = discord.Object(id=BEASTLYFC_GUILD_ID)
                 self.tree.copy_global_to(guild=guild_obj)
-                synced = await self.tree.sync(guild=guild_obj)
+                synced_guild = await self.tree.sync(guild=guild_obj)
                 logger.info(
                     "⚡ Instantly synced %d commands exclusively to BeastlyFC (Guild ID: %d)",
-                    len(synced),
+                    len(synced_guild),
                     BEASTLYFC_GUILD_ID,
                 )
-            else:
-                synced = await self.tree.sync()
-                logger.info("Synced %d commands globally (No BEASTLYFC_GUILD_ID set).", len(synced))
+            synced_global = await self.tree.sync()
+            logger.info("Synced %d commands globally.", len(synced_global))
         except Exception as e:
             logger.warning("Slash command tree sync postponed: %s", e)
 

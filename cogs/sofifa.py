@@ -78,10 +78,15 @@ class SoFIFACog(commands.Cog, name="SoFIFA FC 26"):
 
     def __init__(self, bot: commands.Bot):
         self.bot = bot
-        self.seed_top_players.start()
+        self._seeder_task: Optional[asyncio.Task] = None
+
+    async def cog_load(self):
+        """Start pre-seeding top players safely in the background."""
+        self._seeder_task = asyncio.create_task(self._safe_seed_top_players())
 
     def cog_unload(self):
-        self.seed_top_players.cancel()
+        if self._seeder_task and not self._seeder_task.done():
+            self._seeder_task.cancel()
 
     @property
     def db(self):
@@ -89,11 +94,13 @@ class SoFIFACog(commands.Cog, name="SoFIFA FC 26"):
 
     # ------------------ Background Top Players Seeder ------------------ #
 
-    @tasks.loop(count=1)
-    async def seed_top_players(self):
+    async def _safe_seed_top_players(self):
         """Pre-seed top players on startup so autocomplete is populated immediately."""
-        await self.bot.wait_until_ready()
         try:
+            # Safely wait for client to establish connection
+            while not self.bot.is_ready():
+                await asyncio.sleep(2)
+
             cnt = await self.db.get_cached_sofifa_player_count()
             if cnt < 200:
                 logger.info("Pre-seeding top SoFIFA FC 26 players (current count: %d)...", cnt)
@@ -105,12 +112,10 @@ class SoFIFACog(commands.Cog, name="SoFIFA FC 26"):
                     await asyncio.sleep(1)
                 final_cnt = await self.db.get_cached_sofifa_player_count()
                 logger.info("SoFIFA pre-seeding complete! Total cached: %d", final_cnt)
+        except asyncio.CancelledError:
+            pass
         except Exception as e:
             logger.warning("Error pre-seeding SoFIFA players: %s", e)
-
-    @seed_top_players.before_loop
-    async def before_seed(self):
-        await self.bot.wait_until_ready()
 
     # ------------------ Common Lookup Handler ------------------ #
 
@@ -188,9 +193,24 @@ class SoFIFACog(commands.Cog, name="SoFIFA FC 26"):
 
     # ------------------ Prefix Command ------------------ #
 
-    @commands.command(name="sofifa", aliases=["player", "fut", "fc26"])
-    async def sofifa_prefix(self, ctx: commands.Context, *, player: str):
+    @commands.command(name="sofifa", aliases=["sofifaplayer", "fut", "fc26", "futplayer"])
+    async def sofifa_prefix(self, ctx: commands.Context, *, player: Optional[str] = None):
         """Prefix command for player search: `bb!sofifa <player_name>`."""
+        if not player or not player.strip():
+            await ctx.send(
+                embed=error_embed(
+                    "Missing Player Name",
+                    "Please provide a player name to search!\n\n"
+                    "**Usage:** `bb!sofifa <player_name>`\n"
+                    "**Examples:**\n"
+                    "• `bb!sofifa Mbappe`\n"
+                    "• `bb!sofifa Haaland`\n"
+                    "• `bb!sofifa Jude Bellingham`\n"
+                    "• `bb!sofifa Lamine Yamal`\n\n"
+                    "💡 *You can also use `/sofifa` for live autocomplete suggestions as you type!*",
+                )
+            )
+            return
         await self._lookup_and_send(ctx, player)
 
     # ------------------ Banker Pre-seeding Command ------------------ #

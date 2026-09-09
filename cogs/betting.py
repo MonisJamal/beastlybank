@@ -172,6 +172,32 @@ class Betting(commands.GroupCog, name="bet", description="BeastlyFC Matchday Spo
             )
             return
 
+        # Get standings to identify bottom 5 teams
+        standings = await self.db.get_tournament_standings(t["id"])
+        bottom_5_map = {}
+        if standings:
+            sorted_desc = sorted(standings, key=lambda s: s["rank"], reverse=True)[:5]
+            bottom_5_map = {s["name"].strip().lower(): s["rank"] for s in sorted_desc}
+
+        eligible_fixtures = []
+        locked_fixtures = []
+        for f in unplayed:
+            h_low = f["home_team_name"].strip().lower()
+            a_low = f["away_team_name"].strip().lower()
+            if h_low in bottom_5_map or a_low in bottom_5_map:
+                culprit = f["home_team_name"] if h_low in bottom_5_map else f["away_team_name"]
+                rk = bottom_5_map.get(h_low) or bottom_5_map.get(a_low)
+                locked_fixtures.append((f, culprit, rk))
+            else:
+                eligible_fixtures.append(f)
+
+        if not eligible_fixtures:
+            await interaction.followup.send(
+                embed=error_embed("No Eligible Fixtures", f"All fixtures in Matchday {matchday} involve bottom 5 clubs. Betting is prohibited on bottom 5 teams."),
+                ephemeral=True,
+            )
+            return
+
         duration_secs = parse_time_duration(closes) or 3600
         lock_dt = datetime.now(timezone.utc) + timedelta(seconds=duration_secs)
         lock_ts = int(lock_dt.timestamp())
@@ -180,12 +206,17 @@ class Betting(commands.GroupCog, name="bet", description="BeastlyFC Matchday Spo
             f"🎲 **Matchday {matchday} Betting House is OPEN!**",
             f"⏳ Closes: <t:{lock_ts}:R> (<t:{lock_ts}:t>)",
             f"💰 Fixed Odds: **2.0x Return**\n",
-            "**Available Fixtures**:",
+            "**Open for Betting**:",
         ]
-        for f in unplayed:
+        for f in eligible_fixtures:
             lines.append(f"• **{f['home_team_name']}** `vs` **{f['away_team_name']}**")
 
-        lines.append("\n*Select a fixture below to place your wager!*")
+        if locked_fixtures:
+            lines.append("\n**🚫 Bottom 5 Restricted (No Bets)**:")
+            for f, culp, rk in locked_fixtures:
+                lines.append(f"• ~~{f['home_team_name']} vs {f['away_team_name']}~~ *(Locked: {culp} #{rk})*")
+
+        lines.append("\n*Select an eligible fixture below to place your wager!*")
 
         embed = create_beastly_embed(
             title=f"🎰 Sports Betting • {t['name']} • Matchday {matchday}",
@@ -193,7 +224,7 @@ class Betting(commands.GroupCog, name="bet", description="BeastlyFC Matchday Spo
             color=COLOR_BEASTLY_GOLD,
         )
 
-        view = MatchdayBettingView(self.bot, t["id"], matchday, unplayed)
+        view = MatchdayBettingView(self.bot, t["id"], matchday, eligible_fixtures)
         msg = await interaction.followup.send(embed=embed, view=view)
 
         # Background task to disable buttons when closes timer expires

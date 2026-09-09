@@ -249,3 +249,44 @@ async def test_multi_season_stats_retention(temp_db):
     assert t_s1["name"] == "Season 1"
     t_s2 = await temp_db.get_tournament_by_season(guild_id, "league", 2)
     assert t_s2["name"] == "Season 2"
+
+
+@pytest.mark.asyncio
+async def test_bottom_5_betting_restriction(temp_db):
+    """Test that matches involving bottom 5 clubs in standings are blocked from bets."""
+    guild_id = 999
+    conn = await temp_db.connect()
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "INSERT INTO tournaments (id, guild_id, name, season_number, competition_type, status) VALUES (30, 999, 'Season 2', 2, 'league', 'active');"
+        )
+        # Create 6 teams with standings: ranks 1 to 6 (so ranks 2, 3, 4, 5, 6 are bottom 5)
+        for i in range(1, 7):
+            await cur.execute(
+                "INSERT INTO tournament_standings (tournament_id, team_id, name, rank, clean_sheets, points) VALUES (30, ?, ?, ?, 0, ?);",
+                (str(i), f"Team_{i}", i, 20 - i),
+            )
+        # Fixture 1: Team_1 (Rank 1, top) vs Team_6 (Rank 6, bottom 5) -> RESTRICTED
+        await cur.execute(
+            "INSERT INTO tournament_fixtures (id, tournament_id, guild_id, matchday, home_team_id, away_team_id, home_team_name, away_team_name, is_finished) VALUES (301, 30, 999, 1, '1', '6', 'Team_1', 'Team_6', 0);"
+        )
+
+    # Fund user
+    await temp_db.get_or_create_user(555, guild_id)
+    async with conn.cursor() as cur:
+        await cur.execute("UPDATE users SET cash = 10000000 WHERE user_id = 555;")
+        await conn.commit()
+
+    # Attempt bet on Fixture 301
+    ok, msg, bet = await temp_db.place_matchday_bet(
+        guild_id=guild_id,
+        tournament_id=30,
+        matchday=1,
+        fixture_id=301,
+        user_id=555,
+        bet_type="home",
+        amount=1_000_000,
+    )
+    assert not ok
+    assert "bottom 5" in msg.lower()
+    assert "Team_6" in msg

@@ -16,8 +16,7 @@ from utils.embeds import (
     create_beastly_embed,
     error_embed,
     success_embed,
-)
-from utils.match_parser import fetch_tournament_html, parse_matchsimulator_html
+from utils.match_parser import parse_matchsimulator_html
 
 logger = logging.getLogger("BeastlyBank.Matches")
 
@@ -262,50 +261,7 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
             logger.error("Error importing tournament HTML: %s", e, exc_info=True)
             await interaction.followup.send(embed=error_embed("Import Failed", f"Could not parse file: `{str(e)}`"), ephemeral=True)
 
-    @app_commands.command(name="sync", description="Fetch latest live scores from the saved tournament URL.")
-    @app_commands.describe(competition="Competition type (league, ucl, cup, default: league)")
-    async def matches_sync(self, interaction: discord.Interaction, competition: str = "league"):
-        await interaction.response.defer()
-        t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
-        if not t or not t.get("url"):
-            await interaction.followup.send(
-                embed=error_embed("No URL Configured", "No saved tournament URL found. Use `/season start link: [url]` or `/matches import`."),
-                ephemeral=True,
-            )
-            return
 
-        import os
-        proxy_key = os.getenv("SCRAPER_API_KEY") or os.getenv("ZENROWS_API_KEY")
-        proxy_service = "zenrows" if os.getenv("ZENROWS_API_KEY") else "scraperapi"
-
-        ok, msg, html = await fetch_tournament_html(t["url"], proxy_api_key=proxy_key, proxy_service=proxy_service)
-        if not ok:
-            await interaction.followup.send(embed=error_embed("Sync Failed", msg), ephemeral=True)
-            return
-
-        parsed = parse_matchsimulator_html(html)
-        saved = await self.db.save_parsed_tournament(
-            guild_id=interaction.guild_id,
-            tournament_data=parsed,
-            url=t["url"],
-            season_number=t.get("season_number", 1),
-            competition_type=competition.lower(),
-        )
-
-        settled_total = 0
-        for md in range(1, parsed.get("highest_matchday", 38) + 1):
-            payouts = await self.db.settle_matchday_bets(saved["id"], matchday=md)
-            settled_total += len([p for p in payouts if p["status"] == "won"])
-
-        await interaction.followup.send(
-            embed=success_embed(
-                "Live Match Scores Synced!",
-                f"⚡ **{saved['name']}** is up to date!\n"
-                f"• Latest Matchday: **{parsed['highest_matchday']}**\n"
-                f"• Fixtures Synced: **{parsed['total_fixtures']}**\n"
-                f"• Bets Paid Out: **{settled_total}**",
-            )
-        )
 
 
 class Standings(commands.Cog):

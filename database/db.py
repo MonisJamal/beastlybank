@@ -4446,6 +4446,23 @@ class DatabaseManager:
             if fixture["is_finished"]:
                 return False, "This match has already concluded. Bets can only be placed on unplayed fixtures.", {}
 
+            # Prohibit betting on matches involving bottom 5 clubs
+            await cur.execute(
+                "SELECT name, rank FROM tournament_standings WHERE tournament_id = ? ORDER BY rank DESC LIMIT 5;",
+                (tournament_id,),
+            )
+            b5_rows = await cur.fetchall()
+            if b5_rows:
+                bottom_5_map = {r["name"].strip().lower(): r["rank"] for r in b5_rows}
+                h_name = fixture["home_team_name"].strip().lower()
+                a_name = fixture["away_team_name"].strip().lower()
+                if h_name in bottom_5_map:
+                    r_num = bottom_5_map[h_name]
+                    return False, f"❌ Betting is prohibited on matches involving bottom 5 clubs. **{fixture['home_team_name']}** is currently ranked #{r_num}.", {}
+                if a_name in bottom_5_map:
+                    r_num = bottom_5_map[a_name]
+                    return False, f"❌ Betting is prohibited on matches involving bottom 5 clubs. **{fixture['away_team_name']}** is currently ranked #{r_num}.", {}
+
             # Check funding: Club Treasury first, then Personal Cash
             user_club = await self.get_club_by_user(guild_id, user_id)
             user_club_id = user_club["id"] if user_club else None

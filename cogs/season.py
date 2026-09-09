@@ -17,7 +17,7 @@ from utils.embeds import (
     error_embed,
     success_embed,
 )
-from utils.match_parser import fetch_tournament_html, parse_matchsimulator_html
+from utils.match_parser import parse_matchsimulator_html
 
 logger = logging.getLogger("BeastlyBank.Season")
 
@@ -27,17 +27,15 @@ class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Sea
         self.bot = bot
         self.db = bot.db
 
-    @app_commands.command(name="start", description="Launch a new season, archive previous season awards, and load new fixtures.")
+    @app_commands.command(name="start", description="Launch a new season, archive previous season awards, and reset active standings.")
     @app_commands.describe(
         name="Name for the new season (e.g. 'Season 2', 'Beastly S2 League')",
-        link="matchsimulator.com tournament URL for the new season (optional)",
         competition="Competition type (league, ucl, cup, default: league)",
     )
     async def season_start(
         self,
         interaction: discord.Interaction,
         name: str,
-        link: Optional[str] = None,
         competition: str = "league",
     ):
         await interaction.response.defer()
@@ -54,33 +52,23 @@ class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Sea
         hist = await self.db.get_season_history(interaction.guild_id)
         next_season_num = len(hist) + 1
 
-        # 3. If link provided, attempt to fetch and parse
-        parsed_data = None
-        if link:
-            proxy_key = os.getenv("SCRAPER_API_KEY") or os.getenv("ZENROWS_API_KEY")
-            proxy_service = "zenrows" if os.getenv("ZENROWS_API_KEY") else "scraperapi"
-            ok, msg, html = await fetch_tournament_html(link, proxy_api_key=proxy_key, proxy_service=proxy_service)
-            if ok:
-                parsed_data = parse_matchsimulator_html(html)
-
-        # 4. If no parsed data yet, create clean skeleton
-        if not parsed_data:
-            parsed_data = {
-                "tournament_name": name,
-                "season_subtitle": f"Season {next_season_num}",
-                "highest_matchday": 38,
-                "champion": None,
-                "runner_up": None,
-                "standings": [],
-                "fixtures_by_matchday": {},
-                "total_fixtures": 0,
-                "player_stats": {"all_players": []},
-            }
+        # 3. Create fresh season skeleton
+        parsed_data = {
+            "tournament_name": name,
+            "season_subtitle": f"Season {next_season_num}",
+            "highest_matchday": 38,
+            "champion": None,
+            "runner_up": None,
+            "standings": [],
+            "fixtures_by_matchday": {},
+            "total_fixtures": 0,
+            "player_stats": {"all_players": []},
+        }
 
         saved = await self.db.save_parsed_tournament(
             guild_id=interaction.guild_id,
             tournament_data=parsed_data,
-            url=link,
+            url=None,
             season_number=next_season_num,
             competition_type=competition.lower(),
         )
@@ -90,10 +78,9 @@ class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Sea
             f"{archived_msg}"
             f"🌱 **{saved['name']}** (Season {saved['season_number']}) is now **ACTIVE**!\n"
             f"• Competition: **{competition.upper()}**\n"
-            f"• Matchdays: **{saved['total_matchdays']}**\n"
-            f"• Fixtures Loaded: **{parsed_data['total_fixtures']}**\n"
-            f"• Active Matchday: **Matchday 1**\n\n"
-            f"*Club squads and treasuries remain fully intact. Ready for Matchday 1 wagers!*",
+            f"• Status: **Active (Season {saved['season_number']})**\n\n"
+            f"📂 *Upload your season schedule & scores anytime using `/matches import`!*\n"
+            f"*Club squads and treasuries remain fully intact.*",
         )
         await interaction.followup.send(embed=embed)
 

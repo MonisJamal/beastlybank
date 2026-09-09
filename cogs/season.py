@@ -137,6 +137,7 @@ class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Sea
     @app_commands.describe(season="Specific season number to inspect (optional)")
     async def season_history_cmd(self, interaction: discord.Interaction, season: Optional[int] = None):
         await interaction.response.defer()
+        await self.db.ensure_tournament_seeded(interaction.guild_id)
         records = await self.db.get_season_history(interaction.guild_id, season_number=season)
         if not records:
             await interaction.followup.send(

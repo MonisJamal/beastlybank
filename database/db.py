@@ -4123,15 +4123,56 @@ class DatabaseManager:
             t_row = await cur.fetchone()
             return dict(t_row)
 
+    async def ensure_tournament_seeded(self, guild_id: int) -> Optional[Dict[str, Any]]:
+        """Ensure Season 1 tournament exists for this guild; if not, seed it immediately from data/beastly_s1_cup.html."""
+        existing = await self.get_tournament_by_season(guild_id, "league", 1)
+        if existing:
+            return existing
+        from pathlib import Path
+        s1_file = Path("data/beastly_s1_cup.html")
+        if not s1_file.exists():
+            return None
+        try:
+            with open(s1_file, "r", encoding="utf-8") as f:
+                html_text = f.read()
+            from utils.match_parser import parse_matchsimulator_html
+            parsed = parse_matchsimulator_html(html_text)
+            saved = await self.save_parsed_tournament(
+                guild_id=guild_id,
+                tournament_data=parsed,
+                url="https://matchsimulator.com/cup/2859670/beastly-s1-league",
+                season_number=1,
+                competition_type="league",
+            )
+            # Also ensure it's archived in season_history so /season history works
+            hist = await self.get_season_history(guild_id, season_number=1)
+            if not hist:
+                await self.conclude_tournament(saved["id"])
+                # Mark as active again if it was the only one
+                conn = await self.connect()
+                async with conn.cursor() as cur:
+                    await cur.execute("UPDATE tournaments SET status = 'active' WHERE id = ?;", (saved["id"],))
+            return saved
+        except Exception as e:
+            logger.warning("ensure_tournament_seeded error: %s", e)
+            return None
+
     async def get_active_tournament(self, guild_id: int, competition_type: str = "league") -> Optional[Dict[str, Any]]:
         """Fetch the currently active tournament for a given competition type in a guild."""
         conn = await self.connect()
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT * FROM tournaments WHERE guild_id = ? AND competition_type = ? AND status = 'active' ORDER BY id DESC LIMIT 1;",
+                "SELECT * FROM tournaments WHERE (guild_id = ? OR guild_id = 0) AND competition_type = ? AND status = 'active' ORDER BY id DESC LIMIT 1;",
                 (guild_id, competition_type),
             )
             row = await cur.fetchone()
+            if not row:
+                # Fallback: if no active tournament, get latest completed tournament so standings/stats are accessible
+                await cur.execute(
+                    "SELECT * FROM tournaments WHERE (guild_id = ? OR guild_id = 0) AND competition_type = ? ORDER BY id DESC LIMIT 1;",
+                    (guild_id, competition_type),
+                )
+                row = await cur.fetchone()
             return dict(row) if row else None
 
     async def get_tournament_by_id(self, tournament_id: int) -> Optional[Dict[str, Any]]:
@@ -4149,7 +4190,7 @@ class DatabaseManager:
         conn = await self.connect()
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT * FROM tournaments WHERE guild_id = ? AND competition_type = ? AND season_number = ? ORDER BY id DESC LIMIT 1;",
+                "SELECT * FROM tournaments WHERE (guild_id = ? OR guild_id = 0) AND competition_type = ? AND season_number = ? ORDER BY id DESC LIMIT 1;",
                 (guild_id, competition_type, season_number),
             )
             row = await cur.fetchone()
@@ -4233,7 +4274,7 @@ class DatabaseManager:
                         t.season_number
                     FROM tournament_player_stats s
                     JOIN tournaments t ON s.tournament_id = t.id
-                    WHERE s.guild_id = ? AND LOWER(s.player_name) LIKE ? AND t.season_number = ?
+                    WHERE (s.guild_id = ? OR s.guild_id = 0) AND LOWER(s.player_name) LIKE ? AND t.season_number = ?
                     LIMIT 1;
                     """,
                     (guild_id, f"%{player_name.strip().lower()}%", season_number),
@@ -4257,7 +4298,7 @@ class DatabaseManager:
                     SUM(minutes_played) as total_minutes,
                     AVG(rating) as avg_rating
                 FROM tournament_player_stats
-                WHERE guild_id = ? AND LOWER(player_name) LIKE ?
+                WHERE (guild_id = ? OR guild_id = 0) AND LOWER(player_name) LIKE ?
                 GROUP BY LOWER(player_name);
                 """,
                 (guild_id, f"%{player_name.strip().lower()}%"),
@@ -4281,7 +4322,7 @@ class DatabaseManager:
                     t.name as tournament_name
                 FROM tournament_player_stats s
                 JOIN tournaments t ON s.tournament_id = t.id
-                WHERE s.guild_id = ? AND LOWER(s.player_name) LIKE ?
+                WHERE (s.guild_id = ? OR s.guild_id = 0) AND LOWER(s.player_name) LIKE ?
                 ORDER BY t.season_number ASC;
                 """,
                 (guild_id, f"%{player_name.strip().lower()}%"),
@@ -4360,12 +4401,12 @@ class DatabaseManager:
         async with conn.cursor() as cur:
             if season_number is not None:
                 await cur.execute(
-                    "SELECT * FROM season_history WHERE guild_id = ? AND season_number = ? ORDER BY id DESC;",
+                    "SELECT * FROM season_history WHERE (guild_id = ? OR guild_id = 0) AND season_number = ? ORDER BY id DESC;",
                     (guild_id, season_number),
                 )
             else:
                 await cur.execute(
-                    "SELECT * FROM season_history WHERE guild_id = ? ORDER BY season_number DESC, id DESC;",
+                    "SELECT * FROM season_history WHERE (guild_id = ? OR guild_id = 0) ORDER BY season_number DESC, id DESC;",
                     (guild_id,),
                 )
             rows = await cur.fetchall()

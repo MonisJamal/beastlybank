@@ -161,6 +161,7 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
         season: Optional[int] = None,
     ):
         await interaction.response.defer()
+        await self.db.ensure_tournament_seeded(interaction.guild_id)
         if season is not None:
             t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
         else:
@@ -324,6 +325,7 @@ class Standings(commands.Cog):
         season: Optional[int] = None,
     ):
         await interaction.response.defer()
+        await self.db.ensure_tournament_seeded(interaction.guild_id)
         if season is not None:
             t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
         else:

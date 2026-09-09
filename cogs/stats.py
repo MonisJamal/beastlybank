@@ -38,6 +38,7 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         limit: int = 10,
     ):
         await interaction.response.defer()
+        await self.db.ensure_tournament_seeded(interaction.guild_id)
         if season is not None:
             t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
         else:
@@ -82,6 +83,7 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         limit: int = 10,
     ):
         await interaction.response.defer()
+        await self.db.ensure_tournament_seeded(interaction.guild_id)
         if season is not None:
             t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
         else:
@@ -126,6 +128,7 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         limit: int = 10,
     ):
         await interaction.response.defer()
+        await self.db.ensure_tournament_seeded(interaction.guild_id)
         if season is not None:
             t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
         else:
@@ -168,6 +171,7 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
         season: Optional[int] = None,
     ):
         await interaction.response.defer()
+        await self.db.ensure_tournament_seeded(interaction.guild_id)
         if season is not None:
             t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
         else:
@@ -203,6 +207,7 @@ class Stats(commands.GroupCog, name="stats", description="BeastlyFC Tournament P
     )
     async def stats_player(self, interaction: discord.Interaction, name: str, season: Optional[int] = None):
         await interaction.response.defer()
+        await self.db.ensure_tournament_seeded(interaction.guild_id)
         profile = await self.db.get_player_profile(interaction.guild_id, name, season_number=season)
         if not profile:
             season_str = f" in Season {season}" if season else ""

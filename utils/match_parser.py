@@ -276,167 +276,7 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
                         "injury": cols[3].get_text(strip=True),
                     })
 
-    # 6. Aggregate Comprehensive Player Profiles & Calculate Ratings
-    players_map = {}
-    team_played_map = {t["name"].lower(): t["played"] for t in standings_list}
-
-    def get_or_create_player(name: str, team: str) -> Dict[str, Any]:
-        key = f"{name.strip().lower()}::{team.strip().lower()}"
-        if key not in players_map:
-            t_name_clean = team.strip().lower()
-            p_played = team_played_map.get(t_name_clean) or highest_matchday or 1
-            players_map[key] = {
-                "player_name": name.strip(),
-                "team_name": team.strip(),
-                "goals": 0,
-                "assists": 0,
-                "own_goals": 0,
-                "yellow_cards": 0,
-                "red_cards": 0,
-                "clean_sheets": 0,
-                "matches_played": p_played,
-                "minutes_played": 0,
-                "rating": 6.5,
-            }
-        return players_map[key]
-
-    for g in top_goals:
-        p = get_or_create_player(g["player_name"], g["team_name"])
-        p["goals"] = g["stat_value"]
-
-    for a in top_assists:
-        p = get_or_create_player(a["player_name"], a["team_name"])
-        p["assists"] = a["stat_value"]
-
-    for og in top_own_goals:
-        p = get_or_create_player(og["player_name"], og["team_name"])
-        p["own_goals"] = og["stat_value"]
-
-    for y in top_yellow_cards:
-        p = get_or_create_player(y["player_name"], y["team_name"])
-        p["yellow_cards"] = y["stat_value"]
-
-    for r in top_red_cards:
-        p = get_or_create_player(r["player_name"], r["team_name"])
-        p["red_cards"] = r["stat_value"]
-
-    def classify_header(h: str) -> str:
-        h = h.strip().lower()
-        if h in ["player", "name", "player name"]:
-            return "player"
-        if h in ["team", "club", "team name"]:
-            return "team"
-        if h in ["goals", "goal", "g"]:
-            return "goals"
-        if h in ["assists", "assist", "a", "ast"]:
-            return "assists"
-        if h in ["matches", "matches played", "apps", "app", "played", "p", "mp"]:
-            return "matches"
-        if h in ["minutes", "mins", "min", "m"]:
-            return "minutes"
-        if h in ["rating", "rate", "rt", "avg rating"]:
-            return "rating"
-        if h in ["yellow cards", "yellows", "yc", "yellow"]:
-            return "yellow_cards"
-        if h in ["red cards", "reds", "rc", "red"]:
-            return "red_cards"
-        if h in ["clean sheets", "cs"]:
-            return "clean_sheets"
-        return "unknown"
-
-    # Also parse comprehensive player tables (from /cup/player-stats or team squad pages)
-    if soup:
-        for table_elem in soup.find_all("table"):
-            rows = table_elem.find_all("tr")
-            if len(rows) < 2:
-                continue
-            header_cells = rows[0].find_all(["th", "td"])
-            col_map = {}
-            for idx, cell in enumerate(header_cells):
-                role = classify_header(cell.get_text(strip=True))
-                if role != "unknown" and role not in col_map:
-                    col_map[role] = idx
-
-            if "player" in col_map:
-                for r in rows[1:]:
-                    cells = r.find_all("td")
-                    p_idx = col_map["player"]
-                    if len(cells) <= p_idx:
-                        continue
-                    p_name = cells[p_idx].get_text(strip=True)
-                    if not p_name or p_name.lower() in ["player", "name", "total"]:
-                        continue
-                    t_idx = col_map.get("team")
-                    t_name = cells[t_idx].get_text(strip=True) if (t_idx is not None and len(cells) > t_idx) else "Unknown"
-                    p = get_or_create_player(p_name, t_name)
-
-                    if "goals" in col_map and len(cells) > col_map["goals"]:
-                        val = re.sub(r"[^0-9]", "", cells[col_map["goals"]].get_text(strip=True))
-                        if val:
-                            p["goals"] = int(val)
-                    if "assists" in col_map and len(cells) > col_map["assists"]:
-                        val = re.sub(r"[^0-9]", "", cells[col_map["assists"]].get_text(strip=True))
-                        if val:
-                            p["assists"] = int(val)
-                    if "matches" in col_map and len(cells) > col_map["matches"]:
-                        val = re.sub(r"[^0-9]", "", cells[col_map["matches"]].get_text(strip=True))
-                        if val:
-                            p["matches_played"] = int(val)
-                    if "minutes" in col_map and len(cells) > col_map["minutes"]:
-                        val = re.sub(r"[^0-9]", "", cells[col_map["minutes"]].get_text(strip=True))
-                        if val:
-                            p["minutes_played"] = int(val)
-                    if "rating" in col_map and len(cells) > col_map["rating"]:
-                        try:
-                            p["rating"] = float(cells[col_map["rating"]].get_text(strip=True))
-                        except ValueError:
-                            pass
-                    if "yellow_cards" in col_map and len(cells) > col_map["yellow_cards"]:
-                        val = re.sub(r"[^0-9]", "", cells[col_map["yellow_cards"]].get_text(strip=True))
-                        if val:
-                            p["yellow_cards"] = int(val)
-                    if "red_cards" in col_map and len(cells) > col_map["red_cards"]:
-                        val = re.sub(r"[^0-9]", "", cells[col_map["red_cards"]].get_text(strip=True))
-                        if val:
-                            p["red_cards"] = int(val)
-
-    team_cs_map = {t["name"].lower(): t["clean_sheets"] for t in standings_list}
-    team_pts_map = {t["name"].lower(): t["points"] for t in standings_list}
-    max_possible_pts = max(1.0, float((highest_matchday or 1) * 3))
-
-    is_cup = (highest_matchday or 0) <= 15
-
-    for p in players_map.values():
-        t_name = p["team_name"].lower()
-        cs = team_cs_map.get(t_name, 0)
-        p["clean_sheets"] = cs
-
-        p_matches = max(1, p["matches_played"])
-
-        if is_cup:
-            team_pts = team_pts_map.get(t_name, 0)
-            team_success = min(1.0, (team_pts / max_possible_pts)) * 0.8
-            goal_contrib = (p["goals"] / p_matches) * 2.5 + (p["assists"] / p_matches) * 1.5
-            calc_rating = 6.20 + min(2.6, goal_contrib) + team_success
-        else:
-            team_pts = team_pts_map.get(t_name, 40)
-            team_success = (team_pts / 80.0) * 0.8
-            calc_rating = (
-                6.20
-                + (p["goals"] * 0.075)
-                + (p["assists"] * 0.055)
-                + team_success
-            )
-
-        calculated_rating = (
-            calc_rating
-            - (p["yellow_cards"] * 0.015)
-            - (p["red_cards"] * 0.06)
-            - (p["own_goals"] * 0.05)
-        )
-        p["rating"] = round(min(9.5, max(6.0, calculated_rating)), 2)
-
-    # 7. Season Awards
+    # 6. Season Awards (from genuine standings & tournament result)
     champion = winner_data.get("name") or (standings_list[0]["name"] if standings_list else "Unknown")
     runner_up = standings_list[1]["name"] if len(standings_list) > 1 else "Unknown"
 
@@ -457,9 +297,6 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
     sorted_by_cs = sorted(standings_list, key=lambda t: t["clean_sheets"], reverse=True)
     golden_glove = sorted_by_cs[0] if sorted_by_cs else None
 
-    all_players_rated = sorted(players_map.values(), key=lambda p: p["rating"], reverse=True)
-    mvp_player = all_players_rated[0] if all_players_rated else None
-
     return {
         "tournament_name": tournament_name,
         "season_subtitle": season_subtitle,
@@ -477,7 +314,7 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
             "own_goals": top_own_goals,
             "yellow_cards": top_yellow_cards,
             "red_cards": top_red_cards,
-            "all_players": list(players_map.values()),
+            "all_players": [],
         },
         "availability": {
             "suspensions": suspensions,
@@ -492,7 +329,7 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
                 "team_name": golden_glove["name"] if golden_glove else "None",
                 "clean_sheets": golden_glove["clean_sheets"] if golden_glove else 0,
             },
-            "mvp": mvp_player,
+            "mvp": None,
         },
     }
 

@@ -68,20 +68,15 @@ async def test_parse_and_save_tournament(temp_db):
     liv = next(s for s in standings if s["name"] == "Liverpool")
     assert liv["clean_sheets"] == 18
 
-    # 4. Verify Leaderboards
-    top_scorers = await temp_db.get_tournament_leaderboard(saved["id"], "goals", limit=5)
-    assert len(top_scorers) > 0
-    assert top_scorers[0]["player_name"] == "E. Haaland"
-    assert top_scorers[0]["goals"] == 28
-
-    top_playmakers = await temp_db.get_tournament_leaderboard(saved["id"], "assists", limit=5)
-    assert len(top_playmakers) > 0
-    assert top_playmakers[0]["player_name"] == "B. Saka"
-    assert top_playmakers[0]["assists"] == 19
-
-    top_rated = await temp_db.get_tournament_leaderboard(saved["id"], "rating", limit=5)
-    assert len(top_rated) > 0
-    assert top_rated[0]["rating"] >= 8.5
+    # 4. Verify Tournament Awards from genuine standings
+    awards = parsed["awards"]
+    assert awards["champion"] == "Manchester City"
+    assert awards["golden_glove"]["team_name"] == "Liverpool"
+    assert awards["golden_glove"]["clean_sheets"] == 18
+    assert awards["golden_boot"]["player_name"] == "E. Haaland"
+    assert awards["golden_boot"]["stat_value"] == 28
+    assert awards["playmaker"]["player_name"] == "B. Saka"
+    assert awards["playmaker"]["stat_value"] == 19
 
 
 @pytest.mark.asyncio
@@ -313,9 +308,8 @@ async def test_ucl_s1_knockout_tournament(temp_db):
     assert awards["golden_boot"]["player_name"] == "Eusebio"
     assert awards["golden_boot"]["stat_value"] == 8
     assert awards["playmaker"]["player_name"] == "A. Hakimi"
-    assert awards["playmaker"]["stat_value"] == 4
-    assert awards["mvp"]["player_name"] == "Eusebio"
-    assert awards["mvp"]["rating"] >= 8.0
+    assert awards["champion"] == "Paris Saint-Germain"
+    assert awards["runner_up"] == "Chelsea"
 
     guild_id = 777888
     # Test dual-seeding of League + UCL

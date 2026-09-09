@@ -115,13 +115,15 @@ class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Sea
         lines = [
             f"# 🏆 {res['name']} Concluded!\n",
             f"🥇 **Champion**: **{record.get('champion', 'TBD')}**",
-            f"🥈 **Runner-Up**: **{record.get('runner_up', 'TBD')}**\n",
-            f"👟 **Golden Boot**: **{record.get('golden_boot_player', 'N/A')}** ({record.get('golden_boot_goals', 0)} Goals)",
-            f"🎯 **Playmaker**: **{record.get('playmaker_player', 'N/A')}** ({record.get('playmaker_assists', 0)} Assists)",
-            f"🧤 **Golden Glove**: **{record.get('golden_glove_team', 'N/A')}** ({record.get('golden_glove_clean_sheets', 0)} Clean Sheets)",
-            f"⭐ **Player of the Season (MVP)**: **{record.get('mvp_player', 'N/A')}** ({record.get('mvp_rating', 0.0):.2f} AVG)",
-            "\n*All awards have been etched into the BeastlyFC Hall of Fame!*",
+            f"🥈 **Runner-Up**: **{record.get('runner_up', 'TBD')}**",
         ]
+        if record.get("golden_glove_team") and record.get("golden_glove_clean_sheets", 0) > 0:
+            lines.append(f"🧤 **Golden Glove**: **{record['golden_glove_team']}** ({record['golden_glove_clean_sheets']} Clean Sheets)")
+        if record.get("golden_boot_player") and record.get("golden_boot_goals", 0) > 0:
+            lines.append(f"👟 **Top Scorer**: **{record['golden_boot_player']}** ({record['golden_boot_goals']} Goals)")
+        if record.get("playmaker_player") and record.get("playmaker_assists", 0) > 0:
+            lines.append(f"🎯 **Top Playmaker**: **{record['playmaker_player']}** ({record['playmaker_assists']} Assists)")
+        lines.append("\n*Concluded and archived into the BeastlyFC Hall of Fame!*")
 
         embed = create_beastly_embed(
             title="🎖️ Season Conclusion & Awards",
@@ -156,12 +158,15 @@ class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Sea
         for r in records[:5]:
             lines = [
                 f"🏆 **Champion**: **{r['champion']}**",
-                f"🥈 **Runner-Up**: **{r.get('runner_up', 'N/A')}**\n",
-                f"• 👟 **Golden Boot**: {r.get('golden_boot_player', 'N/A')} (`{r.get('golden_boot_goals', 0)} Goals`)",
-                f"• 🎯 **Golden Playmaker**: {r.get('playmaker_player', 'N/A')} (`{r.get('playmaker_assists', 0)} Assists`)",
-                f"• 🧤 **Golden Glove**: {r.get('golden_glove_team', 'N/A')} (`{r.get('golden_glove_clean_sheets', 0)} Clean Sheets`)",
-                f"• ⭐ **Season MVP**: {r.get('mvp_player', 'N/A')} (`{r.get('mvp_rating', 0.0):.2f} Rating`)",
+                f"🥈 **Runner-Up**: **{r.get('runner_up', 'N/A')}**",
             ]
+            if r.get("golden_glove_team") and r.get("golden_glove_clean_sheets", 0) > 0:
+                lines.append(f"• 🧤 **Golden Glove**: {r['golden_glove_team']} (`{r['golden_glove_clean_sheets']} Clean Sheets`)")
+            if r.get("golden_boot_player") and r.get("golden_boot_goals", 0) > 0:
+                lines.append(f"• 👟 **Top Scorer**: {r['golden_boot_player']} (`{r['golden_boot_goals']} Goals`)")
+            if r.get("playmaker_player") and r.get("playmaker_assists", 0) > 0:
+                lines.append(f"• 🎯 **Top Playmaker**: {r['playmaker_player']} (`{r['playmaker_assists']} Assists`)")
+
             embed = create_beastly_embed(
                 title=f"🏛️ Hall of Fame • Season {r['season_number']} ({r['competition_name']})",
                 description="\n".join(lines),

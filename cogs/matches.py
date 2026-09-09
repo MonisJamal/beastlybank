@@ -237,6 +237,128 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
 
         await interaction.followup.send(embed=embed, view=view)
 
+    async def show_standings(
+        self,
+        interaction: discord.Interaction,
+        competition: str = "league",
+        season: Optional[int] = None,
+    ):
+        await self.db.ensure_tournament_seeded(interaction.guild_id)
+        if season is not None:
+            t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
+        else:
+            t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+
+        if not t:
+            target_str = f"Season {season}" if season else f"active `{competition}`"
+            await interaction.followup.send(
+                embed=error_embed("No Standings", f"No {target_str} tournament found."),
+                ephemeral=True,
+            )
+            return
+
+        standings = await self.db.get_tournament_standings(t["id"])
+        if not standings:
+            await interaction.followup.send(
+                embed=error_embed("Empty Table", "No standings available yet for this tournament."),
+                ephemeral=True,
+            )
+            return
+
+        header = "`#  Team                  P   W  D  L   GD  CS  PTS`"
+        lines = [header]
+        for s in standings:
+            r = s["rank"]
+            name = (s["name"][:18]).ljust(18)
+            p = str(s["played"]).rjust(2)
+            w = str(s["won"]).rjust(2)
+            d = str(s["drawn"]).rjust(2)
+            l = str(s["lost"]).rjust(2)
+            gd = f"{s['goal_difference']:+d}".rjust(4)
+            cs = str(s["clean_sheets"]).rjust(2)
+            pts = str(s["points"]).rjust(3)
+            lines.append(f"`{r:<2} {name} {p} {w} {d} {l} {gd} {cs} {pts}`")
+
+        embed = create_beastly_embed(
+            title=f"🏆 {t['name']} • Standings Table",
+            description="\n".join(lines),
+            color=COLOR_BEASTLY_GOLD,
+        )
+        await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="standings", description="View the tournament standings and leaderboard table.")
+    @app_commands.describe(
+        competition="Competition type (league, ucl, cup, default: league)",
+        season="Specific season number to view (e.g. 1, default: active season)",
+    )
+    @app_commands.choices(competition=COMPETITION_CHOICES)
+    async def matches_standings(
+        self,
+        interaction: discord.Interaction,
+        competition: str = "league",
+        season: Optional[int] = None,
+    ):
+        await interaction.response.defer()
+        await self.show_standings(interaction, competition, season)
+
+    @app_commands.command(name="upcoming", description="View the next upcoming matchday and unplayed fixtures.")
+    @app_commands.describe(
+        competition="Competition type (league, ucl, cup, default: league)",
+        season="Specific season number to view (e.g. 1, default: active season)",
+    )
+    @app_commands.choices(competition=COMPETITION_CHOICES)
+    async def matches_upcoming(
+        self,
+        interaction: discord.Interaction,
+        competition: str = "league",
+        season: Optional[int] = None,
+    ):
+        await interaction.response.defer()
+        await self.db.ensure_tournament_seeded(interaction.guild_id)
+        if season is not None:
+            t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
+        else:
+            t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+
+        if not t:
+            target_str = f"Season {season}" if season else f"active `{competition}`"
+            await interaction.followup.send(embed=error_embed("No Tournament", f"No {target_str} tournament found."), ephemeral=True)
+            return
+
+        conn = await self.db.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT MIN(matchday) FROM tournament_fixtures WHERE tournament_id = ? AND is_finished = 0;",
+                (t["id"],),
+            )
+            row = await cur.fetchone()
+            next_md = row[0] if (row and row[0] is not None) else None
+
+        if not next_md:
+            await interaction.followup.send(
+                embed=create_beastly_embed(
+                    title=f"🏁 {t['name']} • Season Concluded",
+                    description=f"All fixtures in **{t['name']}** are completed!\n\n• Browse finished matchdays with `/matches view`\n• View the final leaderboard with `/standings`\n• Launch the next season with `/season start`",
+                    color=COLOR_BEASTLY_GOLD,
+                )
+            )
+            return
+
+        fixtures = await self.db.get_tournament_fixtures(t["id"], matchday=next_md)
+        stage = fixtures[0].get("stage_name") if (fixtures and fixtures[0].get("stage_name")) else f"Matchday {next_md}"
+        lines = [f"**Upcoming Fixtures • {stage}**\n"]
+        for f in fixtures:
+            lines.append(format_fixture_line(f))
+
+        lines.append(f"\n💡 *Place bets on these matches using `/bet place matchday:{next_md}`!*")
+
+        embed = create_beastly_embed(
+            title=f"⏳ Upcoming Matches • {t['name']}",
+            description="\n".join(lines),
+            color=COLOR_BEASTLY_GOLD,
+        )
+        await interaction.followup.send(embed=embed)
+
     @app_commands.command(name="import", description="Upload a saved tournament .html file from matchsimulator.com.")
     @app_commands.describe(
         file="Attach the saved .html webpage file from matchsimulator.com",
@@ -310,7 +432,7 @@ class Standings(commands.Cog):
         self.bot = bot
         self.db = bot.db
 
-    @app_commands.command(name="standings", description="View the league standings table.")
+    @app_commands.command(name="standings", description="View the league standings and leaderboard table.")
     @app_commands.describe(
         competition="Competition type (league, ucl, cup, default: league)",
         season="Specific season number to view (e.g. 1, default: active season)",
@@ -323,48 +445,22 @@ class Standings(commands.Cog):
         season: Optional[int] = None,
     ):
         await interaction.response.defer()
-        await self.db.ensure_tournament_seeded(interaction.guild_id)
-        if season is not None:
-            t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season)
+        matches_cog = self.bot.get_cog("matches")
+        if matches_cog and hasattr(matches_cog, "show_standings"):
+            await matches_cog.show_standings(interaction, competition, season)
         else:
-            t = await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
-
-        if not t:
-            target_str = f"Season {season}" if season else f"active `{competition}`"
-            await interaction.followup.send(
-                embed=error_embed("No Standings", f"No {target_str} tournament found."),
-                ephemeral=True,
-            )
-            return
-
-        standings = await self.db.get_tournament_standings(t["id"])
-        if not standings:
-            await interaction.followup.send(
-                embed=error_embed("Empty Table", "No standings available yet for this tournament."),
-                ephemeral=True,
-            )
-            return
-
-        header = "`#  Team                  P   W  D  L   GD  CS  PTS`"
-        lines = [header]
-        for s in standings:
-            r = s["rank"]
-            name = (s["name"][:18]).ljust(18)
-            p = str(s["played"]).rjust(2)
-            w = str(s["won"]).rjust(2)
-            d = str(s["drawn"]).rjust(2)
-            l = str(s["lost"]).rjust(2)
-            gd = f"{s['goal_difference']:+d}".rjust(4)
-            cs = str(s["clean_sheets"]).rjust(2)
-            pts = str(s["points"]).rjust(3)
-            lines.append(f"`{r:<2} {name} {p} {w} {d} {l} {gd} {cs} {pts}`")
-
-        embed = create_beastly_embed(
-            title=f"🏆 {t['name']} • Standings Table",
-            description="\n".join(lines),
-            color=COLOR_BEASTLY_GOLD,
-        )
-        await interaction.followup.send(embed=embed)
+            await self.db.ensure_tournament_seeded(interaction.guild_id)
+            t = await self.db.get_tournament_by_season(interaction.guild_id, competition_type=competition.lower(), season_number=season) if season else await self.db.get_active_tournament(interaction.guild_id, competition_type=competition.lower())
+            if not t:
+                await interaction.followup.send(embed=error_embed("No Standings", "No active tournament found."), ephemeral=True)
+                return
+            standings = await self.db.get_tournament_standings(t["id"])
+            header = "`#  Team                  P   W  D  L   GD  CS  PTS`"
+            lines = [header]
+            for s in standings:
+                lines.append(f"`{s['rank']:<2} {(s['name'][:18]).ljust(18)} {str(s['played']).rjust(2)} {str(s['won']).rjust(2)} {str(s['drawn']).rjust(2)} {str(s['lost']).rjust(2)} {s['goal_difference']:+4d} {str(s['clean_sheets']).rjust(2)} {str(s['points']).rjust(3)}`")
+            embed = create_beastly_embed(title=f"🏆 {t['name']} • Standings Table", description="\n".join(lines), color=COLOR_BEASTLY_GOLD)
+            await interaction.followup.send(embed=embed)
 
 
 async def setup(bot: commands.Bot):

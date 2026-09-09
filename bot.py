@@ -41,7 +41,6 @@ COGS = [
     "cogs.sofifa",
     "cogs.auction",
     "cogs.matches",
-    "cogs.stats",
     "cogs.betting",
     "cogs.season",
     "utils.backup",

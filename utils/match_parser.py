@@ -11,21 +11,32 @@ from collections import defaultdict
 from typing import Any, Dict, List, Optional, Tuple
 
 import aiohttp
-from bs4 import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None
 
 logger = logging.getLogger("BeastlyBank.MatchParser")
 
 
 def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
     """Parse complete tournament data from matchsimulator.com HTML page."""
-    soup = BeautifulSoup(html_text, "html.parser")
+    soup = BeautifulSoup(html_text, "html.parser") if BeautifulSoup else None
 
     # 1. Title and basic metadata
-    title_elem = soup.find("h1", class_="page-header-title")
-    tournament_name = title_elem.get_text(strip=True) if title_elem else "Tournament"
+    if soup:
+        title_elem = soup.find("h1", class_="page-header-title")
+        tournament_name = title_elem.get_text(strip=True) if title_elem else "Tournament"
 
-    subtitle_elem = soup.find("div", class_="page-header-subtitle")
-    season_subtitle = subtitle_elem.get_text(" ", strip=True) if subtitle_elem else ""
+        subtitle_elem = soup.find("div", class_="page-header-subtitle")
+        season_subtitle = subtitle_elem.get_text(" ", strip=True) if subtitle_elem else ""
+    else:
+        title_m = re.search(r'<h1[^>]*class=["\'][^"\']*page-header-title[^"\']*["\'][^>]*>(.*?)</h1>', html_text, re.DOTALL)
+        raw_t = re.sub(r'<[^>]+>', '', title_m.group(1)) if title_m else "Tournament"
+        tournament_name = re.sub(r'<!--.*?-->', '', raw_t).strip()
+        sub_m = re.search(r'<div[^>]*class=["\'][^"\']*page-header-subtitle[^"\']*["\'][^>]*>(.*?)</div>', html_text, re.DOTALL)
+        raw_s = re.sub(r'<[^>]+>', '', sub_m.group(1)) if sub_m else ""
+        season_subtitle = re.sub(r'<!--.*?-->', '', raw_s).strip()
 
     # 2. Extract fixturesInfo JSON from JavaScript
     fixtures_info = {}
@@ -158,27 +169,45 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
     # 4. Extract Player Stats from HTML Tables
     def parse_stat_table(container_id: str) -> List[Dict[str, Any]]:
         results = []
-        div = soup.find("div", id=container_id)
-        if not div:
-            return results
-        rows = div.find_all("tr")
-        for row in rows:
-            cols = row.find_all("td")
-            if len(cols) >= 4:
-                try:
-                    rank_txt = cols[0].get_text(strip=True)
-                    p_name = cols[1].get_text(strip=True)
-                    t_name = cols[2].get_text(strip=True)
-                    val_txt = cols[3].get_text(strip=True)
-                    val = int(re.sub(r"[^0-9]", "", val_txt)) if val_txt else 0
-                    results.append({
-                        "rank": int(rank_txt) if rank_txt.isdigit() else len(results) + 1,
-                        "player_name": p_name,
-                        "team_name": t_name,
-                        "stat_value": val,
-                    })
-                except Exception:
-                    continue
+        if soup:
+            div = soup.find("div", id=container_id)
+            if not div:
+                return results
+            rows = div.find_all("tr")
+            for row in rows:
+                cols = row.find_all("td")
+                if len(cols) >= 4:
+                    try:
+                        rank_txt = cols[0].get_text(strip=True)
+                        p_name = cols[1].get_text(strip=True)
+                        t_name = cols[2].get_text(strip=True)
+                        val_txt = cols[3].get_text(strip=True)
+                        val = int(re.sub(r"[^0-9]", "", val_txt)) if val_txt else 0
+                        results.append({
+                            "rank": int(rank_txt) if rank_txt.isdigit() else len(results) + 1,
+                            "player_name": p_name,
+                            "team_name": t_name,
+                            "stat_value": val,
+                        })
+                    except Exception:
+                        continue
+        else:
+            div_m = re.search(rf'id=["\']{container_id}["\'][^>]*>(.*?)</div>\s*</div>', html_text, re.DOTALL)
+            if div_m:
+                row_matches = re.findall(r'<tr[^>]*>(.*?)</tr>', div_m.group(1), re.DOTALL)
+                for r in row_matches:
+                    cols = [re.sub(r'<[^>]+>', '', c).strip() for c in re.findall(r'<td[^>]*>(.*?)</td>', r, re.DOTALL)]
+                    if len(cols) >= 4:
+                        try:
+                            val = int(re.sub(r"[^0-9]", "", cols[3])) if cols[3] else 0
+                            results.append({
+                                "rank": int(cols[0]) if cols[0].isdigit() else len(results) + 1,
+                                "player_name": cols[1],
+                                "team_name": cols[2],
+                                "stat_value": val,
+                            })
+                        except Exception:
+                            continue
         return results
 
     top_goals = parse_stat_table("playerStatsGoals")
@@ -189,29 +218,30 @@ def parse_matchsimulator_html(html_text: str) -> Dict[str, Any]:
 
     # 5. Extract Player Availability
     suspensions = []
-    susp_div = soup.find("div", id="availabilityTypeSuspensions")
-    if susp_div:
-        for r in susp_div.find_all("tr"):
-            cols = r.find_all("td")
-            if len(cols) >= 3:
-                suspensions.append({
-                    "player_name": cols[0].get_text(strip=True),
-                    "team_name": cols[1].get_text(strip=True),
-                    "until": cols[2].get_text(strip=True),
-                })
-
     injuries = []
-    inj_div = soup.find("div", id="availabilityTypeInjuries")
-    if inj_div:
-        for r in inj_div.find_all("tr"):
-            cols = r.find_all("td")
-            if len(cols) >= 4:
-                injuries.append({
-                    "player_name": cols[0].get_text(strip=True),
-                    "team_name": cols[1].get_text(strip=True),
-                    "until": cols[2].get_text(strip=True),
-                    "injury": cols[3].get_text(strip=True),
-                })
+    if soup:
+        susp_div = soup.find("div", id="availabilityTypeSuspensions")
+        if susp_div:
+            for r in susp_div.find_all("tr"):
+                cols = r.find_all("td")
+                if len(cols) >= 3:
+                    suspensions.append({
+                        "player_name": cols[0].get_text(strip=True),
+                        "team_name": cols[1].get_text(strip=True),
+                        "until": cols[2].get_text(strip=True),
+                    })
+
+        inj_div = soup.find("div", id="availabilityTypeInjuries")
+        if inj_div:
+            for r in inj_div.find_all("tr"):
+                cols = r.find_all("td")
+                if len(cols) >= 4:
+                    injuries.append({
+                        "player_name": cols[0].get_text(strip=True),
+                        "team_name": cols[1].get_text(strip=True),
+                        "until": cols[2].get_text(strip=True),
+                        "injury": cols[3].get_text(strip=True),
+                    })
 
     # 6. Aggregate Comprehensive Player Profiles & Calculate Ratings
     players_map = {}

@@ -38,6 +38,7 @@ COGS = [
     "cogs.giveaways",
     "cogs.leaderboard",
     "cogs.admin",
+    "cogs.sofifa",
     "utils.backup",
 ]
 

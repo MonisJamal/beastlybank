@@ -4,9 +4,26 @@ Supports Cash, Community Points, Training Tokens, Clubs, Shop, Inventory, Giveaw
 """
 import json
 import logging
+import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 import aiosqlite
+
+
+def _normalize_search_text(text: str) -> str:
+    """Normalize text by stripping accents, ligatures, and converting to lowercase."""
+    if not text:
+        return ""
+    nfkd = unicodedata.normalize("NFKD", text)
+    stripped = "".join(c for c in nfkd if not unicodedata.combining(c))
+    stripped = (
+        stripped.replace("ø", "o")
+        .replace("Ø", "o")
+        .replace("æ", "ae")
+        .replace("Æ", "ae")
+        .replace("ß", "ss")
+    )
+    return stripped.lower().strip()
 
 from config import (
     DEFAULT_FORMATION,
@@ -231,6 +248,40 @@ class DatabaseManager:
             except Exception:
                 pass
 
+            # SoFIFA Sep 19 2025 FC 26 Players Cache & Autocomplete Index
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS sofifa_players (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    full_name TEXT NOT NULL,
+                    primary_pos TEXT NOT NULL,
+                    positions TEXT,
+                    overall_rating INTEGER NOT NULL,
+                    potential INTEGER NOT NULL,
+                    age INTEGER NOT NULL,
+                    team TEXT,
+                    nationality TEXT,
+                    value TEXT,
+                    wage TEXT,
+                    avatar_url TEXT,
+                    sofifa_url TEXT NOT NULL,
+                    data_json TEXT NOT NULL,
+                    search_text TEXT,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+            await cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sofifa_lookup ON sofifa_players (LOWER(name), LOWER(full_name));"
+            )
+            await cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sofifa_search ON sofifa_players (search_text);"
+            )
+            await cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sofifa_ovr ON sofifa_players (overall_rating DESC);"
+            )
+
             # Server Settings (Economy, Purchases, Shop toggles)
             await cur.execute(
                 """
@@ -384,6 +435,7 @@ class DatabaseManager:
                 "ALTER TABLE clubs ADD COLUMN slogan_1 TEXT DEFAULT NULL;",
                 "ALTER TABLE clubs ADD COLUMN slogan_2 TEXT DEFAULT NULL;",
                 "ALTER TABLE clubs ADD COLUMN chant TEXT DEFAULT NULL;",
+                "ALTER TABLE sofifa_players ADD COLUMN search_text TEXT;",
             ]:
                 try:
                     await cur.execute(col_stmt)
@@ -3097,3 +3149,165 @@ class DatabaseManager:
                     f"• **{p2['player_name']}**: Now **{p1['position']}**\n"
                     f"Club: **[{club['tag']}] {club['name']}**"
                 )
+
+    # ------------------ SoFIFA Sep 19 2025 FC 26 Players Cache ------------------ #
+
+    async def cache_sofifa_players(self, players: List[Dict[str, Any]]) -> int:
+        """Upsert a list of parsed SoFIFA FC 26 players into SQLite cache."""
+        if not players:
+            return 0
+        conn = await self.connect()
+        inserted = 0
+        async with conn.cursor() as cur:
+            for p in players:
+                try:
+                    search_text = p.get("search_text") or f"{_normalize_search_text(p.get('name', ''))} {_normalize_search_text(p.get('full_name', ''))}"
+                    await cur.execute(
+                        """
+                        INSERT INTO sofifa_players (
+                            id, name, full_name, primary_pos, positions,
+                            overall_rating, potential, age, team, nationality,
+                            value, wage, avatar_url, sofifa_url, data_json, search_text
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(id) DO UPDATE SET
+                            name = excluded.name,
+                            full_name = excluded.full_name,
+                            primary_pos = excluded.primary_pos,
+                            positions = excluded.positions,
+                            overall_rating = excluded.overall_rating,
+                            potential = excluded.potential,
+                            age = excluded.age,
+                            team = excluded.team,
+                            nationality = excluded.nationality,
+                            value = excluded.value,
+                            wage = excluded.wage,
+                            avatar_url = excluded.avatar_url,
+                            sofifa_url = excluded.sofifa_url,
+                            data_json = excluded.data_json,
+                            search_text = excluded.search_text;
+                        """,
+                        (
+                            p["id"],
+                            p["name"],
+                            p.get("full_name") or p["name"],
+                            p.get("primary_pos", "ST"),
+                            p.get("positions", p.get("primary_pos", "ST")),
+                            int(p.get("overall_rating", 75)),
+                            int(p.get("potential", 75)),
+                            int(p.get("age", 25)),
+                            p.get("team", "Free Agent"),
+                            p.get("nationality", "Unknown"),
+                            p.get("value", "€0"),
+                            p.get("wage", "€0"),
+                            p.get("avatar", ""),
+                            p.get("url", f"https://sofifa.com/player/{p['id']}"),
+                            json.dumps(p),
+                            search_text,
+                        ),
+                    )
+                    inserted += 1
+                except Exception as e:
+                    logger.warning("Error caching player %s: %s", p.get("name"), e)
+            await conn.commit()
+        return inserted
+
+    async def search_cached_sofifa_players(self, query: str, limit: int = 25) -> List[Dict[str, Any]]:
+        """Fast instant search for Discord autocomplete matching player name or full name."""
+        clean = query.strip()
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            if not clean:
+                await cur.execute(
+                    """
+                    SELECT id, name, full_name, primary_pos, overall_rating, potential, team, avatar_url, sofifa_url
+                    FROM sofifa_players
+                    ORDER BY overall_rating DESC, potential DESC
+                    LIMIT ?;
+                    """,
+                    (limit,),
+                )
+            else:
+                norm = _normalize_search_text(clean)
+                pattern = f"%{norm}%"
+                prefix_pattern = f"{norm}%"
+                word_pattern = f"% {norm}%"
+                raw_pattern = f"%{clean.lower()}%"
+                await cur.execute(
+                    """
+                    SELECT id, name, full_name, primary_pos, overall_rating, potential, team, avatar_url, sofifa_url
+                    FROM sofifa_players
+                    WHERE search_text LIKE ? OR LOWER(name) LIKE ? OR LOWER(full_name) LIKE ?
+                    ORDER BY
+                        CASE
+                            WHEN search_text LIKE ? THEN 1
+                            WHEN search_text LIKE ? THEN 2
+                            WHEN search_text LIKE ? THEN 3
+                            ELSE 4
+                        END,
+                        overall_rating DESC
+                    LIMIT ?;
+                    """,
+                    (pattern, raw_pattern, raw_pattern, prefix_pattern, word_pattern, pattern, limit),
+                )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_cached_sofifa_player(self, query: str) -> Optional[Dict[str, Any]]:
+        """Retrieve full player details from local SQLite cache by ID or exact/fuzzy name."""
+        clean = query.strip()
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            if clean.isdigit():
+                await cur.execute("SELECT data_json FROM sofifa_players WHERE id = ?;", (int(clean),))
+                row = await cur.fetchone()
+                if row:
+                    return json.loads(row["data_json"])
+
+            norm = _normalize_search_text(clean)
+
+            # 1. Match exact name, full name, or search text
+            await cur.execute(
+                """
+                SELECT data_json FROM sofifa_players
+                WHERE LOWER(name) = LOWER(?) OR LOWER(full_name) = LOWER(?) OR search_text = ?
+                ORDER BY overall_rating DESC LIMIT 1;
+                """,
+                (clean, clean, norm),
+            )
+            row = await cur.fetchone()
+            if row:
+                return json.loads(row["data_json"])
+
+            # 2. Substring match on normalized search_text
+            pattern = f"%{norm}%"
+            prefix_pattern = f"{norm}%"
+            word_pattern = f"% {norm}%"
+            raw_pattern = f"%{clean.lower()}%"
+            await cur.execute(
+                """
+                SELECT data_json FROM sofifa_players
+                WHERE search_text LIKE ? OR LOWER(name) LIKE ? OR LOWER(full_name) LIKE ?
+                ORDER BY
+                    CASE
+                        WHEN search_text LIKE ? THEN 1
+                        WHEN search_text LIKE ? THEN 2
+                        WHEN search_text LIKE ? THEN 3
+                        ELSE 4
+                    END,
+                    overall_rating DESC
+                LIMIT 1;
+                """,
+                (pattern, raw_pattern, raw_pattern, prefix_pattern, word_pattern, pattern),
+            )
+            row = await cur.fetchone()
+            if row:
+                return json.loads(row["data_json"])
+        return None
+
+    async def get_cached_sofifa_player_count(self) -> int:
+        """Count total cached SoFIFA players."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT COUNT(*) as cnt FROM sofifa_players;")
+            row = await cur.fetchone()
+            return row["cnt"] if row else 0

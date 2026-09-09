@@ -4350,6 +4350,7 @@ class DatabaseManager:
                     s.assists,
                     s.rating,
                     s.matches_played,
+                    s.minutes_played,
                     s.clean_sheets,
                     t.season_number,
                     t.name as tournament_name
@@ -4362,6 +4363,25 @@ class DatabaseManager:
             )
             res["seasons"] = [dict(r) for r in await cur.fetchall()]
             return res
+
+    async def get_club_player_stats(self, tournament_id: int, team_name: str) -> List[Dict[str, Any]]:
+        """Fetch all tournament player records for a specific club/team."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT
+                    player_name, team_name, goals, assists, own_goals,
+                    yellow_cards, red_cards, clean_sheets, matches_played,
+                    minutes_played, rating
+                FROM tournament_player_stats
+                WHERE tournament_id = ? AND LOWER(team_name) LIKE ?
+                ORDER BY rating DESC, goals DESC, assists DESC;
+                """,
+                (tournament_id, f"%{team_name.strip().lower()}%"),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
 
     async def conclude_tournament(self, tournament_id: int) -> Tuple[bool, str, Dict[str, Any]]:
         """Conclude and archive an active tournament, immortalizing awards in season_history."""

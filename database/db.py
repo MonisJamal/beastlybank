@@ -4119,6 +4119,7 @@ class DatabaseManager:
                         ),
                     )
 
+            await conn.commit()
             await cur.execute("SELECT * FROM tournaments WHERE id = ?;", (tournament_id,))
             t_row = await cur.fetchone()
             return dict(t_row)
@@ -4152,6 +4153,7 @@ class DatabaseManager:
                 conn = await self.connect()
                 async with conn.cursor() as cur:
                     await cur.execute("UPDATE tournaments SET status = 'active' WHERE id = ?;", (saved["id"],))
+                    await conn.commit()
             return saved
         except Exception as e:
             logger.warning("ensure_tournament_seeded error: %s", e)
@@ -4390,6 +4392,7 @@ class DatabaseManager:
                 "UPDATE tournaments SET status = 'completed', champion = ?, runner_up = ? WHERE id = ?;",
                 (champ, runner, tournament_id),
             )
+            await conn.commit()
             t["status"] = "completed"
             t["champion"] = champ
             t["runner_up"] = runner
@@ -4485,6 +4488,7 @@ class DatabaseManager:
                 ),
             )
             bet_id = cur.lastrowid
+            await conn.commit()
             await cur.execute("SELECT * FROM matchday_bets WHERE id = ?;", (bet_id,))
             bet_data = dict(await cur.fetchone())
             return True, f"Bet placed! Choice: **{bet_type.upper()}**, Amount: **{amount:,} Cash** ({funding_source.capitalize()}).", bet_data
@@ -4586,4 +4590,5 @@ class DatabaseManager:
                         "source": src,
                     })
 
+            await conn.commit()
             return payouts

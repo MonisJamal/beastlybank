@@ -73,10 +73,9 @@ async def upload_database_backup(
         if hasattr(bot, "db"):
             try:
                 conn = await bot.db.connect()
-                await conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-                await conn.commit()
+                await conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
             except Exception as cp_err:
-                logger.warning("WAL checkpoint warning: %s", cp_err)
+                logger.debug("WAL checkpoint note: %s", cp_err)
 
         channel = bot.get_channel(BACKUP_CHANNEL_ID)
         if not channel:

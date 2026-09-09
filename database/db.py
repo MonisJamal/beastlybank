@@ -4289,26 +4289,30 @@ class DatabaseManager:
         """Fetch distinct player names and their teams from tournament match stats."""
         conn = await self.connect()
         async with conn.cursor() as cur:
+            await cur.execute("SELECT id FROM tournaments WHERE guild_id = ? LIMIT 1;", (guild_id,))
+            has_gid = await cur.fetchone()
+            target_gid = guild_id if has_gid else 0
+
             if season_number is not None:
                 await cur.execute(
                     """
                     SELECT DISTINCT s.player_name, s.team_name
                     FROM tournament_player_stats s
                     JOIN tournaments t ON s.tournament_id = t.id
-                    WHERE (s.guild_id = ? OR s.guild_id = 0) AND t.season_number = ?
+                    WHERE s.guild_id = ? AND t.season_number = ?
                     ORDER BY s.player_name ASC;
                     """,
-                    (guild_id, season_number),
+                    (target_gid, season_number),
                 )
             else:
                 await cur.execute(
                     """
                     SELECT DISTINCT player_name, team_name
                     FROM tournament_player_stats
-                    WHERE guild_id = ? OR guild_id = 0
+                    WHERE guild_id = ?
                     ORDER BY player_name ASC;
                     """,
-                    (guild_id,),
+                    (target_gid,),
                 )
             rows = await cur.fetchall()
             return [{"player_name": r[0], "team_name": r[1]} for r in rows]
@@ -4325,9 +4329,12 @@ class DatabaseManager:
                     (tournament_id,),
                 )
             elif guild_id is not None:
+                await cur.execute("SELECT id FROM tournaments WHERE guild_id = ? LIMIT 1;", (guild_id,))
+                has_gid = await cur.fetchone()
+                target_gid = guild_id if has_gid else 0
                 await cur.execute(
-                    "SELECT DISTINCT team_name FROM tournament_player_stats WHERE guild_id = ? OR guild_id = 0 ORDER BY team_name ASC;",
-                    (guild_id,),
+                    "SELECT DISTINCT team_name FROM tournament_player_stats WHERE guild_id = ? ORDER BY team_name ASC;",
+                    (target_gid,),
                 )
             else:
                 await cur.execute("SELECT DISTINCT team_name FROM tournament_player_stats ORDER BY team_name ASC;")
@@ -4353,35 +4360,77 @@ class DatabaseManager:
 
         conn = await self.connect()
         async with conn.cursor() as cur:
-            # 1. Direct SQL search attempt
+            # Determine effective guild_id to avoid blending duplicate guild=0 records
+            await cur.execute("SELECT id FROM tournaments WHERE guild_id = ? LIMIT 1;", (guild_id,))
+            has_gid = await cur.fetchone()
+            target_gid = guild_id if has_gid else 0
+
+            # 1. Resolve canonical player name
             matched_name = target_name
+            await cur.execute(
+                "SELECT player_name FROM tournament_player_stats WHERE guild_id = ? AND LOWER(player_name) = LOWER(?) LIMIT 1;",
+                (target_gid, target_name),
+            )
+            direct_row = await cur.fetchone()
+            if direct_row:
+                matched_name = direct_row[0]
+            else:
+                avail = await self.get_distinct_tournament_players(target_gid, season_number)
+                avail_names = [p["player_name"] for p in avail]
+                resolved_name, score, _ = match_player_name(target_name, avail_names)
+                if not resolved_name or score < 0.70:
+                    return None
+                matched_name = resolved_name
+
+            # 2. Query cumulative stats and competition breakdowns
             if season_number is not None:
                 await cur.execute(
                     """
                     SELECT
-                        s.player_name,
-                        s.team_name,
-                        s.goals as total_goals,
-                        s.assists as total_assists,
-                        s.own_goals as total_own_goals,
-                        s.yellow_cards as total_yellow_cards,
-                        s.red_cards as total_red_cards,
-                        s.clean_sheets as total_clean_sheets,
-                        s.matches_played as total_matches,
-                        s.minutes_played as total_minutes,
-                        s.rating as avg_rating,
-                        t.name as tournament_name,
-                        t.season_number
+                        player_name,
+                        team_name,
+                        SUM(goals) as total_goals,
+                        SUM(assists) as total_assists,
+                        SUM(own_goals) as total_own_goals,
+                        SUM(yellow_cards) as total_yellow_cards,
+                        SUM(red_cards) as total_red_cards,
+                        SUM(clean_sheets) as total_clean_sheets,
+                        SUM(matches_played) as total_matches,
+                        SUM(minutes_played) as total_minutes,
+                        AVG(rating) as avg_rating
                     FROM tournament_player_stats s
                     JOIN tournaments t ON s.tournament_id = t.id
-                    WHERE (s.guild_id = ? OR s.guild_id = 0) AND LOWER(s.player_name) LIKE ? AND t.season_number = ?
-                    LIMIT 1;
+                    WHERE s.guild_id = ? AND s.player_name = ? AND t.season_number = ?
+                    GROUP BY s.player_name;
                     """,
-                    (guild_id, f"%{target_name.lower()}%", season_number),
+                    (target_gid, matched_name, season_number),
                 )
                 row = await cur.fetchone()
-                if row:
-                    return dict(row)
+                if not row:
+                    return None
+                res = dict(row)
+                res["season_number"] = season_number
+                await cur.execute(
+                    """
+                    SELECT
+                        s.team_name,
+                        s.goals,
+                        s.assists,
+                        s.rating,
+                        s.matches_played,
+                        s.minutes_played,
+                        s.clean_sheets,
+                        t.season_number,
+                        t.name as tournament_name
+                    FROM tournament_player_stats s
+                    JOIN tournaments t ON s.tournament_id = t.id
+                    WHERE s.guild_id = ? AND s.player_name = ? AND t.season_number = ?
+                    ORDER BY t.id ASC;
+                    """,
+                    (target_gid, matched_name, season_number),
+                )
+                res["seasons"] = [dict(r) for r in await cur.fetchall()]
+                return res
             else:
                 await cur.execute(
                     """
@@ -4398,91 +4447,10 @@ class DatabaseManager:
                         SUM(minutes_played) as total_minutes,
                         AVG(rating) as avg_rating
                     FROM tournament_player_stats
-                    WHERE (guild_id = ? OR guild_id = 0) AND LOWER(player_name) LIKE ?
-                    GROUP BY LOWER(player_name);
-                    """,
-                    (guild_id, f"%{target_name.lower()}%"),
-                )
-                row = await cur.fetchone()
-                if row:
-                    matched_name = row[0]
-                    res = dict(row)
-                    await cur.execute(
-                        """
-                        SELECT
-                            s.team_name,
-                            s.goals,
-                            s.assists,
-                            s.rating,
-                            s.matches_played,
-                            s.minutes_played,
-                            s.clean_sheets,
-                            t.season_number,
-                            t.name as tournament_name
-                        FROM tournament_player_stats s
-                        JOIN tournaments t ON s.tournament_id = t.id
-                        WHERE (s.guild_id = ? OR s.guild_id = 0) AND LOWER(s.player_name) = LOWER(?)
-                        ORDER BY t.season_number ASC;
-                        """,
-                        (guild_id, matched_name),
-                    )
-                    res["seasons"] = [dict(r) for r in await cur.fetchall()]
-                    return res
-
-            # 2. Smart fuzzy & expansion matching
-            avail = await self.get_distinct_tournament_players(guild_id, season_number)
-            avail_names = [p["player_name"] for p in avail]
-            resolved_name, score, _ = match_player_name(target_name, avail_names)
-
-            if not resolved_name or score < 0.70:
-                return None
-
-            if season_number is not None:
-                await cur.execute(
-                    """
-                    SELECT
-                        s.player_name,
-                        s.team_name,
-                        s.goals as total_goals,
-                        s.assists as total_assists,
-                        s.own_goals as total_own_goals,
-                        s.yellow_cards as total_yellow_cards,
-                        s.red_cards as total_red_cards,
-                        s.clean_sheets as total_clean_sheets,
-                        s.matches_played as total_matches,
-                        s.minutes_played as total_minutes,
-                        s.rating as avg_rating,
-                        t.name as tournament_name,
-                        t.season_number
-                    FROM tournament_player_stats s
-                    JOIN tournaments t ON s.tournament_id = t.id
-                    WHERE (s.guild_id = ? OR s.guild_id = 0) AND s.player_name = ? AND t.season_number = ?
-                    LIMIT 1;
-                    """,
-                    (guild_id, resolved_name, season_number),
-                )
-                row = await cur.fetchone()
-                return dict(row) if row else None
-            else:
-                await cur.execute(
-                    """
-                    SELECT
-                        player_name,
-                        team_name,
-                        SUM(goals) as total_goals,
-                        SUM(assists) as total_assists,
-                        SUM(own_goals) as total_own_goals,
-                        SUM(yellow_cards) as total_yellow_cards,
-                        SUM(red_cards) as total_red_cards,
-                        SUM(clean_sheets) as total_clean_sheets,
-                        SUM(matches_played) as total_matches,
-                        SUM(minutes_played) as total_minutes,
-                        AVG(rating) as avg_rating
-                    FROM tournament_player_stats
-                    WHERE (guild_id = ? OR guild_id = 0) AND player_name = ?
+                    WHERE guild_id = ? AND player_name = ?
                     GROUP BY player_name;
                     """,
-                    (guild_id, resolved_name),
+                    (target_gid, matched_name),
                 )
                 row = await cur.fetchone()
                 if not row:
@@ -4502,10 +4470,10 @@ class DatabaseManager:
                         t.name as tournament_name
                     FROM tournament_player_stats s
                     JOIN tournaments t ON s.tournament_id = t.id
-                    WHERE (s.guild_id = ? OR s.guild_id = 0) AND s.player_name = ?
-                    ORDER BY t.season_number ASC;
+                    WHERE s.guild_id = ? AND s.player_name = ?
+                    ORDER BY t.season_number ASC, t.id ASC;
                     """,
-                    (guild_id, resolved_name),
+                    (target_gid, matched_name),
                 )
                 res["seasons"] = [dict(r) for r in await cur.fetchall()]
                 return res

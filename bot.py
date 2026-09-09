@@ -39,6 +39,7 @@ COGS = [
     "cogs.leaderboard",
     "cogs.admin",
     "cogs.sofifa",
+    "cogs.auction",
     "utils.backup",
 ]
 
@@ -131,6 +132,16 @@ class BeastlyBankBot(commands.Bot):
                 logger.info("Loaded extension: %s", cog)
             except Exception as e:
                 logger.error("Failed to load extension %s: %s", cog, e, exc_info=True)
+
+        # Register persistent views for active market auctions
+        try:
+            active_aucs = await self.db.get_all_active_auctions()
+            from cogs.auction import MarketAuctionView
+            for a in active_aucs:
+                self.add_view(MarketAuctionView(a["id"], a["max_increment"], is_active=True))
+            logger.info("Restored %d active auction views", len(active_aucs))
+        except Exception as e:
+            logger.warning("Could not restore active auction views: %s", e)
 
         # Sync Slash Commands
         try:

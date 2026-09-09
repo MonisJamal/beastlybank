@@ -331,6 +331,59 @@ class DatabaseManager:
                 """
             )
 
+            # Market Auctions Table
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS market_auctions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    channel_id INTEGER NOT NULL,
+                    message_id INTEGER DEFAULT NULL,
+                    seller_id INTEGER NOT NULL,
+                    seller_club_id INTEGER DEFAULT NULL,
+                    player_name TEXT NOT NULL,
+                    ovr INTEGER NOT NULL,
+                    potential INTEGER NOT NULL,
+                    position TEXT NOT NULL DEFAULT 'ST',
+                    starting_bid INTEGER NOT NULL,
+                    max_increment INTEGER NOT NULL,
+                    current_bid INTEGER NOT NULL DEFAULT 0,
+                    highest_bidder_id INTEGER DEFAULT NULL,
+                    highest_bidder_club_id INTEGER DEFAULT NULL,
+                    escrow_source TEXT DEFAULT NULL,
+                    status TEXT NOT NULL DEFAULT 'active',
+                    photo_url TEXT DEFAULT NULL,
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TEXT NOT NULL,
+                    idle_timeout_seconds INTEGER DEFAULT NULL,
+                    last_bid_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                );
+                """
+            )
+
+            # Auction Bids Audit Table
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS auction_bids (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    auction_id INTEGER NOT NULL,
+                    bidder_id INTEGER NOT NULL,
+                    bidder_club_id INTEGER DEFAULT NULL,
+                    bid_amount INTEGER NOT NULL,
+                    increment INTEGER NOT NULL,
+                    escrow_source TEXT NOT NULL DEFAULT 'treasury',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY (auction_id) REFERENCES market_auctions(id) ON DELETE CASCADE
+                );
+                """
+            )
+            await cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_auction_guild_status ON market_auctions (guild_id, status);"
+            )
+            await cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_auction_expires ON market_auctions (status, expires_at);"
+            )
+
             # Performance Indices
             await cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions (guild_id, sender_id, receiver_id);"
@@ -3311,3 +3364,423 @@ class DatabaseManager:
             await cur.execute("SELECT COUNT(*) as cnt FROM sofifa_players;")
             row = await cur.fetchone()
             return row["cnt"] if row else 0
+
+    # ── Market Auction System ──
+
+    async def create_market_auction(
+        self,
+        guild_id: int,
+        channel_id: int,
+        seller_id: int,
+        player_name: str,
+        ovr: int,
+        potential: int,
+        starting_bid: int,
+        max_increment: int,
+        expires_at: str,
+        idle_timeout_seconds: Optional[int] = None,
+        position: str = "ST",
+        seller_club_id: Optional[int] = None,
+        photo_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a new player auction in the market."""
+        now_str = datetime.now(timezone.utc).isoformat()
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                INSERT INTO market_auctions (
+                    guild_id, channel_id, seller_id, seller_club_id,
+                    player_name, ovr, potential, position,
+                    starting_bid, max_increment, current_bid,
+                    status, photo_url, created_at, expires_at,
+                    idle_timeout_seconds, last_bid_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 'active', ?, ?, ?, ?, ?);
+                """,
+                (
+                    guild_id,
+                    channel_id,
+                    seller_id,
+                    seller_club_id,
+                    player_name.strip(),
+                    ovr,
+                    potential,
+                    position.upper() if position else "ST",
+                    starting_bid,
+                    max_increment,
+                    photo_url,
+                    now_str,
+                    expires_at,
+                    idle_timeout_seconds,
+                    now_str,
+                ),
+            )
+            auction_id = cur.lastrowid
+            await cur.execute("SELECT * FROM market_auctions WHERE id = ?;", (auction_id,))
+            row = await cur.fetchone()
+            return dict(row)
+
+    async def set_auction_message_id(self, auction_id: int, message_id: int) -> None:
+        """Link the Discord message ID to the auction."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "UPDATE market_auctions SET message_id = ? WHERE id = ?;",
+                (message_id, auction_id),
+            )
+
+    async def get_auction(self, auction_id: int) -> Optional[Dict[str, Any]]:
+        """Fetch an auction by ID."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT * FROM market_auctions WHERE id = ?;", (auction_id,))
+            row = await cur.fetchone()
+            return dict(row) if row else None
+
+    async def get_active_market_auctions(self, guild_id: int) -> List[Dict[str, Any]]:
+        """Fetch all active auctions for a guild."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM market_auctions WHERE guild_id = ? AND status = 'active' ORDER BY expires_at ASC;",
+                (guild_id,),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_all_active_auctions(self) -> List[Dict[str, Any]]:
+        """Fetch all active auctions across all guilds for the background task."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM market_auctions WHERE status = 'active';",
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def get_auction_bids(self, auction_id: int, limit: int = 10) -> List[Dict[str, Any]]:
+        """Fetch recent bids for an auction."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute(
+                "SELECT * FROM auction_bids WHERE auction_id = ? ORDER BY id DESC LIMIT ?;",
+                (auction_id, limit),
+            )
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
+    async def place_auction_bid(
+        self,
+        auction_id: int,
+        bidder_id: int,
+        increment: int,
+        guild_id: int,
+    ) -> Tuple[bool, str, Dict[str, Any], Optional[Dict[str, Any]]]:
+        """
+        Place a bid on an active auction with escrow balance debit and outbid refund.
+        Priority:
+        1. Try bidder's club treasury cash (if in club and sufficient).
+        2. If not enough in treasury or not in club, try bidder's personal cash.
+        3. If neither has enough, reject.
+        """
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT * FROM market_auctions WHERE id = ?;", (auction_id,))
+            auction_row = await cur.fetchone()
+            if not auction_row:
+                return False, "Auction not found.", {}, None
+            auction = dict(auction_row)
+
+            if auction["status"] != "active":
+                return False, f"This auction is {auction['status']} and no longer accepts bids.", auction, None
+
+            now = datetime.now(timezone.utc)
+            # Check absolute expiration
+            exp_dt = datetime.fromisoformat(auction["expires_at"])
+            if exp_dt.tzinfo is None:
+                exp_dt = exp_dt.replace(tzinfo=timezone.utc)
+            if now >= exp_dt:
+                return False, "This auction has already expired.", auction, None
+
+            # Check idle inactivity timeout
+            if auction.get("idle_timeout_seconds"):
+                last_dt = datetime.fromisoformat(auction["last_bid_at"])
+                if last_dt.tzinfo is None:
+                    last_dt = last_dt.replace(tzinfo=timezone.utc)
+                if (now - last_dt).total_seconds() >= auction["idle_timeout_seconds"]:
+                    return False, "This auction has closed due to bidding inactivity.", auction, None
+
+            # Prevent self-bidding
+            if bidder_id == auction["seller_id"]:
+                return False, "You cannot bid on your own player auction.", auction, None
+
+            # Prevent bidding against oneself
+            if bidder_id == auction["highest_bidder_id"]:
+                return False, "You already hold the highest bid on this player!", auction, None
+
+            # Validate increment
+            if increment <= 0 or increment > auction["max_increment"]:
+                return False, f"Bid increment must be between 1 and {auction['max_increment']:,} Cash.", auction, None
+
+            # Compute new bid
+            current_bid = auction["current_bid"]
+            base_price = current_bid if current_bid > 0 else auction["starting_bid"]
+            new_bid = base_price + increment
+
+            # Check funding: Club Treasury first, then Personal Balance
+            bidder_club = await self.get_club_by_user(guild_id, bidder_id)
+            bidder_club_id = bidder_club["id"] if bidder_club else None
+            funding_source = None
+
+            await self.get_or_create_user(bidder_id, guild_id)
+            await cur.execute("SELECT cash FROM users WHERE user_id = ? AND guild_id = ?;", (bidder_id, guild_id))
+            user_row = await cur.fetchone()
+            personal_cash = user_row["cash"] if user_row else 0
+
+            if bidder_club and bidder_club.get("treasury_cash", 0) >= new_bid:
+                funding_source = "treasury"
+                await cur.execute(
+                    "UPDATE clubs SET treasury_cash = treasury_cash - ? WHERE id = ?;",
+                    (new_bid, bidder_club_id),
+                )
+            elif personal_cash >= new_bid:
+                funding_source = "personal"
+                await cur.execute(
+                    "UPDATE users SET cash = cash - ? WHERE user_id = ? AND guild_id = ?;",
+                    (new_bid, bidder_id, guild_id),
+                )
+            else:
+                club_bal_str = f"{bidder_club.get('treasury_cash', 0):,}" if bidder_club else "N/A (No club)"
+                return False, (
+                    f"Insufficient funds to place bid of **{new_bid:,} Cash**!\n"
+                    f"• **Club Treasury**: {club_bal_str} Cash\n"
+                    f"• **Personal Balance**: {personal_cash:,} Cash"
+                ), auction, None
+
+            # Record escrow transaction
+            payer_desc = f"Club [{bidder_club['tag']}] Treasury" if funding_source == "treasury" else f"<@{bidder_id}> Personal Cash"
+            await cur.execute(
+                """
+                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                VALUES (?, ?, NULL, 'cash', ?, 'auction_escrow', ?);
+                """,
+                (guild_id, bidder_id, new_bid, f"Auction Bid Escrow: {auction['player_name']} (Funded via {payer_desc})"),
+            )
+
+            # Refund previous highest bidder
+            outbid_info = None
+            if auction["highest_bidder_id"] and current_bid > 0:
+                prev_id = auction["highest_bidder_id"]
+                prev_club_id = auction["highest_bidder_club_id"]
+                prev_src = auction.get("escrow_source") or "treasury"
+                prev_amount = current_bid
+
+                if prev_src == "treasury" and prev_club_id:
+                    await cur.execute(
+                        "UPDATE clubs SET treasury_cash = treasury_cash + ? WHERE id = ?;",
+                        (prev_amount, prev_club_id),
+                    )
+                else:
+                    await cur.execute(
+                        "UPDATE users SET cash = cash + ? WHERE user_id = ? AND guild_id = ?;",
+                        (prev_amount, prev_id, guild_id),
+                    )
+
+                await cur.execute(
+                    """
+                    INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                    VALUES (?, NULL, ?, 'cash', ?, 'auction_refund', ?);
+                    """,
+                    (guild_id, prev_id, prev_amount, f"Auction Outbid Refund: {auction['player_name']} (Refunded to {prev_src})"),
+                )
+
+                outbid_info = {
+                    "user_id": prev_id,
+                    "club_id": prev_club_id,
+                    "amount": prev_amount,
+                    "source": prev_src,
+                }
+
+            # Anti-sniping: If less than 120s remaining on expires_at, extend by 120s
+            new_expires = exp_dt
+            if (exp_dt - now).total_seconds() < 120:
+                new_expires = now + timedelta(seconds=120)
+
+            now_iso = now.isoformat()
+            new_exp_iso = new_expires.isoformat()
+
+            # Record bid in auction_bids
+            await cur.execute(
+                """
+                INSERT INTO auction_bids (auction_id, bidder_id, bidder_club_id, bid_amount, increment, escrow_source, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?);
+                """,
+                (auction_id, bidder_id, bidder_club_id, new_bid, increment, funding_source, now_iso),
+            )
+
+            # Update market_auctions
+            await cur.execute(
+                """
+                UPDATE market_auctions
+                SET current_bid = ?,
+                    highest_bidder_id = ?,
+                    highest_bidder_club_id = ?,
+                    escrow_source = ?,
+                    last_bid_at = ?,
+                    expires_at = ?
+                WHERE id = ?;
+                """,
+                (new_bid, bidder_id, bidder_club_id, funding_source, now_iso, new_exp_iso, auction_id),
+            )
+
+            await cur.execute("SELECT * FROM market_auctions WHERE id = ?;", (auction_id,))
+            updated_row = await cur.fetchone()
+            return True, f"Bid placed successfully! New bid is **{new_bid:,} Cash**.", dict(updated_row), outbid_info
+
+    async def settle_auction(self, auction_id: int) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Settle an auction upon timer expiration or idle timeout.
+        If bids were placed:
+        - Transfers player to winner's club (or registers under user's club).
+        - Pays seller (club treasury or personal cash).
+        - Sets status to 'completed'.
+        If no bids were placed:
+        - Sets status to 'expired'.
+        """
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT * FROM market_auctions WHERE id = ?;", (auction_id,))
+            row = await cur.fetchone()
+            if not row:
+                return False, "Auction not found.", {}
+            auction = dict(row)
+
+            if auction["status"] != "active":
+                return False, f"Auction is already {auction['status']}.", auction
+
+            winner_id = auction["highest_bidder_id"]
+            winning_bid = auction["current_bid"]
+            guild_id = auction["guild_id"]
+            p_name = auction["player_name"]
+
+            # Case 1: Expired without any bids
+            if not winner_id or winning_bid == 0:
+                await cur.execute(
+                    "UPDATE market_auctions SET status = 'expired' WHERE id = ?;",
+                    (auction_id,),
+                )
+                auction["status"] = "expired"
+                return True, f"Auction for **{p_name}** expired with no bids.", auction
+
+            # Case 2: Winning bid placed
+            winner_club_id = auction["highest_bidder_club_id"]
+            if not winner_club_id:
+                w_club = await self.get_club_by_user(guild_id, winner_id)
+                winner_club_id = w_club["id"] if w_club else None
+
+            # Disburse winning bid to seller
+            seller_club_id = auction["seller_club_id"]
+            if seller_club_id:
+                await cur.execute(
+                    "UPDATE clubs SET treasury_cash = treasury_cash + ? WHERE id = ?;",
+                    (winning_bid, seller_club_id),
+                )
+                payee_desc = f"Club {seller_club_id} Treasury"
+            else:
+                seller_id = auction["seller_id"]
+                await self.get_or_create_user(seller_id, guild_id)
+                await cur.execute(
+                    "UPDATE users SET cash = cash + ? WHERE user_id = ? AND guild_id = ?;",
+                    (winning_bid, seller_id, guild_id),
+                )
+                payee_desc = f"<@{seller_id}> Personal Balance"
+
+            await cur.execute(
+                """
+                INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                VALUES (?, ?, ?, 'cash', ?, 'auction_payout', ?);
+                """,
+                (
+                    guild_id,
+                    winner_id,
+                    auction["seller_id"],
+                    winning_bid,
+                    f"Auction Settlement: {p_name} (Paid to {payee_desc})",
+                ),
+            )
+
+            # Transfer player to winning club
+            if winner_club_id:
+                # If seller had player in their club, delete old row
+                if seller_club_id:
+                    await cur.execute(
+                        "DELETE FROM club_players WHERE club_id = ? AND LOWER(player_name) = LOWER(?);",
+                        (seller_club_id, p_name),
+                    )
+                # Remove if already exists in winning club (prevent duplicate)
+                await cur.execute(
+                    "DELETE FROM club_players WHERE club_id = ? AND LOWER(player_name) = LOWER(?);",
+                    (winner_club_id, p_name),
+                )
+                # Insert into winning club
+                await cur.execute(
+                    """
+                    INSERT INTO club_players (club_id, guild_id, player_name, role, position, status, rating, potential)
+                    VALUES (?, ?, ?, 'Player', ?, 'starting', ?, ?);
+                    """,
+                    (winner_club_id, guild_id, p_name, auction.get("position", "ST"), auction["ovr"], auction["potential"]),
+                )
+
+            # Mark completed
+            await cur.execute(
+                "UPDATE market_auctions SET status = 'completed' WHERE id = ?;",
+                (auction_id,),
+            )
+            auction["status"] = "completed"
+            return True, f"Auction won by <@{winner_id}> for **{winning_bid:,} Cash**!", auction
+
+    async def cancel_market_auction(
+        self,
+        auction_id: int,
+        caller_id: int,
+        is_admin: bool = False,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """Cancel an active auction and refund any active high bidder."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT * FROM market_auctions WHERE id = ?;", (auction_id,))
+            row = await cur.fetchone()
+            if not row:
+                return False, "Auction not found.", {}
+            auction = dict(row)
+
+            if auction["status"] != "active":
+                return False, f"Auction is already {auction['status']}.", auction
+
+            if not is_admin and caller_id != auction["seller_id"]:
+                return False, "Only the auction seller or an administrator can cancel this auction.", auction
+
+            # Refund high bidder if any
+            if auction["highest_bidder_id"] and auction["current_bid"] > 0:
+                bidder_id = auction["highest_bidder_id"]
+                club_id = auction["highest_bidder_club_id"]
+                amt = auction["current_bid"]
+                src = auction.get("escrow_source") or "treasury"
+                guild_id = auction["guild_id"]
+
+                if src == "treasury" and club_id:
+                    await cur.execute("UPDATE clubs SET treasury_cash = treasury_cash + ? WHERE id = ?;", (amt, club_id))
+                else:
+                    await cur.execute("UPDATE users SET cash = cash + ? WHERE user_id = ? AND guild_id = ?;", (amt, bidder_id, guild_id))
+
+                await cur.execute(
+                    """
+                    INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                    VALUES (?, NULL, ?, 'cash', ?, 'auction_cancel_refund', ?);
+                    """,
+                    (guild_id, bidder_id, amt, f"Auction Cancellation Refund: {auction['player_name']}"),
+                )
+
+            await cur.execute("UPDATE market_auctions SET status = 'cancelled' WHERE id = ?;", (auction_id,))
+            auction["status"] = "cancelled"
+            return True, "Auction successfully cancelled and funds refunded.", auction

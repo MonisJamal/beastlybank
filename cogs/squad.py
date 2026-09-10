@@ -992,6 +992,23 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             await send_msg(interaction, embed=error_embed("Permission Denied", perm_msg), ephemeral=True)
             return
 
+        # Check if player2 is a tactical pitch position (e.g. /player swap player1: Vinicius player2: LW)
+        p2_pos_check = player2.strip().upper()
+        if p2_pos_check in VALID_POSITIONS:
+            success, msg, _ = await self.db.switch_lineup_position(
+                guild_id=interaction.guild_id,
+                club_query=club if club else target_club["id"],
+                player_query=player1,
+                new_position=p2_pos_check,
+                default_owner_id=interaction.user.id,
+            )
+            if not success:
+                await send_msg(interaction, embed=error_embed("Switch Position Failed", msg), ephemeral=True)
+                return
+            embed = success_embed("Tactical Swap", msg)
+            await send_msg(interaction, embed=embed)
+            return
+
         success, msg = await self.db.swap_club_players(
             guild_id=interaction.guild_id,
             club_query=club if club else target_club["id"],
@@ -1913,6 +1930,28 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         )
         if not has_perm:
             await ctx.send(embed=error_embed("Permission Denied", perm_msg))
+            return
+
+        # Check if the second argument is a tactical position (e.g. bb!swap Vinicius LW or bb!swap Mbappe to RW)
+        if clean_args[-1].upper() in VALID_POSITIONS and len(clean_args) >= 2:
+            target_pos = clean_args[-1].upper()
+            player_tokens = clean_args[:-1]
+            if player_tokens and player_tokens[-1].lower() == "to":
+                player_tokens = player_tokens[:-1]
+            player_query = " ".join(player_tokens).strip()
+
+            success, msg, _ = await self.db.switch_lineup_position(
+                guild_id=ctx.guild.id,
+                club_query=target_role if target_role else target_club["id"],
+                player_query=player_query,
+                new_position=target_pos,
+                default_owner_id=ctx.author.id,
+            )
+            if not success:
+                await ctx.send(embed=error_embed("Switch Position Failed", msg))
+                return
+            embed = success_embed("Tactical Swap", msg)
+            await ctx.send(embed=embed)
             return
 
         success, msg = await self.db.swap_club_players(

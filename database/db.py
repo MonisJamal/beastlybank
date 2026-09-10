@@ -655,6 +655,20 @@ class DatabaseManager:
                 except Exception:
                     pass
 
+            # Migrate any legacy 4-2-3-1 Attack clubs to 4-2-1-3
+            try:
+                await cur.execute(
+                    "UPDATE clubs SET formation = '4-2-1-3' WHERE LOWER(formation) IN ('4-2-3-1 attack', '4231 attack', '4-2-3-1attack', '4231');"
+                )
+                await cur.execute(
+                    "SELECT id, formation FROM clubs WHERE LOWER(formation) IN ('4-2-1-3', '4213', '4-2-1-3 attack', '4213 attack');"
+                )
+                f4213_clubs = [dict(r) for r in await cur.fetchall()]
+                for fc in f4213_clubs:
+                    await self._realign_club_starters(cur, fc["id"], "4-2-1-3")
+            except Exception as mig_err:
+                logger.debug("Migration 4-2-1-3 notice: %s", mig_err)
+
         await conn.commit()
         logger.info("Database schema initialized successfully.")
 
@@ -2828,6 +2842,136 @@ class DatabaseManager:
             await conn.commit()
             return True, f"Player **{player['player_name']}** has been removed from **[{club['tag']}] {club['name']}** squad."
 
+    async def _realign_club_starters(self, cur, club_id: int, formation: str) -> List[str]:
+        """
+        Intelligently align club starting XI players to the tactical slots of the given formation.
+        Resolves duplicate positions (e.g. multiple CAMs in 4-2-1-3) into their required slots (LW, CAM, RW).
+        """
+        from collections import Counter
+        clean_form = str(formation).lower().replace("-", "").replace(" ", "")
+        matched = None
+        for k in SUPPORTED_FORMATIONS:
+            if k.lower() == str(formation).lower() or k.lower().replace("-", "").replace(" ", "") == clean_form:
+                matched = k
+                break
+        if not matched:
+            if clean_form in ("4213", "4213attack", "4231attack"):
+                matched = "4-2-1-3"
+            else:
+                matched = DEFAULT_FORMATION
+
+        target_slots = get_formation_positions(matched)
+        if not target_slots:
+            return []
+
+        await cur.execute(
+            "SELECT * FROM club_players WHERE club_id = ? AND status = 'starting' ORDER BY id ASC;",
+            (club_id,),
+        )
+        starters = [dict(r) for r in await cur.fetchall()]
+        if not starters:
+            return []
+
+        target_counts = Counter(target_slots)
+        current_counts = Counter((p.get("position") or "").upper() for p in starters)
+
+        if current_counts == target_counts:
+            return []
+
+        available_slots = list(target_slots)
+        assigned_players: Dict[int, str] = {}
+        unassigned_players: List[Dict[str, Any]] = []
+
+        # Special tactical handling for 4-2-1-3 with multiple CAMs:
+        # In 4-2-1-3, exactly 1 CAM, 1 LW, 1 RW are needed.
+        # Intelligently map multiple CAMs into wings (LW/RW) and central CAM.
+        if matched == "4-2-1-3":
+            cams = [p for p in starters if (p.get("position") or "").upper() == "CAM"]
+            if len(cams) > 1 and ("LW" in available_slots or "RW" in available_slots):
+                for p in cams:
+                    alts = [a.strip().upper() for a in (p.get("alt_positions") or "").replace("/", ",").replace(";", ",").split(",") if a.strip()]
+                    if "LW" in alts and "LW" in available_slots and p["id"] not in assigned_players:
+                        assigned_players[p["id"]] = "LW"
+                        available_slots.remove("LW")
+                    elif "RW" in alts and "RW" in available_slots and p["id"] not in assigned_players:
+                        assigned_players[p["id"]] = "RW"
+                        available_slots.remove("RW")
+
+                remaining_cams = [p for p in cams if p["id"] not in assigned_players]
+                for p in remaining_cams:
+                    if "LW" in available_slots:
+                        assigned_players[p["id"]] = "LW"
+                        available_slots.remove("LW")
+                    elif "CAM" in available_slots:
+                        assigned_players[p["id"]] = "CAM"
+                        available_slots.remove("CAM")
+                    elif "RW" in available_slots:
+                        assigned_players[p["id"]] = "RW"
+                        available_slots.remove("RW")
+
+        # Phase 1: Keep players whose current position is directly in available slots
+        for p in starters:
+            if p["id"] in assigned_players:
+                continue
+            pos = (p.get("position") or "").upper()
+            if pos in available_slots:
+                assigned_players[p["id"]] = pos
+                available_slots.remove(pos)
+            else:
+                unassigned_players.append(p)
+
+        # Phase 2: Match unassigned players using alternate positions
+        still_unassigned = []
+        for p in unassigned_players:
+            alts_str = p.get("alt_positions") or ""
+            alts = [a.strip().upper() for a in alts_str.replace(";", ",").replace("/", ",").split(",") if a.strip()]
+            matched_alt = None
+            for alt in alts:
+                if alt in available_slots:
+                    matched_alt = alt
+                    break
+            if matched_alt:
+                assigned_players[p["id"]] = matched_alt
+                available_slots.remove(matched_alt)
+            else:
+                still_unassigned.append(p)
+
+        # Phase 3: Tactical role & category match
+        final_unassigned = []
+        for p in still_unassigned:
+            cur_pos = (p.get("position") or "").upper()
+            cur_cat = POSITION_CATEGORIES.get(cur_pos)
+            cat_match = None
+            for slot in available_slots:
+                if POSITION_CATEGORIES.get(slot) == cur_cat:
+                    cat_match = slot
+                    break
+            if cat_match:
+                assigned_players[p["id"]] = cat_match
+                available_slots.remove(cat_match)
+            else:
+                final_unassigned.append(p)
+
+        # Phase 4: Assign any remaining available slots
+        for p in final_unassigned:
+            if available_slots:
+                slot = available_slots.pop(0)
+                assigned_players[p["id"]] = slot
+
+        # Apply updates to database for players whose position changed
+        reassigned = []
+        for p in starters:
+            new_pos = assigned_players.get(p["id"])
+            if new_pos and new_pos != p.get("position"):
+                alt_clean = normalize_alt_positions(p.get("alt_positions"), primary_pos=new_pos)
+                await cur.execute(
+                    "UPDATE club_players SET position = ?, alt_positions = ? WHERE id = ?;",
+                    (new_pos, alt_clean, p["id"]),
+                )
+                reassigned.append(f"• **{p['player_name']}**: `{p.get('position', '??')}` ➔ **`{new_pos}`**")
+
+        return reassigned
+
     async def set_club_formation(
         self,
         guild_id: int,
@@ -2865,91 +3009,20 @@ class DatabaseManager:
             return False, f"Club {club_label} not found."
 
         conn = await self.connect()
-        reassigned = []
         async with conn.cursor() as cur:
             await cur.execute(
                 "UPDATE clubs SET formation = ? WHERE id = ?;",
                 (matched, club["id"]),
             )
 
-            # Fetch starting players to align with the new formation's tactical slots
-            await cur.execute(
-                "SELECT * FROM club_players WHERE club_id = ? AND status = 'starting' ORDER BY id ASC;",
-                (club["id"],),
-            )
-            starters = [dict(r) for r in await cur.fetchall()]
-
-            if starters:
-                target_slots = get_formation_positions(matched)
-                available_slots = list(target_slots)
-                assigned_players = {}  # player_id -> new_pos
-                unassigned_players = []
-
-                # Phase 1: Keep players whose current position is directly in available slots
-                for p in starters:
-                    pos = (p.get("position") or "").upper()
-                    if pos in available_slots:
-                        assigned_players[p["id"]] = pos
-                        available_slots.remove(pos)
-                    else:
-                        unassigned_players.append(p)
-
-                # Phase 2: Match unassigned players using their alternate positions
-                still_unassigned = []
-                for p in unassigned_players:
-                    alts_str = p.get("alt_positions") or ""
-                    alts = [a.strip().upper() for a in alts_str.replace(";", ",").replace("/", ",").split(",") if a.strip()]
-                    matched_alt = None
-                    for alt in alts:
-                        if alt in available_slots:
-                            matched_alt = alt
-                            break
-                    if matched_alt:
-                        assigned_players[p["id"]] = matched_alt
-                        available_slots.remove(matched_alt)
-                    else:
-                        still_unassigned.append(p)
-
-                # Phase 3: Match remaining players by tactical category (Defense, Midfield, Attack, GK)
-                final_unassigned = []
-                for p in still_unassigned:
-                    current_cat = POSITION_CATEGORIES.get((p.get("position") or "").upper())
-                    cat_match = None
-                    for slot in available_slots:
-                        if POSITION_CATEGORIES.get(slot) == current_cat:
-                            cat_match = slot
-                            break
-                    if cat_match:
-                        assigned_players[p["id"]] = cat_match
-                        available_slots.remove(cat_match)
-                    else:
-                        final_unassigned.append(p)
-
-                # Phase 4: Assign any remaining available slots
-                for p in final_unassigned:
-                    if available_slots:
-                        slot = available_slots.pop(0)
-                        assigned_players[p["id"]] = slot
-
-                # Apply updates to database for players whose position changed
-                for p in starters:
-                    new_pos = assigned_players.get(p["id"])
-                    if new_pos and new_pos != p.get("position"):
-                        # Clean new position from alt_positions if present
-                        alt_clean = normalize_alt_positions(p.get("alt_positions"), primary_pos=new_pos)
-                        await cur.execute(
-                            "UPDATE club_players SET position = ?, alt_positions = ? WHERE id = ?;",
-                            (new_pos, alt_clean, p["id"]),
-                        )
-                        reassigned.append(f"• **{p['player_name']}**: `{p.get('position', '??')}` ➔ **`{new_pos}`**")
-
+            reassigned = await self._realign_club_starters(cur, club["id"], matched)
             await conn.commit()
 
         form_meta = SUPPORTED_FORMATIONS[matched]
         msg = f"Formation for **[{club['tag']}] {club['name']}** set to **{matched}** — {form_meta['desc']}."
         if reassigned:
             msg += f"\n\n📋 **Tactical Realignment Applied ({len(reassigned)} players updated):**\n" + "\n".join(reassigned[:11])
-        elif starters:
+        else:
             msg += f"\n\n✅ Starting XI positions already match **{matched}** requirements."
         return True, msg
 
@@ -3182,6 +3255,10 @@ class DatabaseManager:
             if c_row:
                 club = dict(c_row)
 
+            # Automatically align starters to club formation (e.g. converting duplicate CAMs to LW/RW in 4-2-1-3)
+            await self._realign_club_starters(cur, club["id"], club.get("formation", DEFAULT_FORMATION))
+            await conn.commit()
+
             await cur.execute(
                 """
                 SELECT * FROM club_players
@@ -3330,6 +3407,9 @@ class DatabaseManager:
 
         conn = await self.connect()
         async with conn.cursor() as cur:
+            # 1. Ensure starters are aligned to club formation (realigns legacy CAMs in 4-2-1-3 to LW/RW)
+            await self._realign_club_starters(cur, club["id"], club.get("formation", DEFAULT_FORMATION))
+
             p1 = await self._resolve_club_player(cur, club["id"], p1_name)
             if not p1:
                 return False, f"Player **{p1_name}** was not found in **[{club['tag']}] {club['name']}** squad."
@@ -3342,37 +3422,65 @@ class DatabaseManager:
                 return False, "Cannot swap a player with themselves."
 
             if p1["status"] != p2["status"]:
-                # Tactical substitution: swap both status and position
+                starter = p1 if p1["status"] == "starting" else p2
+                bencher = p2 if p1["status"] == "starting" else p1
+
+                # Target slot for bencher entering the starting lineup:
+                target_slots = get_formation_positions(club.get("formation", DEFAULT_FORMATION))
+                target_pos = starter["position"]
+                if bencher["position"] in target_slots:
+                    if starter["position"] not in target_slots or (starter["position"] == "CAM" and bencher["position"] in ("LW", "RW")):
+                        target_pos = bencher["position"]
+
+                # Starter moves to bench keeping their natural position
+                bench_pos = starter["position"]
+
                 await cur.execute(
-                    "UPDATE club_players SET status = ?, position = ? WHERE id = ?;",
-                    (p2["status"], p2["position"], p1["id"]),
+                    "UPDATE club_players SET status = 'starting', position = ? WHERE id = ?;",
+                    (target_pos, bencher["id"]),
                 )
                 await cur.execute(
-                    "UPDATE club_players SET status = ?, position = ? WHERE id = ?;",
-                    (p1["status"], p1["position"], p2["id"]),
+                    "UPDATE club_players SET status = 'bench', position = ? WHERE id = ?;",
+                    (bench_pos, starter["id"]),
                 )
                 await conn.commit()
                 return True, (
                     f"🔁 **Substitution Complete!**\n"
-                    f"• **{p1['player_name']}**: Now **{p2['status'].capitalize()}** ({p2['position']})\n"
-                    f"• **{p2['player_name']}**: Now **{p1['status'].capitalize()}** ({p1['position']})\n"
+                    f"• **{bencher['player_name']}**: Now **Starting** (`{target_pos}`)\n"
+                    f"• **{starter['player_name']}**: Now **Bench** (`{bench_pos}`)\n"
                     f"Club: **[{club['tag']}] {club['name']}**"
                 )
             else:
-                # Both same status: swap positions
+                # Both same status (e.g. both starting)
+                p1_pos = p2["position"]
+                p2_pos = p1["position"]
+                # If both are starting and both currently hold the same position (e.g. CAM and CAM),
+                # resolve to missing wing slots in the formation!
+                if p1["position"] == p2["position"] and p1["status"] == "starting":
+                    target_slots = get_formation_positions(club.get("formation", DEFAULT_FORMATION))
+                    await cur.execute(
+                        "SELECT position FROM club_players WHERE club_id = ? AND status = 'starting';",
+                        (club["id"],),
+                    )
+                    active_positions = [r["position"] for r in await cur.fetchall()]
+                    missing_wings = [w for w in ("LW", "RW") if w in target_slots and w not in active_positions]
+                    if missing_wings and p1["position"] == "CAM":
+                        p2_pos = missing_wings[0]
+                        p1_pos = "CAM"
+
                 await cur.execute(
                     "UPDATE club_players SET position = ? WHERE id = ?;",
-                    (p2["position"], p1["id"]),
+                    (p1_pos, p1["id"]),
                 )
                 await cur.execute(
                     "UPDATE club_players SET position = ? WHERE id = ?;",
-                    (p1["position"], p2["id"]),
+                    (p2_pos, p2["id"]),
                 )
                 await conn.commit()
                 return True, (
                     f"🔁 **Position Swap Complete!**\n"
-                    f"• **{p1['player_name']}**: Now **{p2['position']}**\n"
-                    f"• **{p2['player_name']}**: Now **{p1['position']}**\n"
+                    f"• **{p1['player_name']}**: Now **`{p1_pos}`**\n"
+                    f"• **{p2['player_name']}**: Now **`{p2_pos}`**\n"
                     f"Club: **[{club['tag']}] {club['name']}**"
                 )
 

@@ -3517,6 +3517,101 @@ async def test_formation_4213(db: DatabaseManager):
     assert "4-2-1-3" in set_msg2
 
 
+@pytest.mark.asyncio
+async def test_swap_and_realignment_4213(db: DatabaseManager):
+    """Verify that multiple CAMs in 4-2-1-3 are realigned to wings (LW/RW) and swap operates between CAM and wings."""
+    guild_id = 77665544
+    owner_id = 112233
+    role_id = 998811
+
+    # 1. Create club with 4-2-1-3 formation
+    _, _, club = await db.create_club(guild_id, "Winger Club", "WNG", owner_id, role_id=role_id)
+    await db.set_club_formation(guild_id, club["id"], "4-2-1-3")
+
+    # 2. Add starting players where 3 were registered as CAM (legacy 4-2-3-1 situation)
+    # 4-2-1-3 slots: GK, LB, CB, CB, RB, CDM, CDM, CAM, LW, ST, RW
+    players = [
+        ("Courtois", "GK", "starting", None),
+        ("Mendy", "LB", "starting", None),
+        ("Rudiger", "CB", "starting", None),
+        ("Militao", "CB", "starting", None),
+        ("Carvajal", "RB", "starting", None),
+        ("Tchouameni", "CDM", "starting", None),
+        ("Camavinga", "CDM", "starting", None),
+        ("Vinicius", "CAM", "starting", "LW, LM"),  # Has LW alt
+        ("Bellingham", "CAM", "starting", "CM"),    # Central CAM
+        ("Rodrygo", "CAM", "starting", "RW, RM"),   # Has RW alt
+        ("Mbappe", "ST", "starting", "CF"),
+    ]
+    for name, pos, status, alts in players:
+        await db.add_club_player(
+            guild_id=guild_id,
+            club_query=club["id"],
+            player_name=name,
+            position=pos,
+            status=status,
+            alt_positions=alts,
+        )
+
+    # Also add a bench winger
+    await db.add_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="Brahim",
+        position="RW",
+        status="bench",
+    )
+
+    # 3. Fetch lineup: Verify _realign_club_starters converted the multiple CAMs to LW, CAM, RW!
+    _, _, lineup = await db.get_club_lineup(guild_id, club["id"])
+    pos_map = {p["player_name"]: p["position"] for p in lineup["starting"]}
+    assert pos_map["Vinicius"] == "LW", "Vinicius should be assigned to Left Wing (LW)"
+    assert pos_map["Rodrygo"] == "RW", "Rodrygo should be assigned to Right Wing (RW)"
+    assert pos_map["Bellingham"] == "CAM", "Bellingham should remain as central CAM"
+
+    # 4. Swap Bellingham (CAM) and Vinicius (LW)
+    swap_ok, swap_msg = await db.swap_club_players(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player1_name="Bellingham",
+        player2_name="Vinicius",
+    )
+    assert swap_ok is True
+    assert "Position Swap Complete" in swap_msg
+
+    # Verify positions actually swapped between CAM and LW (not CAM to CAM!)
+    _, _, lineup2 = await db.get_club_lineup(guild_id, club["id"])
+    pos_map2 = {p["player_name"]: p["position"] for p in lineup2["starting"]}
+    assert pos_map2["Bellingham"] == "LW", "Bellingham is now on the wing (LW)"
+    assert pos_map2["Vinicius"] == "CAM", "Vinicius is now central CAM"
+
+    # 5. Test Tactical Substitution: Sub Brahim (Bench RW) for Bellingham (Starter LW)
+    sub_ok, sub_msg = await db.swap_club_players(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player1_name="Brahim",
+        player2_name="Bellingham",
+    )
+    assert sub_ok is True
+    assert "Substitution Complete" in sub_msg
+
+    _, _, lineup3 = await db.get_club_lineup(guild_id, club["id"])
+    starters3 = {p["player_name"]: p["position"] for p in lineup3["starting"]}
+    bench3 = {p["player_name"]: p["position"] for p in lineup3["bench"]}
+    assert starters3["Brahim"] == "LW", "Brahim entered starting XI on the wing"
+    assert "Bellingham" in bench3, "Bellingham is now on the bench"
+    assert bench3["Bellingham"] == "LW" or bench3["Bellingham"] == "CAM"
+
+    # 6. Test swapping position directly (e.g. bb!swap Vinicius to RW)
+    sw_ok, sw_msg, _ = await db.switch_lineup_position(guild_id, club["id"], "Vinicius", "RW")
+    assert sw_ok is True
+    _, _, lineup4 = await db.get_club_lineup(guild_id, club["id"])
+    starters4 = {p["player_name"]: p["position"] for p in lineup4["starting"]}
+    assert starters4["Vinicius"] == "RW", "Vinicius is now on the Right Wing (RW)"
+    assert starters4["Rodrygo"] == "CAM", "Rodrygo swapped into CAM"
+
+
+
 
 
 

@@ -41,9 +41,11 @@ async def formation_autocomplete(
 ) -> list[app_commands.Choice[str]]:
     """Autocomplete for supported football formations."""
     cur = current.strip().lower()
+    cur_clean = cur.replace("-", "").replace(" ", "")
     choices = []
     for k in SUPPORTED_FORMATIONS:
-        if not cur or cur in k.lower():
+        k_clean = k.lower().replace("-", "").replace(" ", "")
+        if not cur or cur in k.lower() or (cur_clean and cur_clean in k_clean):
             choices.append(app_commands.Choice(name=k[:100], value=k))
     return choices[:25]
 

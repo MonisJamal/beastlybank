@@ -124,8 +124,8 @@ SUPPORTED_FORMATIONS = {
     "4-1-3-2": {"def": 4, "mid": 4, "fwd": 2, "name": "4-1-3-2", "desc": "CDM + three midfielders behind two (4 DEF, 4 MID, 2 FWD)", "positions": ["GK", "LB", "CB", "CB", "RB", "CDM", "LM", "CM", "RM", "ST", "ST"]},
     "4-1-3-2 Attacking": {"def": 4, "mid": 4, "fwd": 2, "name": "4-1-3-2 Attacking", "desc": "Attacking CDM setup behind dual strikers (4 DEF, 4 MID, 2 FWD)", "positions": ["GK", "LB", "CB", "CB", "RB", "CDM", "CAM", "CAM", "CAM", "ST", "ST"]},
     "4-1-4-1": {"def": 4, "mid": 5, "fwd": 1, "name": "4-1-4-1", "desc": "Single CDM anchor with flat four (4 DEF, 5 MID, 1 FWD)", "positions": ["GK", "LB", "CB", "CB", "RB", "CDM", "LM", "CM", "CM", "RM", "ST"]},
+    "4-2-1-3": {"def": 4, "mid": 3, "fwd": 3, "name": "4-2-1-3", "desc": "Double pivot with central CAM and wing attack (4 DEF, 3 MID, 3 FWD)", "positions": ["GK", "LB", "CB", "CB", "RB", "CDM", "CDM", "CAM", "LW", "ST", "RW"]},
     "4-2-2-2": {"def": 4, "mid": 4, "fwd": 2, "name": "4-2-2-2", "desc": "Box midfield with dual strikers (4 DEF, 4 MID, 2 FWD)", "positions": ["GK", "LB", "CB", "CB", "RB", "CDM", "CDM", "CAM", "CAM", "ST", "ST"]},
-    "4-2-3-1 Attack": {"def": 4, "mid": 5, "fwd": 1, "name": "4-2-3-1 Attack", "desc": "Attacking double pivot with advanced three (4 DEF, 5 MID, 1 FWD)", "positions": ["GK", "LB", "CB", "CB", "RB", "CDM", "CDM", "CAM", "CAM", "CAM", "ST"]},
     "4-2-3-1 Narrow": {"def": 4, "mid": 5, "fwd": 1, "name": "4-2-3-1 Narrow", "desc": "Narrow double pivot control (4 DEF, 5 MID, 1 FWD)", "positions": ["GK", "LB", "CB", "CB", "RB", "CDM", "CDM", "CAM", "CAM", "CAM", "ST"]},
     "4-2-3-1 Wide": {"def": 4, "mid": 5, "fwd": 1, "name": "4-2-3-1 Wide", "desc": "Wide double pivot control (4 DEF, 5 MID, 1 FWD)", "positions": ["GK", "LB", "CB", "CB", "RB", "CDM", "CDM", "LM", "CAM", "RM", "ST"]},
     "4-2-4": {"def": 4, "mid": 2, "fwd": 4, "name": "4-2-4", "desc": "Ultra attacking two midfielders and front four (4 DEF, 2 MID, 4 FWD)", "positions": ["GK", "LB", "CB", "CB", "RB", "CM", "CM", "LW", "ST", "ST", "RW"]},
@@ -177,7 +177,11 @@ def get_formation_positions(formation_name: str):
     meta = SUPPORTED_FORMATIONS.get(formation_name)
     if meta and "positions" in meta:
         return list(meta["positions"])
+    clean = str(formation_name).lower().replace("-", "").replace(" ", "")
     for k, v in SUPPORTED_FORMATIONS.items():
-        if k.lower() == str(formation_name).lower():
+        k_clean = k.lower().replace("-", "").replace(" ", "")
+        if k.lower() == str(formation_name).lower() or k_clean == clean:
             return list(v.get("positions", []))
+    if clean in ("4213", "4213attack", "4231attack"):
+        return list(SUPPORTED_FORMATIONS["4-2-1-3"]["positions"])
     return ["GK", "LB", "CB", "CB", "RB", "CM", "CM", "CM", "LW", "ST", "RW"]

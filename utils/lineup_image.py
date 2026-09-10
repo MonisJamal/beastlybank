@@ -138,6 +138,13 @@ EXACT_FORMATION_COORDS: Dict[str, List[Tuple[str, float, float]]] = {
         ("CAM", 0.50, 0.42),
         ("LW", 0.17, 0.22), ("ST", 0.50, 0.15), ("RW", 0.83, 0.22),
     ],
+    "4-2-1-3 Attack": [
+        ("GK", 0.50, 0.90),
+        ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
+        ("CDM", 0.36, 0.63), ("CDM", 0.64, 0.63),
+        ("CAM", 0.50, 0.42),
+        ("LW", 0.17, 0.22), ("ST", 0.50, 0.15), ("RW", 0.83, 0.22),
+    ],
     "4-2-2-2": [
         ("GK", 0.50, 0.90),
         ("LB", 0.14, 0.75), ("CB", 0.38, 0.78), ("CB", 0.62, 0.78), ("RB", 0.86, 0.75),
@@ -922,9 +929,14 @@ def compute_formation_coords(formation_name: str) -> List[Tuple[str, float, floa
     if formation_name in EXACT_FORMATION_COORDS:
         return EXACT_FORMATION_COORDS[formation_name]
 
+    clean = str(formation_name).strip().lower().replace("-", "").replace(" ", "")
     for k, v in EXACT_FORMATION_COORDS.items():
-        if k.lower() == formation_name.lower():
+        k_clean = k.lower().replace("-", "").replace(" ", "")
+        if k.lower() == str(formation_name).lower() or k_clean == clean:
             return v
+
+    if clean in ("4213", "4213attack", "4231attack"):
+        return EXACT_FORMATION_COORDS["4-2-1-3"]
 
     return EXACT_FORMATION_COORDS[DEFAULT_FORMATION]
 

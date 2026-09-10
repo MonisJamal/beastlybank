@@ -3468,6 +3468,56 @@ async def test_adaptive_club_branding_and_lineup_card(db: DatabaseManager):
     assert len(img_data) > 30000, "Full card with bench must be high resolution"
 
 
+@pytest.mark.asyncio
+async def test_formation_4213(db: DatabaseManager):
+    """Verify 4-2-1-3 formation configuration, slot positions, coordinates, and db alias handling."""
+    from config import SUPPORTED_FORMATIONS, get_formation_positions
+    from utils.lineup_image import compute_formation_coords
+
+    # 1. Verify formation metadata
+    assert "4-2-1-3" in SUPPORTED_FORMATIONS
+    assert "4-2-3-1 Attack" not in SUPPORTED_FORMATIONS
+    meta = SUPPORTED_FORMATIONS["4-2-1-3"]
+    assert meta["def"] == 4
+    assert meta["mid"] == 3
+    assert meta["fwd"] == 3
+    assert meta["positions"] == ["GK", "LB", "CB", "CB", "RB", "CDM", "CDM", "CAM", "LW", "ST", "RW"]
+
+    # 2. Verify get_formation_positions resolution & aliases
+    pos_standard = get_formation_positions("4-2-1-3")
+    pos_unhyphenated = get_formation_positions("4213")
+    pos_alias = get_formation_positions("4213attack")
+    assert pos_standard == meta["positions"]
+    assert pos_unhyphenated == meta["positions"]
+    assert pos_alias == meta["positions"]
+
+    # 3. Verify pitch coordinates
+    coords = compute_formation_coords("4-2-1-3")
+    assert len(coords) == 11
+    assert coords[0][0] == "GK"
+    assert [p[0] for p in coords] == ["GK", "LB", "CB", "CB", "RB", "CDM", "CDM", "CAM", "LW", "ST", "RW"]
+
+    # Coordinates with alias input
+    coords_alias = compute_formation_coords("4213")
+    assert coords_alias == coords
+
+    # 4. Verify setting formation in database with both standard and unhyphenated names
+    guild_id = 11223344
+    ok, _, club = await db.create_club(guild_id, "Formation Club", "FCB", 554433, 998877)
+    assert ok is True
+
+    # Standard "4-2-1-3"
+    set_ok, set_msg = await db.set_club_formation(guild_id, club["id"], "4-2-1-3")
+    assert set_ok is True
+    assert "4-2-1-3" in set_msg
+
+    # Unhyphenated alias "4213"
+    set_ok2, set_msg2 = await db.set_club_formation(guild_id, club["id"], "4213")
+    assert set_ok2 is True
+    assert "4-2-1-3" in set_msg2
+
+
+
 
 
 

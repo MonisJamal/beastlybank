@@ -2837,11 +2837,24 @@ class DatabaseManager:
     ) -> Tuple[bool, str]:
         """Set tactical formation for a club and adapt starting XI positions to match new formation slots."""
         form = formation.strip().lower()
+        form_clean = form.replace("-", "").replace(" ", "")
         matched = None
         for k in SUPPORTED_FORMATIONS:
             if k.lower() == form:
                 matched = k
                 break
+        if not matched:
+            for k in SUPPORTED_FORMATIONS:
+                if k.lower().replace("-", "").replace(" ", "") == form_clean:
+                    matched = k
+                    break
+        if not matched:
+            aliases = {
+                "4213": "4-2-1-3",
+                "4213attack": "4-2-1-3",
+                "4231attack": "4-2-1-3",
+            }
+            matched = aliases.get(form_clean)
 
         if not matched:
             return False, f"Formation '{formation}' is not supported. Supported formations: {', '.join(SUPPORTED_FORMATIONS.keys())}."

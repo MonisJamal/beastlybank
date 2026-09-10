@@ -618,7 +618,7 @@ def summary_squad_embed() -> discord.Embed:
             "• `/formation set <formation> [club: @role]` — set your squad's active formation\n"
             "• `/formation list` — browse every supported shape\n"
             "  **3-Back:** `3-1-4-2`, `3-2-4-1`, `3-4-1-2`, `3-4-2-1`, `3-4-3 Diamond`, `3-4-3 Flat`, `3-5-1-1`, `3-5-2`\n"
-            "  **4-Back:** `4-1-2-1-2 Narrow/Wide`, `4-1-3-2`, `4-1-3-2 Attacking`, `4-1-4-1`, `4-2-2-2`, `4-2-3-1 Attack/Narrow/Wide`, `4-2-4`, `4-3-1-2`, `4-3-2-1`, `4-3-3 Attack/Balanced/Defend/False 9/Flat/Holding`, `4-4-1-1 Attack/Midfield`, `4-4-2 Flat/Holding`, `4-5-1 Attack/Flat`\n"
+            "  **4-Back:** `4-1-2-1-2 Narrow/Wide`, `4-1-3-2`, `4-1-3-2 Attacking`, `4-1-4-1`, `4-2-1-3`, `4-2-2-2`, `4-2-3-1 Narrow/Wide`, `4-2-4`, `4-3-1-2`, `4-3-2-1`, `4-3-3 Attack/Balanced/Defend/False 9/Flat/Holding`, `4-4-1-1 Attack/Midfield`, `4-4-2 Flat/Holding`, `4-5-1 Attack/Flat`\n"
             "  **5-Back:** `5-2-1-2`, `5-2-3`, `5-3-2`, `5-4-1 Diamond`, `5-4-1 Flat`"
         ),
         inline=False,
@@ -1085,7 +1085,7 @@ def beastlybank_announcement_embed() -> discord.Embed:
             "• **Tactical Pitch Lineup:** `/lineup [club: @role]` displays tactical pitch layout (🧤 GK, 🛡️ DEF, ⚙️ MID, ⚡ ATT) with `[OVR]` rating tags + Substitutes Bench!\n"
             f"• **{len(SUPPORTED_FORMATIONS)} Supported Formations:** `/formation set <form>`. Browse with `/formation list`.\n"
             "  **3-Back:** `3-1-4-2`, `3-2-4-1`, `3-4-1-2`, `3-4-2-1`, `3-4-3 Diamond/Flat`, `3-5-1-1`, `3-5-2`\n"
-            "  **4-Back:** `4-1-2-1-2 Narrow/Wide`, `4-1-3-2`, `4-1-3-2 Attacking`, `4-1-4-1`, `4-2-2-2`, `4-2-3-1 Attack/Narrow/Wide`, `4-2-4`, `4-3-1-2`, `4-3-2-1`, `4-3-3 Attack/Balanced/Defend/False 9/Flat/Holding`, `4-4-1-1 Attack/Midfield`, `4-4-2 Flat/Holding`, `4-5-1 Attack/Flat`\n"
+            "  **4-Back:** `4-1-2-1-2 Narrow/Wide`, `4-1-3-2`, `4-1-3-2 Attacking`, `4-1-4-1`, `4-2-1-3`, `4-2-2-2`, `4-2-3-1 Narrow/Wide`, `4-2-4`, `4-3-1-2`, `4-3-2-1`, `4-3-3 Attack/Balanced/Defend/False 9/Flat/Holding`, `4-4-1-1 Attack/Midfield`, `4-4-2 Flat/Holding`, `4-5-1 Attack/Flat`\n"
             "  **5-Back:** `5-2-1-2`, `5-2-3`, `5-3-2`, `5-4-1 Diamond/Flat`\n"
             "• **Player Creation:** `/player add` | `bb!addplayer` registers custom or Discord players with:\n"
             "  - Primary Position (`GK`, `CB`, `LB`, `RB`, `CDM`, `CM`, `CAM`, `LW`, `RW`, `ST`, etc.)\n"

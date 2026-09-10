@@ -3484,6 +3484,98 @@ class DatabaseManager:
                     f"Club: **[{club['tag']}] {club['name']}**"
                 )
 
+    async def substitute_club_player(
+        self,
+        guild_id: int,
+        club_query: Any,
+        player_off_name: str,
+        player_on_name: str,
+        default_owner_id: int = 0,
+    ) -> Tuple[bool, str]:
+        """
+        Execute a tactical substitution: sub out player_off (from Starting XI) and bring in player_on (from Bench).
+        Smart auto-detection reverses the arguments if player_off is bench and player_on is starting.
+        """
+        p_off_name = str(player_off_name).strip()
+        p_on_name = str(player_on_name).strip()
+        if not p_off_name or not p_on_name:
+            return False, "Both player names must be specified (player coming OFF and player coming ON)."
+
+        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=default_owner_id)
+        if not club:
+            club_label = club_query.mention if hasattr(club_query, "mention") else str(club_query)
+            return False, f"Club {club_label} not found."
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            # 1. Align current starters if needed
+            await self._realign_club_starters(cur, club["id"], club.get("formation", DEFAULT_FORMATION))
+
+            p_off = await self._resolve_club_player(cur, club["id"], p_off_name)
+            if not p_off:
+                return False, f"Player **{p_off_name}** was not found in **[{club['tag']}] {club['name']}** squad."
+
+            p_on = await self._resolve_club_player(cur, club["id"], p_on_name)
+            if not p_on:
+                return False, f"Player **{p_on_name}** was not found in **[{club['tag']}] {club['name']}** squad."
+
+            if p_off["id"] == p_on["id"]:
+                return False, "Cannot substitute a player with themselves."
+
+            # Smart detection if user inverted off/on
+            if p_off["status"] == "bench" and p_on["status"] == "starting":
+                p_off, p_on = p_on, p_off
+
+            if p_off["status"] == "starting" and p_on["status"] == "starting":
+                return False, (
+                    f"Both **{p_off['player_name']}** and **{p_on['player_name']}** are already in the **Starting XI**!\n"
+                    f"💡 Use `/player swap` or `bb!swap {p_off['player_name']} {p_on['player_name']}` to switch their positions."
+                )
+
+            if p_off["status"] == "bench" and p_on["status"] == "bench":
+                return False, (
+                    f"Both **{p_off['player_name']}** and **{p_on['player_name']}** are currently on the **Bench**!\n"
+                    f"💡 Specify a starting player to sub off, or use `bb!lineup add` to promote them."
+                )
+
+            # At this point: p_off is 'starting' and p_on is 'bench'
+            starter = p_off
+            bencher = p_on
+
+            target_slots = get_formation_positions(club.get("formation", DEFAULT_FORMATION))
+            target_pos = starter["position"]
+            if bencher["position"] in target_slots:
+                if starter["position"] not in target_slots or (starter["position"] == "CAM" and bencher["position"] in ("LW", "RW")):
+                    target_pos = bencher["position"]
+
+            bench_pos = starter["position"]
+
+            await cur.execute(
+                "UPDATE club_players SET status = 'starting', position = ? WHERE id = ?;",
+                (target_pos, bencher["id"]),
+            )
+            await cur.execute(
+                "UPDATE club_players SET status = 'bench', position = ? WHERE id = ?;",
+                (bench_pos, starter["id"]),
+            )
+            await conn.commit()
+
+            # Re-align formation starters in case slots need balance
+            await self._realign_club_starters(cur, club["id"], club.get("formation", DEFAULT_FORMATION))
+            await conn.commit()
+
+            # Re-fetch updated position of bencher after realignment
+            await cur.execute("SELECT position FROM club_players WHERE id = ?;", (bencher["id"],))
+            row_on = await cur.fetchone()
+            actual_on_pos = row_on["position"] if row_on else target_pos
+
+            return True, (
+                f"🔄 **Tactical Substitution Executed!**\n"
+                f"🔻 **[OFF]** **{starter['player_name']}** (`{bench_pos}`)\n"
+                f"🔺 **[ON]** **{bencher['player_name']}** (`{actual_on_pos}`)\n"
+                f"Club: **[{club['tag']}] {club['name']}**"
+            )
+
     # ------------------ SoFIFA Sep 19 2025 FC 26 Players Cache ------------------ #
 
     async def cache_sofifa_players(self, players: List[Dict[str, Any]]) -> int:

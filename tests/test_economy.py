@@ -3611,6 +3611,154 @@ async def test_swap_and_realignment_4213(db: DatabaseManager):
     assert starters4["Rodrygo"] == "CAM", "Rodrygo swapped into CAM"
 
 
+@pytest.mark.asyncio
+async def test_substitute_and_ovr_ratings(db: DatabaseManager):
+    """Verify tactical substitutions and overall team/department ratings."""
+    from utils.embeds import club_lineup_embed, club_ratings_embed, make_rating_bar
+
+    guild_id = 999000111
+    role_mock = MagicMock()
+    role_mock.id = 888111222
+    role_mock.name = "Manchester City"
+    role_mock.color = MagicMock(value=0x6CABDD)
+
+    club = await db.get_or_create_club_from_role(guild_id, role_mock, default_owner_id=12345)
+    await db.set_club_formation(guild_id, club["id"], "4-2-1-3")
+
+    # Add Starting XI
+    # GK: Ederson (88)
+    # DEF: Walker (84), Dias (89), Stones (85), Gvardiol (83) -> DEF avg: round((88+84+89+85+83)/5) = 86
+    # MID: Rodri (91), Kovacic (82), De Bruyne (90) -> MID avg: round((91+82+90)/3) = 88
+    # ATT: Doku (81, LW), Haaland (91, ST), Bernardo (88, RW) -> ATT avg: round((81+91+88)/3) = 87
+    # Overall Starting XI: (88+84+89+85+83+91+82+90+81+91+88)/11 = 952/11 = 86.55 -> 87 OVR
+
+    starters = [
+        ("Ederson", "GK", 88),
+        ("Walker", "RB", 84),
+        ("Dias", "CB", 89),
+        ("Stones", "CB", 85),
+        ("Gvardiol", "LB", 83),
+        ("Rodri", "CDM", 91),
+        ("Kovacic", "CM", 82),
+        ("De Bruyne", "CAM", 90),
+        ("Doku", "LW", 81),
+        ("Haaland", "ST", 91),
+        ("Bernardo", "RW", 88),
+    ]
+    for name, pos, rat in starters:
+        await db.add_club_player(guild_id, club["id"], name, pos, "starting", rating=rat)
+
+    # Add Bench
+    benchers = [
+        ("Alvarez", "ST", 84),
+        ("Foden", "CAM", 88),
+        ("Ake", "CB", 81),
+        ("Ortega", "GK", 79),
+    ]
+    for name, pos, rat in benchers:
+        await db.add_club_player(guild_id, club["id"], name, pos, "bench", rating=rat)
+
+    # 1. Test Lineup Embed Ratings
+    _, _, lineup = await db.get_club_lineup(guild_id, club["id"])
+    embed = club_lineup_embed(
+        club=lineup["club"],
+        formation=lineup["formation"],
+        starting_players=lineup["starting"],
+        bench_players=lineup["bench"],
+    )
+    # Check that description and field headers contain department ratings
+    assert "Team Rating:" in embed.description
+    assert "ATT: **87**" in embed.description
+    assert "MID: **88**" in embed.description
+    assert "DEF: **86**" in embed.description
+    assert "OVR: **87**" in embed.description
+    assert "Team OVR: 87" in embed.footer.text
+
+    # 2. Test Ratings Card Embed (club_ratings_embed)
+    ratings_embed = club_ratings_embed(
+        club=lineup["club"],
+        formation=lineup["formation"],
+        starting_players=lineup["starting"],
+        bench_players=lineup["bench"],
+    )
+    assert "Team Ratings" in ratings_embed.title
+    assert "Overall Team Rating: **87 OVR**" in ratings_embed.description
+    assert "🌟" in ratings_embed.description  # Star player
+    assert any("Attack" in f.name and "87 ATT" in f.value for f in ratings_embed.fields)
+    assert any("Midfield" in f.name and "88 MID" in f.value for f in ratings_embed.fields)
+    assert any("Defense" in f.name and "86 DEF" in f.value for f in ratings_embed.fields)
+
+    # 3. Test Standard Tactical Substitution: Sub off Haaland (Starter) for Alvarez (Bench)
+    sub_ok, sub_msg = await db.substitute_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_off_name="Haaland",
+        player_on_name="Alvarez",
+    )
+    assert sub_ok is True
+    assert "Tactical Substitution Executed" in sub_msg
+    assert "**[OFF]** **Haaland**" in sub_msg
+    assert "**[ON]** **Alvarez**" in sub_msg
+
+    # Verify updated positions in lineup
+    _, _, l2 = await db.get_club_lineup(guild_id, club["id"])
+    starters_map = {p["player_name"]: p["position"] for p in l2["starting"]}
+    bench_map = {p["player_name"]: p["position"] for p in l2["bench"]}
+    assert "Alvarez" in starters_map, "Alvarez is now starting"
+    assert starters_map["Alvarez"] == "ST", "Alvarez took ST slot"
+    assert "Haaland" in bench_map, "Haaland is now on bench"
+    assert bench_map["Haaland"] == "ST", "Haaland kept natural position ST"
+
+    # 4. Test Inverted Arguments Auto-Detection: Sub Foden (Bench) for Kovacic (Starter)
+    sub_inv_ok, sub_inv_msg = await db.substitute_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_off_name="Foden",    # bench
+        player_on_name="Kovacic",   # starting
+    )
+    assert sub_inv_ok is True
+    assert "Tactical Substitution Executed" in sub_inv_msg
+    assert "**[OFF]** **Kovacic**" in sub_inv_msg
+    assert "**[ON]** **Foden**" in sub_inv_msg
+
+    _, _, l3 = await db.get_club_lineup(guild_id, club["id"])
+    s3_map = {p["player_name"]: p["position"] for p in l3["starting"]}
+    b3_map = {p["player_name"]: p["position"] for p in l3["bench"]}
+    assert "Foden" in s3_map, "Foden is now starting"
+    assert "Kovacic" in b3_map, "Kovacic is now on bench"
+
+    # 5. Test Error Handling: Both Starters
+    both_start_ok, both_start_msg = await db.substitute_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_off_name="Rodri",
+        player_on_name="De Bruyne",
+    )
+    assert both_start_ok is False
+    assert "already in the **Starting XI**" in both_start_msg
+
+    # 6. Test Error Handling: Both Bench
+    both_bench_ok, both_bench_msg = await db.substitute_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_off_name="Ake",
+        player_on_name="Ortega",
+    )
+    assert both_bench_ok is False
+    assert "currently on the **Bench**" in both_bench_msg
+
+    # 7. Test Error Handling: Same Player
+    same_ok, same_msg = await db.substitute_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_off_name="Rodri",
+        player_on_name="Rodri",
+    )
+    assert same_ok is False
+    assert "themselves" in same_msg
+
+
+
 
 
 

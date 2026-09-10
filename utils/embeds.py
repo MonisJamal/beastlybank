@@ -886,6 +886,23 @@ def summary_economy_embed(stats: Dict[str, Any]) -> discord.Embed:
     return embed
 
 
+def make_rating_bar(rating: int, total: int = 10) -> str:
+    """Renders a visually pleasing progress bar for an OVR rating."""
+    clamped = max(0, min(100, int(rating)))
+    filled = int(round((clamped / 100.0) * total))
+    filled = max(0, min(total, filled))
+    empty = total - filled
+    if clamped >= 85:
+        block = "🟩"
+    elif clamped >= 75:
+        block = "🟦"
+    elif clamped >= 65:
+        block = "🟨"
+    else:
+        block = "🟧"
+    return f"{block * filled}{'▫️' * empty}"
+
+
 def club_lineup_embed(
     club: Dict[str, Any],
     formation: str,
@@ -896,12 +913,41 @@ def club_lineup_embed(
     form_meta = SUPPORTED_FORMATIONS.get(formation, {"name": formation, "desc": "Custom"})
     role_str = f"<@&{club['role_id']}>" if club.get("role_id") else f"**[{club['tag']}] {club['name']}**"
 
+    # Compute department & team overall ratings for Starting XI
+    att_ratings = [
+        int(p["rating"]) for p in starting_players
+        if p.get("rating") is not None and POSITION_CATEGORIES.get((p.get("position") or "").upper()) == "Attack"
+    ]
+    mid_ratings = [
+        int(p["rating"]) for p in starting_players
+        if p.get("rating") is not None and POSITION_CATEGORIES.get((p.get("position") or "").upper()) == "Midfield"
+    ]
+    def_ratings = [
+        int(p["rating"]) for p in starting_players
+        if p.get("rating") is not None and (
+            POSITION_CATEGORIES.get((p.get("position") or "").upper()) == "Defense"
+            or (p.get("position") or "").upper() == "GK"
+        )
+    ]
+    all_starter_ratings = [int(p["rating"]) for p in starting_players if p.get("rating") is not None]
+
+    att_avg = round(sum(att_ratings) / len(att_ratings)) if att_ratings else None
+    mid_avg = round(sum(mid_ratings) / len(mid_ratings)) if mid_ratings else None
+    def_avg = round(sum(def_ratings) / len(def_ratings)) if def_ratings else None
+    ovr_avg = round(sum(all_starter_ratings) / len(all_starter_ratings)) if all_starter_ratings else None
+
+    att_str = f"{att_avg}" if att_avg is not None else "--"
+    mid_str = f"{mid_avg}" if mid_avg is not None else "--"
+    def_str = f"{def_avg}" if def_avg is not None else "--"
+    ovr_str = f"{ovr_avg}" if ovr_avg is not None else "--"
+
     embed = create_beastly_embed(
         title=f"📋 Squad Lineup • [{club['tag']}] {club['name']}",
         description=(
             f"Club: {role_str}\n"
             f"Tactical Formation: **{formation}**\n"
             f"*{form_meta.get('desc', '')}*\n"
+            f"📊 **Team Rating:** ⚡ ATT: **{att_str}** | ⚙️ MID: **{mid_str}** | 🛡️ DEF: **{def_str}** | ⭐ OVR: **{ovr_str}**\n"
             f"━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=COLOR_PITCH_GREEN,
@@ -939,20 +985,23 @@ def club_lineup_embed(
         inline=False,
     )
     def_target = form_meta.get("def", 4)
+    def_hdr = f"🛡️ Defense ({len(defs)}/{def_target})" + (f" • `{def_str} DEF`" if def_avg is not None else "")
     embed.add_field(
-        name=f"🛡️ Defense ({len(defs)}/{def_target})",
+        name=def_hdr,
         value="\n".join(f"• {x}" for x in defs) if defs else "*Vacant*",
         inline=False,
     )
     mid_target = form_meta.get("mid", 3)
+    mid_hdr = f"⚙️ Midfield ({len(mids)}/{mid_target})" + (f" • `{mid_str} MID`" if mid_avg is not None else "")
     embed.add_field(
-        name=f"⚙️ Midfield ({len(mids)}/{mid_target})",
+        name=mid_hdr,
         value="\n".join(f"• {x}" for x in mids) if mids else "*Vacant*",
         inline=False,
     )
     fwd_target = form_meta.get("fwd", 3)
+    fwd_hdr = f"⚡ Attack ({len(fwds)}/{fwd_target})" + (f" • `{att_str} ATT`" if att_avg is not None else "")
     embed.add_field(
-        name=f"⚡ Attack ({len(fwds)}/{fwd_target})",
+        name=fwd_hdr,
         value="\n".join(f"• {x}" for x in fwds) if fwds else "*Vacant*",
         inline=False,
     )
@@ -972,8 +1021,121 @@ def club_lineup_embed(
         inline=False,
     )
 
+    footer_ovr = f" • Team OVR: {ovr_str}" if ovr_avg is not None else ""
     embed.set_footer(
-        text=f"Total Squad: {len(starting_players) + len(bench_players)} players • Starters: {len(starting_players)}/11"
+        text=f"Total Squad: {len(starting_players) + len(bench_players)} players • Starters: {len(starting_players)}/11{footer_ovr}"
+    )
+    return embed
+
+
+def club_ratings_embed(
+    club: Dict[str, Any],
+    formation: str,
+    starting_players: List[Dict[str, Any]],
+    bench_players: List[Dict[str, Any]],
+) -> discord.Embed:
+    """Renders a comprehensive TV-broadcast style Team Ratings & Department Strength card."""
+    role_str = f"<@&{club['role_id']}>" if club.get("role_id") else f"**[{club['tag']}] {club['name']}**"
+
+    # Separate starting players by department
+    att_players = [
+        p for p in starting_players
+        if p.get("rating") is not None and POSITION_CATEGORIES.get((p.get("position") or "").upper()) == "Attack"
+    ]
+    mid_players = [
+        p for p in starting_players
+        if p.get("rating") is not None and POSITION_CATEGORIES.get((p.get("position") or "").upper()) == "Midfield"
+    ]
+    def_players = [
+        p for p in starting_players
+        if p.get("rating") is not None and (
+            POSITION_CATEGORIES.get((p.get("position") or "").upper()) == "Defense"
+            or (p.get("position") or "").upper() == "GK"
+        )
+    ]
+    all_starters = [p for p in starting_players if p.get("rating") is not None]
+    all_bench = [p for p in bench_players if p.get("rating") is not None]
+    all_squad = all_starters + all_bench
+
+    att_avg = round(sum(int(p["rating"]) for p in att_players) / len(att_players)) if att_players else None
+    mid_avg = round(sum(int(p["rating"]) for p in mid_players) / len(mid_players)) if mid_players else None
+    def_avg = round(sum(int(p["rating"]) for p in def_players) / len(def_players)) if def_players else None
+    ovr_avg = round(sum(int(p["rating"]) for p in all_starters) / len(all_starters)) if all_starters else None
+    bench_avg = round(sum(int(p["rating"]) for p in all_bench) / len(all_bench)) if all_bench else None
+
+    # Star player of the squad (highest rating)
+    star_player = max(all_squad, key=lambda p: int(p.get("rating") or 0)) if all_squad else None
+    star_str = (
+        f"🌟 **{star_player.get('player_name')}** (`{star_player.get('position', '??')}`) — **{star_player.get('rating')} OVR**"
+        if star_player and star_player.get("rating")
+        else "None registered"
+    )
+
+    ovr_val = ovr_avg if ovr_avg is not None else 75
+    ovr_bar = make_rating_bar(ovr_val)
+
+    embed = create_beastly_embed(
+        title=f"⭐ Team Ratings • [{club['tag']}] {club['name']}",
+        description=(
+            f"Club: {role_str}\n"
+            f"Tactical Formation: **{formation}**\n"
+            f"Squad Star: {star_str}\n\n"
+            f"### 🏆 Overall Team Rating: **{ovr_avg if ovr_avg is not None else '--'} OVR**\n"
+            f"`{ovr_bar}`\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=COLOR_BEASTLY_GOLD,
+    )
+
+    # ⚡ Attack Field
+    if att_players:
+        top_att = max(att_players, key=lambda p: int(p.get("rating") or 0))
+        att_bar = make_rating_bar(att_avg or 0, total=8)
+        att_desc = (
+            f"**Rating:** `{att_avg} ATT` {att_bar}\n"
+            f"**Star Forward:** {top_att.get('player_name')} (`{top_att.get('position', 'FWD')}`) • `{top_att.get('rating')} OVR`\n"
+            f"**Starters:** {len(att_players)} attackers"
+        )
+    else:
+        att_desc = "*No starting attackers registered*"
+    embed.add_field(name="⚡ Attack (ATT)", value=att_desc, inline=False)
+
+    # ⚙️ Midfield Field
+    if mid_players:
+        top_mid = max(mid_players, key=lambda p: int(p.get("rating") or 0))
+        mid_bar = make_rating_bar(mid_avg or 0, total=8)
+        mid_desc = (
+            f"**Rating:** `{mid_avg} MID` {mid_bar}\n"
+            f"**Engine Room Star:** {top_mid.get('player_name')} (`{top_mid.get('position', 'MID')}`) • `{top_mid.get('rating')} OVR`\n"
+            f"**Starters:** {len(mid_players)} midfielders"
+        )
+    else:
+        mid_desc = "*No starting midfielders registered*"
+    embed.add_field(name="⚙️ Midfield (MID)", value=mid_desc, inline=False)
+
+    # 🛡️ Defense & Goalkeeper Field
+    if def_players:
+        top_def = max(def_players, key=lambda p: int(p.get("rating") or 0))
+        def_bar = make_rating_bar(def_avg or 0, total=8)
+        def_desc = (
+            f"**Rating:** `{def_avg} DEF` {def_bar}\n"
+            f"**Defensive Anchor:** {top_def.get('player_name')} (`{top_def.get('position', 'DEF')}`) • `{top_def.get('rating')} OVR`\n"
+            f"**Starters:** {len(def_players)} defenders & GK"
+        )
+    else:
+        def_desc = "*No starting defenders or GK registered*"
+    embed.add_field(name="🛡️ Defense & Goalkeeper (DEF)", value=def_desc, inline=False)
+
+    # 💺 Squad Depth Field
+    depth_val = f"`{bench_avg} AVG`" if bench_avg is not None else "*No rated bench*"
+    depth_desc = (
+        f"**Bench Size:** {len(bench_players)} players ({depth_val})\n"
+        f"**Total Squad:** {len(starting_players) + len(bench_players)} registered players"
+    )
+    embed.add_field(name="💺 Squad Depth", value=depth_desc, inline=False)
+
+    embed.set_footer(
+        text=f"Tactical Engine • Starting XI OVR: {ovr_avg if ovr_avg is not None else '--'} • {BOT_NAME}"
     )
     return embed
 

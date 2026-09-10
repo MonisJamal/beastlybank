@@ -23,6 +23,7 @@ from utils.checks import require_beastlyfc, is_banker_or_admin
 from utils.embeds import (
     create_beastly_embed,
     club_lineup_embed,
+    club_ratings_embed,
     player_card_embed,
     error_embed,
     success_embed,
@@ -413,6 +414,48 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         club: Optional[discord.Role] = None,
     ):
         await self._handle_lineup(interaction, club=club, view="image")
+
+    @app_commands.command(name="ovr", description="View a club's overall team rating and department breakdown (ATT, MID, DEF).")
+    @app_commands.describe(club="Club role to inspect (defaults to your club)")
+    async def slash_ovr(
+        self,
+        interaction: discord.Interaction,
+        club: Optional[discord.Role] = None,
+    ):
+        await interaction.response.defer()
+        if club:
+            target_club = await self.db.get_or_create_club_from_role(
+                interaction.guild_id, club, default_owner_id=interaction.user.id
+            )
+        else:
+            target_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+
+        if not target_club:
+            await send_msg(
+                interaction,
+                embed=error_embed(
+                    "Club Not Found",
+                    "You must belong to a club or mention a club role (`/ovr club:@Role`) to view ratings.",
+                ),
+                ephemeral=True,
+            )
+            return
+
+        success, msg, data = await self.db.get_club_lineup(
+            interaction.guild_id, club if club else target_club["id"]
+        )
+        if not success:
+            await send_msg(interaction, embed=error_embed("Ratings Unavailable", msg), ephemeral=True)
+            return
+
+        embed = club_ratings_embed(
+            club=data["club"],
+            formation=data["formation"],
+            starting_players=data["starting"],
+            bench_players=data.get("bench") or [],
+        )
+        await send_msg(interaction, embed=embed)
+
 
     @app_commands.command(name="customlineup", description="Generate a custom clean matchday Starting 11 & Bench image on the fly.")
     @app_commands.describe(
@@ -1023,6 +1066,56 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         embed = success_embed("Tactical Swap", msg)
         await send_msg(interaction, embed=embed)
 
+    @player_group.command(name="sub", description="Substitute a starting player with a bench player.")
+    @app_commands.describe(
+        off="Player coming off the pitch (starter)",
+        on="Player coming onto the pitch (bencher)",
+        club="Target club role (defaults to your club)",
+    )
+    async def slash_player_sub(
+        self,
+        interaction: discord.Interaction,
+        off: str,
+        on: str,
+        club: Optional[discord.Role] = None,
+    ):
+        await interaction.response.defer()
+        if club:
+            target_club = await self.db.get_or_create_club_from_role(
+                interaction.guild_id, club, default_owner_id=interaction.user.id
+            )
+        else:
+            target_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+
+        if not target_club:
+            await send_msg(
+                interaction,
+                embed=error_embed("Club Not Found", "You must belong to a club or specify a club role."),
+                ephemeral=True,
+            )
+            return
+
+        has_perm, perm_msg = await check_squad_permission(
+            self.db, interaction.guild_id, interaction.user, target_club
+        )
+        if not has_perm:
+            await send_msg(interaction, embed=error_embed("Permission Denied", perm_msg), ephemeral=True)
+            return
+
+        success, msg = await self.db.substitute_club_player(
+            guild_id=interaction.guild_id,
+            club_query=club if club else target_club["id"],
+            player_off_name=off,
+            player_on_name=on,
+            default_owner_id=interaction.user.id,
+        )
+        if not success:
+            await send_msg(interaction, embed=error_embed("Substitution Failed", msg), ephemeral=True)
+            return
+
+        embed = success_embed("Tactical Substitution", msg)
+        await send_msg(interaction, embed=embed)
+
     @player_group.command(name="switchpos", description="Switch a player's tactical position in the lineup.")
     @app_commands.describe(
         player="Player name or Discord mention",
@@ -1118,6 +1211,14 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         """
         if args and args[0].lower() in ("switch", "switchpos", "setpos", "swap"):
             return await self.prefix_switchpos.callback(self, ctx, *args)
+
+        if args and args[0].lower() in ("sub", "substitute", "subplayer"):
+            sub_args = list(args[1:])
+            return await self.prefix_sub.callback(self, ctx, *sub_args)
+
+        if args and args[0].lower() in ("ovr", "ratings", "rating", "teamrating", "teamovr"):
+            sub_args = list(args[1:])
+            return await self.prefix_ovr.callback(self, ctx, *sub_args)
 
         if args and args[0].lower() in ("image", "card", "pitch", "img"):
             sub_args = list(args[1:])
@@ -1239,6 +1340,48 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         )
         file = discord.File(fp=buf, filename="lineup.png")
         await ctx.send(file=file)
+
+    @commands.command(name="ovr", aliases=["ratings", "teamrating", "teamovr"])
+    async def prefix_ovr(self, ctx: commands.Context, *args):
+        """
+        View a club's overall team rating and department breakdown (ATT, MID, DEF).
+        Usage: bb!ovr [@club_role or club_name]
+        Aliases: bb!ratings, bb!teamrating, bb!teamovr
+        """
+        target_club = None
+        if ctx.message.role_mentions:
+            target_club = await self.db.get_or_create_club_from_role(
+                ctx.guild.id, ctx.message.role_mentions[0], default_owner_id=ctx.author.id
+            )
+        elif args:
+            club_query = " ".join(args)
+            target_club = await self.db.get_or_create_club_from_role(
+                ctx.guild.id, club_query, default_owner_id=ctx.author.id
+            )
+        else:
+            target_club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+
+        if not target_club:
+            await ctx.send(
+                embed=error_embed(
+                    "Club Not Found",
+                    "You must belong to a club or mention a club role (`bb!ovr @Role`) to view ratings.",
+                )
+            )
+            return
+
+        success, msg, data = await self.db.get_club_lineup(ctx.guild.id, target_club["id"])
+        if not success:
+            await ctx.send(embed=error_embed("Ratings Unavailable", msg))
+            return
+
+        embed = club_ratings_embed(
+            club=data["club"],
+            formation=data["formation"],
+            starting_players=data["starting"],
+            bench_players=data.get("bench") or [],
+        )
+        await ctx.send(embed=embed)
 
     @commands.command(name="customlineup")
     async def prefix_custom_lineup(self, ctx: commands.Context, *, args: str = ""):
@@ -1966,6 +2109,106 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             return
 
         embed = success_embed("Tactical Swap", msg)
+        await ctx.send(embed=embed)
+
+    @commands.command(name="sub", aliases=["substitute", "subplayer"])
+    async def prefix_sub(self, ctx: commands.Context, *args):
+        """
+        Substitute a starting player with a bench player.
+        Usage:
+          bb!sub <player_off> <player_on> [@club_role]
+          bb!sub off <player_off> on <player_on> [@club_role]
+          bb!sub <player_on> for <player_off> [@club_role]
+        Aliases: bb!substitute, bb!subplayer
+        Example: bb!sub Haaland Alvarez @ManCity
+        """
+        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        clean_args = [a.strip() for a in args if a.strip() and not (a.startswith("<@&") and a.endswith(">"))]
+
+        if not clean_args:
+            await ctx.send(
+                embed=error_embed(
+                    "Missing Parameters",
+                    "**Usage:** `bb!sub <player_off> <player_on> [@club_role]`\n"
+                    "**Aliases:** `bb!substitute`, `bb!subplayer`\n"
+                    "**Example:** `bb!sub Haaland Alvarez @ManCity`\n"
+                    "*(Subs out starter Haaland and brings in bench player Alvarez)*",
+                )
+            )
+            return
+
+        # Parse potential syntax like "off Haaland on Alvarez" or "Alvarez for Haaland"
+        off_name = None
+        on_name = None
+        lower_tokens = [w.lower() for w in clean_args]
+
+        if "off" in lower_tokens and "on" in lower_tokens:
+            off_idx = lower_tokens.index("off")
+            on_idx = lower_tokens.index("on")
+            if off_idx < on_idx:
+                off_name = " ".join(clean_args[off_idx + 1:on_idx]).strip()
+                on_name = " ".join(clean_args[on_idx + 1:]).strip()
+            else:
+                on_name = " ".join(clean_args[on_idx + 1:off_idx]).strip()
+                off_name = " ".join(clean_args[off_idx + 1:]).strip()
+        elif "for" in lower_tokens:
+            for_idx = lower_tokens.index("for")
+            # e.g. "Alvarez for Haaland" -> on is Alvarez, off is Haaland
+            on_name = " ".join(clean_args[:for_idx]).strip()
+            off_name = " ".join(clean_args[for_idx + 1:]).strip()
+        elif len(clean_args) >= 2:
+            off_name = clean_args[0]
+            on_name = " ".join(clean_args[1:]).strip()
+        else:
+            await ctx.send(
+                embed=error_embed(
+                    "Missing Parameters",
+                    "Please specify both the player coming **off** and the player coming **on**.\n"
+                    "**Usage:** `bb!sub <player_off> <player_on> [@club_role]`",
+                )
+            )
+            return
+
+        if not off_name or not on_name:
+            await ctx.send(
+                embed=error_embed(
+                    "Invalid Parameters",
+                    "Please specify both the player coming **off** and the player coming **on**.\n"
+                    "**Usage:** `bb!sub <player_off> <player_on> [@club_role]`",
+                )
+            )
+            return
+
+        if target_role:
+            target_club = await self.db.get_or_create_club_from_role(
+                ctx.guild.id, target_role, default_owner_id=ctx.author.id
+            )
+        else:
+            target_club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+
+        if not target_club:
+            await ctx.send(embed=error_embed("Club Not Found", "You must belong to a club or mention a club role."))
+            return
+
+        has_perm, perm_msg = await check_squad_permission(
+            self.db, ctx.guild.id, ctx.author, target_club
+        )
+        if not has_perm:
+            await ctx.send(embed=error_embed("Permission Denied", perm_msg))
+            return
+
+        success, msg = await self.db.substitute_club_player(
+            guild_id=ctx.guild.id,
+            club_query=target_role if target_role else target_club["id"],
+            player_off_name=off_name,
+            player_on_name=on_name,
+            default_owner_id=ctx.author.id,
+        )
+        if not success:
+            await ctx.send(embed=error_embed("Substitution Failed", msg))
+            return
+
+        embed = success_embed("Tactical Substitution", msg)
         await ctx.send(embed=embed)
 
     @commands.command(name="switchpos", aliases=["switch", "setpos"])

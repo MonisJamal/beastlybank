@@ -3686,7 +3686,7 @@ async def test_substitute_and_ovr_ratings(db: DatabaseManager):
     assert "🌟" in ratings_embed.description  # Star player
     assert any("Attack" in f.name and "87 ATT" in f.value for f in ratings_embed.fields)
     assert any("Midfield" in f.name and "88 MID" in f.value for f in ratings_embed.fields)
-    assert any("Defense" in f.name and "86 DEF" in f.value for f in ratings_embed.fields)
+    assert any("Defense" in f.name and "86 DEF" in f.value and "4 defenders + 1 GK" in f.value for f in ratings_embed.fields)
 
     # 3. Test Standard Tactical Substitution: Sub off Haaland (Starter) for Alvarez (Bench)
     sub_ok, sub_msg = await db.substitute_club_player(
@@ -3756,6 +3756,69 @@ async def test_substitute_and_ovr_ratings(db: DatabaseManager):
     )
     assert same_ok is False
     assert "themselves" in same_msg
+
+
+@pytest.mark.asyncio
+async def test_formation_352_and_department_ovr(db: DatabaseManager):
+    """Verify 3-5-2 has exactly 3 defenders, 5 midfielders, 2 forwards, 1 GK, and OVR equals (ATT+MID+DEF)/3."""
+    guild_id = 999999001
+    owner_id = 111111001
+
+    ok, _, club = await db.create_club(guild_id, "Inter Milan", "INT", owner_id)
+    assert ok is True
+
+    # Set formation to 3-5-2
+    form_ok, _ = await db.set_club_formation(guild_id, club["id"], "3-5-2")
+    assert form_ok is True
+
+    players = [
+        ("Sommer", "GK", 84),
+        ("Bastoni", "CB", 87),
+        ("Acerbi", "CB", 83),
+        ("Pavard", "CB", 84),
+        ("Calhanoglu", "CDM", 86),
+        ("Barella", "CDM", 87),
+        ("Dimarco", "LM", 84),
+        ("Mkhitaryan", "CAM", 83),
+        ("Darmian", "RM", 81),
+        ("Lautaro", "ST", 89),
+        ("Thuram", "ST", 84),
+    ]
+    for name, pos, rating in players:
+        add_ok, _, _ = await db.add_club_player(guild_id, club["id"], name, pos, "starting", rating=rating)
+        assert add_ok is True
+
+    _, _, lineup = await db.get_club_lineup(guild_id, club["id"])
+    from config import POSITION_CATEGORIES
+    starting = lineup["starting"]
+    assert len(starting) == 11
+    defs = [p for p in starting if POSITION_CATEGORIES.get(p["position"]) == "Defense"]
+    mids = [p for p in starting if POSITION_CATEGORIES.get(p["position"]) == "Midfield"]
+    fwds = [p for p in starting if POSITION_CATEGORIES.get(p["position"]) == "Attack"]
+    gks = [p for p in starting if p["position"] == "GK"]
+
+    assert len(defs) == 3, f"Expected 3 defenders, got {len(defs)}"
+    assert len(mids) == 5, f"Expected 5 midfielders, got {len(mids)}"
+    assert len(fwds) == 2, f"Expected 2 forwards, got {len(fwds)}"
+    assert len(gks) == 1, f"Expected 1 GK, got {len(gks)}"
+
+    # Ratings:
+    # ATT: round((89 + 84)/2) = 87
+    # MID: round((86 + 87 + 84 + 83 + 81)/5) = round(421/5) = 84
+    # DEF: round((84 + 87 + 83 + 84)/4) = round(338/4) = 85
+    # OVR: round((87 + 84 + 85)/3) = round(256/3) = 85
+    from utils.embeds import club_ratings_embed
+    ratings_embed = club_ratings_embed(
+        club=lineup["club"],
+        formation="3-5-2",
+        starting_players=starting,
+        bench_players=[],
+    )
+    assert "Overall Team Rating: **85 OVR**" in ratings_embed.description
+    assert any("3 defenders + 1 GK" in f.value for f in ratings_embed.fields)
+    assert any("5 midfielders" in f.value for f in ratings_embed.fields)
+    assert any("2 attackers" in f.value for f in ratings_embed.fields)
+
 
 
 

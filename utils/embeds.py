@@ -934,7 +934,12 @@ def club_lineup_embed(
     att_avg = round(sum(att_ratings) / len(att_ratings)) if att_ratings else None
     mid_avg = round(sum(mid_ratings) / len(mid_ratings)) if mid_ratings else None
     def_avg = round(sum(def_ratings) / len(def_ratings)) if def_ratings else None
-    ovr_avg = round(sum(all_starter_ratings) / len(all_starter_ratings)) if all_starter_ratings else None
+    if att_avg is not None and mid_avg is not None and def_avg is not None:
+        ovr_avg = round((att_avg + mid_avg + def_avg) / 3)
+    elif all_starter_ratings:
+        ovr_avg = round(sum(all_starter_ratings) / len(all_starter_ratings))
+    else:
+        ovr_avg = None
 
     att_str = f"{att_avg}" if att_avg is not None else "--"
     mid_str = f"{mid_avg}" if mid_avg is not None else "--"
@@ -1046,13 +1051,15 @@ def club_ratings_embed(
         p for p in starting_players
         if p.get("rating") is not None and POSITION_CATEGORIES.get((p.get("position") or "").upper()) == "Midfield"
     ]
-    def_players = [
+    gk_players = [
         p for p in starting_players
-        if p.get("rating") is not None and (
-            POSITION_CATEGORIES.get((p.get("position") or "").upper()) == "Defense"
-            or (p.get("position") or "").upper() == "GK"
-        )
+        if p.get("rating") is not None and (p.get("position") or "").upper() == "GK"
     ]
+    def_outfield = [
+        p for p in starting_players
+        if p.get("rating") is not None and POSITION_CATEGORIES.get((p.get("position") or "").upper()) == "Defense"
+    ]
+    def_players = def_outfield + gk_players
     all_starters = [p for p in starting_players if p.get("rating") is not None]
     all_bench = [p for p in bench_players if p.get("rating") is not None]
     all_squad = all_starters + all_bench
@@ -1060,7 +1067,12 @@ def club_ratings_embed(
     att_avg = round(sum(int(p["rating"]) for p in att_players) / len(att_players)) if att_players else None
     mid_avg = round(sum(int(p["rating"]) for p in mid_players) / len(mid_players)) if mid_players else None
     def_avg = round(sum(int(p["rating"]) for p in def_players) / len(def_players)) if def_players else None
-    ovr_avg = round(sum(int(p["rating"]) for p in all_starters) / len(all_starters)) if all_starters else None
+    if att_avg is not None and mid_avg is not None and def_avg is not None:
+        ovr_avg = round((att_avg + mid_avg + def_avg) / 3)
+    elif all_starters:
+        ovr_avg = round(sum(int(p["rating"]) for p in all_starters) / len(all_starters))
+    else:
+        ovr_avg = None
     bench_avg = round(sum(int(p["rating"]) for p in all_bench) / len(all_bench)) if all_bench else None
 
     # Star player of the squad (highest rating)
@@ -1117,10 +1129,16 @@ def club_ratings_embed(
     if def_players:
         top_def = max(def_players, key=lambda p: int(p.get("rating") or 0))
         def_bar = make_rating_bar(def_avg or 0, total=8)
+        starters_parts = []
+        if def_outfield:
+            starters_parts.append(f"{len(def_outfield)} defender{'s' if len(def_outfield) != 1 else ''}")
+        if gk_players:
+            starters_parts.append(f"{len(gk_players)} GK")
+        starters_count_str = " + ".join(starters_parts) if starters_parts else f"{len(def_players)} defenders"
         def_desc = (
             f"**Rating:** `{def_avg} DEF` {def_bar}\n"
             f"**Defensive Anchor:** {top_def.get('player_name')} (`{top_def.get('position', 'DEF')}`) • `{top_def.get('rating')} OVR`\n"
-            f"**Starters:** {len(def_players)} defenders & GK"
+            f"**Starters:** {starters_count_str}"
         )
     else:
         def_desc = "*No starting defenders or GK registered*"

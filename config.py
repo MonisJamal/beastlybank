@@ -117,7 +117,7 @@ SUPPORTED_FORMATIONS = {
     "3-4-3 Diamond": {"def": 3, "mid": 4, "fwd": 3, "name": "3-4-3 Diamond", "desc": "Diamond midfield with front three (3 DEF, 4 MID, 3 FWD)", "positions": ["GK", "CB", "CB", "CB", "CDM", "LM", "RM", "CAM", "LW", "ST", "RW"]},
     "3-4-3 Flat": {"def": 3, "mid": 4, "fwd": 3, "name": "3-4-3 Flat", "desc": "Flat four midfield with front three (3 DEF, 4 MID, 3 FWD)", "positions": ["GK", "CB", "CB", "CB", "LM", "CM", "CM", "RM", "LW", "ST", "RW"]},
     "3-5-1-1": {"def": 3, "mid": 6, "fwd": 1, "name": "3-5-1-1", "desc": "Packed midfield with second striker (3 DEF, 6 MID, 1 FWD)", "positions": ["GK", "CB", "CB", "CB", "CDM", "LM", "CM", "CM", "RM", "CAM", "ST"]},
-    "3-5-2": {"def": 3, "mid": 5, "fwd": 2, "name": "3-5-2", "desc": "Wingback midfield dominance (3 DEF, 5 MID, 2 FWD)", "positions": ["GK", "CB", "CB", "CB", "LWB", "CDM", "CDM", "RWB", "CAM", "ST", "ST"]},
+    "3-5-2": {"def": 3, "mid": 5, "fwd": 2, "name": "3-5-2", "desc": "Three center-backs with 5-man midfield (3 DEF, 5 MID, 2 FWD)", "positions": ["GK", "CB", "CB", "CB", "CDM", "CDM", "LM", "CAM", "RM", "ST", "ST"]},
     # ── 4-Back ──
     "4-1-2-1-2 Narrow": {"def": 4, "mid": 4, "fwd": 2, "name": "4-1-2-1-2 Narrow", "desc": "Narrow central diamond (4 DEF, 4 MID, 2 FWD)", "positions": ["GK", "LB", "CB", "CB", "RB", "CDM", "CM", "CM", "CAM", "ST", "ST"]},
     "4-1-2-1-2 Wide": {"def": 4, "mid": 4, "fwd": 2, "name": "4-1-2-1-2 Wide", "desc": "Wide diamond midfield (4 DEF, 4 MID, 2 FWD)", "positions": ["GK", "LB", "CB", "CB", "RB", "CDM", "LM", "RM", "CAM", "ST", "ST"]},

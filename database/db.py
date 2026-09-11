@@ -746,18 +746,20 @@ class DatabaseManager:
             except Exception as mig_err:
                 logger.debug("Migration 4-2-1-3 notice: %s", mig_err)
 
-            # Auto-seed SoFIFA player database if cache is empty (< 500 players)
+            # Auto-seed and upgrade SoFIFA player database to Sep 19, 2025 (r=260004)
             try:
-                await cur.execute("SELECT COUNT(*) as cnt FROM sofifa_players;")
+                await cur.execute("SELECT COUNT(*) as cnt FROM sofifa_players WHERE sofifa_url LIKE '%260004%';")
                 row = await cur.fetchone()
-                cnt = int(row["cnt"] if row else 0)
-                if cnt < 500:
+                sep19_cnt = int(row["cnt"] if row else 0)
+                if sep19_cnt < 2500:
                     seed_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "sofifa_players_seed.json")
                     if os.path.exists(seed_path):
                         with open(seed_path, "r", encoding="utf-8") as f:
                             seed_data = json.load(f)
                         if seed_data:
-                            logger.info("Auto-seeding %d SoFIFA players from offline seed...", len(seed_data))
+                            logger.info("Upgrading/seeding %d SoFIFA Sep 19, 2025 players from offline seed...", len(seed_data))
+                            # Purge any non-260004 entries
+                            await cur.execute("DELETE FROM sofifa_players WHERE sofifa_url NOT LIKE '%260004%';")
                             for p in seed_data:
                                 p_id = p["id"]
                                 name = p.get("name", "")
@@ -772,7 +774,7 @@ class DatabaseManager:
                                 val = p.get("value") or "€0"
                                 wage = p.get("wage") or "€0"
                                 avatar = p.get("avatar") or p.get("avatar_url") or ""
-                                url = p.get("url") or p.get("sofifa_url") or f"https://sofifa.com/player/{p_id}"
+                                url = p.get("url") or p.get("sofifa_url") or f"https://sofifa.com/player/{p_id}/260004/"
                                 s_text = p.get("search_text") or f"{_normalize_search_text(name)} {_normalize_search_text(full_name)}"
                                 p_json = json.dumps(p)
 
@@ -807,6 +809,18 @@ class DatabaseManager:
                                         val, wage, avatar, url, p_json, s_text
                                     ),
                                 )
+                            # Re-sync any existing club_players whose rating, potential, or wage changed in the Sep 19 2025 dataset
+                            await cur.execute("SELECT id, player_name FROM club_players;")
+                            for cp in await cur.fetchall():
+                                matched = await self.resolve_sofifa_player(cp["player_name"], live_fetch=False)
+                                if matched:
+                                    m_ovr = int(matched.get("overall_rating") or 75)
+                                    m_pot = int(matched.get("potential") or m_ovr)
+                                    m_wage = parse_wage_to_int(matched.get("wage"))
+                                    await cur.execute(
+                                        "UPDATE club_players SET rating = ?, potential = ?, wage = ? WHERE id = ?;",
+                                        (m_ovr, m_pot, m_wage, cp["id"]),
+                                    )
             except Exception as seed_err:
                 logger.debug("SoFIFA auto-seed notice: %s", seed_err)
 

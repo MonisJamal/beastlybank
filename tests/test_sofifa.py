@@ -323,3 +323,72 @@ async def test_squad_add_player_sofifa_autofill(db: DatabaseManager):
     assert orig_row["rating"] == 84
     assert orig_row["potential"] == 88
     assert orig_row["number"] == 4
+
+
+@pytest.mark.asyncio
+async def test_sep19_2025_fermin_and_official_ratings(db: DatabaseManager):
+    """
+    Verify that players reflect their exact Sep 19, 2025 (FC 26 launch roster r=260004) ratings:
+    - Fermín is 80 OVR (NOT 83 OVR from 2026 updates!)
+    - Erling Haaland is 90 OVR (NOT 91 OVR!)
+    - Lamine Yamal is 81 OVR (NOT 83/84 OVR!)
+    - Kylian Mbappé wage is €610K / MD (NOT €450K!)
+    """
+    # 1. Fermin resolution
+    fermin = await db.resolve_sofifa_player("fermin", live_fetch=False)
+    assert fermin is not None
+    assert fermin["name"] == "Fermín"
+    assert fermin["overall_rating"] == 80, f"Expected 80 OVR for Fermín in Sep 19 2025 roster, got {fermin['overall_rating']}"
+    assert fermin["potential"] == 87
+    assert "260004" in (fermin.get("url") or fermin.get("sofifa_url"))
+
+    # 2. Haaland resolution (90 in Sep 19 2025 launch roster)
+    haaland = await db.resolve_sofifa_player("haaland", live_fetch=False)
+    assert haaland is not None
+    assert haaland["overall_rating"] == 90
+    assert haaland["wage"] == "€260K"
+
+    # 3. Mbappé wage in Sep 19 2025 roster
+    mbappe = await db.resolve_sofifa_player("mbappe", live_fetch=False)
+    assert mbappe is not None
+    assert mbappe["overall_rating"] == 91
+    assert mbappe["wage"] == "€610K"
+
+    # 4. Adding Fermin to squad via bot command auto-fills 80 OVR, 87 POT, and official wage
+    from unittest.mock import MagicMock, AsyncMock
+    from cogs.squad import SquadCog
+
+    guild_id = 123456789
+    owner_id = 999
+    mock_role = MagicMock()
+    mock_role.id = 888111
+    mock_role.mention = "<@&888111>"
+
+    _, _, club = await db.create_club(guild_id, "FC Barcelona", "FCB", owner_id, mock_role.id)
+
+    client_mock = MagicMock()
+    client_mock.db = db
+    squad_cog = SquadCog(client_mock)
+
+    ctx = MagicMock()
+    ctx.guild.id = guild_id
+    ctx.author.id = owner_id
+    ctx.message.role_mentions = [mock_role]
+    ctx.send = AsyncMock()
+
+    await squad_cog.prefix_addplayer.callback(
+        squad_cog,
+        ctx,
+        "Fermin",
+        mock_role.mention,
+    )
+    ctx.send.assert_called_once()
+    add_msg = ctx.send.call_args[1]["embed"].description
+    assert "80 OVR" in add_msg
+
+    _, _, info = await db.get_player_info(guild_id, "Fermin", club_query=club["id"])
+    assert info["player"]["rating"] == 80, f"Expected Fermín to be registered at 80 OVR, got {info['player']['rating']}"
+    assert info["player"]["potential"] == 87
+    assert info["player"]["wage"] == 80000
+
+

@@ -748,22 +748,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 sofifa_data = await self.db.get_cached_sofifa_player(clean_p.split(":")[0])
 
             if not sofifa_data:
-                sofifa_data = await self.db.get_cached_sofifa_player(clean_p)
-
-            if not sofifa_data and len(clean_p) >= 3:
-                try:
-                    fetched = await fetch_sofifa_players(keyword=clean_p, timeout=5)
-                    if fetched:
-                        await self.db.cache_sofifa_players(fetched)
-                        clean_lower = clean_p.lower()
-                        for r in fetched:
-                            if clean_lower in r["name"].lower() or clean_lower in r["full_name"].lower():
-                                sofifa_data = r
-                                break
-                        if not sofifa_data:
-                            sofifa_data = fetched[0]
-                except Exception as e:
-                    logger.debug("Live fetch error during squad add: %s", e)
+                sofifa_data = await self.db.resolve_sofifa_player(clean_p, live_fetch=True)
 
         # Player not found in SoFIFA and user selected SoFIFA Auto
         if not is_explicit_custom and not sofifa_data:
@@ -1819,22 +1804,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 sofifa_data = await self.db.get_cached_sofifa_player(clean_name.split(":")[0])
 
             if not sofifa_data:
-                sofifa_data = await self.db.get_cached_sofifa_player(clean_name)
-
-            if not sofifa_data and len(clean_name) >= 3:
-                try:
-                    fetched = await fetch_sofifa_players(keyword=clean_name, timeout=5)
-                    if fetched:
-                        await self.db.cache_sofifa_players(fetched)
-                        clean_lower = clean_name.lower()
-                        for r in fetched:
-                            if clean_lower in r["name"].lower() or clean_lower in r["full_name"].lower():
-                                sofifa_data = r
-                                break
-                        if not sofifa_data:
-                            sofifa_data = fetched[0]
-                except Exception:
-                    pass
+                sofifa_data = await self.db.resolve_sofifa_player(clean_name, live_fetch=True)
 
         if sofifa_data:
             final_name = clean_name if not clean_name.isdigit() else (sofifa_data.get("full_name") or sofifa_data["name"])

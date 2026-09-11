@@ -2,6 +2,7 @@
 Squad & Lineup Cog: Football formations, Starting XI, Substitutes Bench, and Player Management.
 Supports all formations, visual tactical embeds, custom/Discord players, and Discord role mentions.
 """
+import asyncio
 import logging
 from typing import Any, Dict, List, Literal, Optional, Tuple
 import discord
@@ -133,6 +134,15 @@ async def squad_player_autocomplete(
     db = interaction.client.db  # type: ignore
 
     results = await db.search_cached_sofifa_players(clean, limit=20)
+    if not results and len(clean) >= 3 and not clean.lower().startswith("custom:"):
+        try:
+            fetched = await asyncio.wait_for(fetch_sofifa_players(keyword=clean, timeout=1.2), timeout=1.5)
+            if fetched:
+                await db.cache_sofifa_players(fetched)
+                results = fetched[:20]
+        except Exception:
+            pass
+
     choices: list[app_commands.Choice[str]] = []
     for p in results:
         label = f"{p['name']} ({p['overall_rating']} {p['primary_pos']}) • {p['team']}"
@@ -181,6 +191,12 @@ class AddAsCustomPlayerView(discord.ui.View):
             await interaction.response.send_message("Only the manager who initiated this can confirm.", ephemeral=True)
             return
 
+        # Intelligently resolve wage if this custom name belongs to a real footballer
+        custom_wage = 0
+        matched = await self.squad_cog.db.resolve_sofifa_player(self.raw_name, live_fetch=True)
+        if matched and matched.get("wage"):
+            custom_wage = matched["wage"]
+
         success, msg, p_data = await self.squad_cog.db.add_club_player(
             guild_id=interaction.guild_id,
             club_query=self.target_club["id"],
@@ -191,6 +207,7 @@ class AddAsCustomPlayerView(discord.ui.View):
             rating=self.rating,
             potential=self.potential,
             alt_positions=self.alt_positions,
+            wage=custom_wage,
             default_owner_id=interaction.user.id,
         )
         if not success:
@@ -200,18 +217,24 @@ class AddAsCustomPlayerView(discord.ui.View):
             )
             return
 
+        w_int = parse_wage_to_int(custom_wage)
+        w_tag = f"• **Matchday Wage:** 🪙 **{format_wage(w_int)} / MD** *(Auto-matched from SoFIFA)*\n" if w_int > 0 else ""
+
         embed = create_beastly_embed(
             title="👤 Custom Player Registered",
             description=(
                 f"✅ **{self.raw_name}** successfully registered as a **Custom Player**!\n\n"
                 f"• **Position:** `{self.position}`\n"
                 f"• **Rating:** ⭐ **{self.rating} OVR** (Potential: **{self.potential}**)\n"
+                f"{w_tag}"
                 f"• **Lineup Status:** `{self.status.title()}`" + (f" (Jersey #{self.number})" if self.number is not None else "") + "\n"
                 f"• **Club:** **[{self.target_club['tag']}] {self.target_club['name']}**\n\n"
                 f"💡 *You can edit this player anytime with `/player edit` or `bb!editplayer`.*"
             ),
             color=COLOR_SUCCESS,
         )
+        if matched and matched.get("avatar"):
+            embed.set_thumbnail(url=matched["avatar"])
         await interaction.response.edit_message(embed=embed, view=None)
 
     @discord.ui.button(label="Cancel", emoji="✖️", style=discord.ButtonStyle.secondary)
@@ -796,6 +819,18 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             avatar_url = None
             team_origin = None
 
+            # Intelligent Wage & Real Player Auto-Match for Custom Player
+            is_auto_matched_wage = False
+            if wage is None:
+                matched = await self.db.resolve_sofifa_player(final_name, live_fetch=True)
+                if matched and matched.get("wage"):
+                    final_wage = matched["wage"]
+                    is_auto_matched_wage = True
+                    if not avatar_url and matched.get("avatar"):
+                        avatar_url = matched.get("avatar")
+                    if not team_origin and matched.get("team"):
+                        team_origin = matched.get("team")
+
         success, msg, p_data = await self.db.add_club_player(
             guild_id=interaction.guild_id,
             club_query=target_club["id"],
@@ -814,7 +849,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             return
 
         w_int = parse_wage_to_int(final_wage)
-        w_tag = f"• **Matchday Wage:** 🪙 **{format_wage(w_int)} / MD**\n" if w_int > 0 else ""
+        w_matched_note = " *(Auto-matched from SoFIFA)*" if (not sofifa_data and is_auto_matched_wage and w_int > 0) else ""
+        w_tag = f"• **Matchday Wage:** 🪙 **{format_wage(w_int)} / MD**{w_matched_note}\n" if w_int > 0 else ""
 
         if sofifa_data:
             desc = (
@@ -849,6 +885,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 description=desc,
                 color=COLOR_SUCCESS,
             )
+            if avatar_url:
+                embed.set_thumbnail(url=avatar_url)
 
         await send_msg(interaction, embed=embed)
 
@@ -1821,6 +1859,16 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             team_origin = None
 
         final_wage = sofifa_data.get("wage", 0) if sofifa_data else 0
+        is_auto_matched_wage = False
+        if not final_wage:
+            matched = await self.db.resolve_sofifa_player(final_name, live_fetch=True)
+            if matched and matched.get("wage"):
+                final_wage = matched["wage"]
+                is_auto_matched_wage = True
+                if not avatar_url and matched.get("avatar"):
+                    avatar_url = matched.get("avatar")
+                if not team_origin and matched.get("team"):
+                    team_origin = matched.get("team")
 
         success, msg, p_data = await self.db.add_club_player(
             guild_id=ctx.guild.id,
@@ -1840,7 +1888,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             return
 
         w_int = parse_wage_to_int(final_wage)
-        w_tag = f"• **Matchday Wage:** 🪙 **{format_wage(w_int)} / MD**\n" if w_int > 0 else ""
+        w_matched_note = " *(Auto-matched from SoFIFA)*" if (not sofifa_data and is_auto_matched_wage and w_int > 0) else ""
+        w_tag = f"• **Matchday Wage:** 🪙 **{format_wage(w_int)} / MD**{w_matched_note}\n" if w_int > 0 else ""
 
         if sofifa_data:
             desc = (
@@ -1875,6 +1924,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 description=desc,
                 color=COLOR_SUCCESS,
             )
+            if avatar_url:
+                embed.set_thumbnail(url=avatar_url)
 
         await ctx.send(embed=embed)
 

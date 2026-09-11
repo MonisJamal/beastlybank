@@ -4,10 +4,11 @@ Supports Cash, Community Points, Training Tokens, Clubs, Shop, Inventory, Giveaw
 """
 import json
 import logging
+import os
 import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 import aiosqlite
 
 
@@ -744,6 +745,70 @@ class DatabaseManager:
                     await self._realign_club_starters(cur, fc["id"], "4-2-1-3")
             except Exception as mig_err:
                 logger.debug("Migration 4-2-1-3 notice: %s", mig_err)
+
+            # Auto-seed SoFIFA player database if cache is empty (< 500 players)
+            try:
+                await cur.execute("SELECT COUNT(*) as cnt FROM sofifa_players;")
+                row = await cur.fetchone()
+                cnt = int(row["cnt"] if row else 0)
+                if cnt < 500:
+                    seed_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "sofifa_players_seed.json")
+                    if os.path.exists(seed_path):
+                        with open(seed_path, "r", encoding="utf-8") as f:
+                            seed_data = json.load(f)
+                        if seed_data:
+                            logger.info("Auto-seeding %d SoFIFA players from offline seed...", len(seed_data))
+                            for p in seed_data:
+                                p_id = p["id"]
+                                name = p.get("name", "")
+                                full_name = p.get("full_name") or name
+                                primary_pos = p.get("primary_pos") or "ST"
+                                positions = p.get("positions") or primary_pos
+                                ovr = int(p.get("overall_rating") or 75)
+                                pot = int(p.get("potential") or ovr)
+                                age = int(p.get("age") or 25)
+                                team = p.get("team") or "Free Agent"
+                                nat = p.get("nationality") or "Unknown"
+                                val = p.get("value") or "€0"
+                                wage = p.get("wage") or "€0"
+                                avatar = p.get("avatar") or p.get("avatar_url") or ""
+                                url = p.get("url") or p.get("sofifa_url") or f"https://sofifa.com/player/{p_id}"
+                                s_text = p.get("search_text") or f"{_normalize_search_text(name)} {_normalize_search_text(full_name)}"
+                                p_json = json.dumps(p)
+
+                                await cur.execute(
+                                    """
+                                    INSERT INTO sofifa_players (
+                                        id, name, full_name, primary_pos, positions,
+                                        overall_rating, potential, age, team, nationality,
+                                        value, wage, avatar_url, sofifa_url, data_json, search_text
+                                    )
+                                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    ON CONFLICT(id) DO UPDATE SET
+                                        name = excluded.name,
+                                        full_name = excluded.full_name,
+                                        primary_pos = excluded.primary_pos,
+                                        positions = excluded.positions,
+                                        overall_rating = excluded.overall_rating,
+                                        potential = excluded.potential,
+                                        age = excluded.age,
+                                        team = excluded.team,
+                                        nationality = excluded.nationality,
+                                        value = excluded.value,
+                                        wage = excluded.wage,
+                                        avatar_url = excluded.avatar_url,
+                                        sofifa_url = excluded.sofifa_url,
+                                        data_json = excluded.data_json,
+                                        search_text = excluded.search_text;
+                                    """,
+                                    (
+                                        p_id, name, full_name, primary_pos, positions,
+                                        ovr, pot, age, team, nat,
+                                        val, wage, avatar, url, p_json, s_text
+                                    ),
+                                )
+            except Exception as seed_err:
+                logger.debug("SoFIFA auto-seed notice: %s", seed_err)
 
         await conn.commit()
         logger.info("Database schema initialized successfully.")
@@ -2630,6 +2695,13 @@ class DatabaseManager:
             return False, "Player name cannot be empty.", {}
 
         w_val = parse_wage_to_int(wage)
+        if w_val == 0:
+            try:
+                matched = await self.resolve_sofifa_player(p_name, live_fetch=False)
+                if matched and matched.get("wage"):
+                    w_val = parse_wage_to_int(matched["wage"])
+            except Exception as w_err:
+                logger.debug("Wage auto-resolve notice in add_club_player: %s", w_err)
 
         uid = user_id
         if not uid:
@@ -3366,6 +3438,23 @@ class DatabaseManager:
                         await cur.execute("UPDATE club_players SET wage = ? WHERE id = ?;", (w_int, sm["id"]))
                 if sofifa_matches:
                     await conn.commit()
+
+                # 2. Intelligent resolution for remaining zero-wage players (custom names, nicknames, mononyms)
+                await cur.execute(
+                    "SELECT id, player_name FROM club_players WHERE club_id = ? AND (wage IS NULL OR wage = 0);",
+                    (club["id"],),
+                )
+                zero_wage_players = await cur.fetchall()
+                updated_any = False
+                for zp in zero_wage_players:
+                    matched = await self.resolve_sofifa_player(zp["player_name"], live_fetch=False)
+                    if matched and matched.get("wage"):
+                        w_int = parse_wage_to_int(matched["wage"])
+                        if w_int > 0:
+                            await cur.execute("UPDATE club_players SET wage = ? WHERE id = ?;", (w_int, zp["id"]))
+                            updated_any = True
+                if updated_any:
+                    await conn.commit()
             except Exception as w_err:
                 logger.debug("Auto SoFIFA wage sync notice: %s", w_err)
 
@@ -3483,17 +3572,9 @@ class DatabaseManager:
             data = dict(row)
             if not data.get("wage"):
                 try:
-                    await cur.execute(
-                        """
-                        SELECT wage FROM sofifa_players
-                        WHERE LOWER(name) = LOWER(?) OR LOWER(full_name) = LOWER(?)
-                        ORDER BY overall_rating DESC LIMIT 1;
-                        """,
-                        (data["player_name"], data["player_name"]),
-                    )
-                    sm = await cur.fetchone()
-                    if sm:
-                        w_int = parse_wage_to_int(sm["wage"])
+                    matched = await self.resolve_sofifa_player(data["player_name"], live_fetch=True)
+                    if matched and matched.get("wage"):
+                        w_int = parse_wage_to_int(matched["wage"])
                         if w_int > 0:
                             await cur.execute("UPDATE club_players SET wage = ? WHERE id = ?;", (w_int, data["id"]))
                             await conn.commit()
@@ -3765,6 +3846,18 @@ class DatabaseManager:
                         w_int = parse_wage_to_int(sm["wage"])
                         if w_int > 0:
                             await cur.execute("UPDATE club_players SET wage = ? WHERE id = ?;", (w_int, sm["id"]))
+
+                    # Intelligent resolution for remaining zero-wage players
+                    await cur.execute(
+                        "SELECT id, player_name FROM club_players WHERE club_id = ? AND (wage IS NULL OR wage = 0);",
+                        (cid,),
+                    )
+                    for zp in await cur.fetchall():
+                        matched = await self.resolve_sofifa_player(zp["player_name"], live_fetch=False)
+                        if matched and matched.get("wage"):
+                            w_int = parse_wage_to_int(matched["wage"])
+                            if w_int > 0:
+                                await cur.execute("UPDATE club_players SET wage = ? WHERE id = ?;", (w_int, zp["id"]))
                 except Exception as w_err:
                     logger.debug("Auto SoFIFA wage sync notice for club %s: %s", cid, w_err)
 
@@ -3861,6 +3954,117 @@ class DatabaseManager:
             "bench_count": len(bench),
         }
 
+    # ------------------ Intelligent SoFIFA Player & Wage Resolver ------------------ #
+
+    async def resolve_sofifa_player(
+        self,
+        player_name: str,
+        live_fetch: bool = True,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Intelligently resolves a player query (real or custom player) against the SoFIFA database.
+        Handles:
+        1. Stripping custom prefixes (e.g. 'custom:Mbappe' -> 'Mbappe', '<@...>' mentions, quotes)
+        2. Known nicknames & mononyms (e.g. 'cr7' -> 'Cristiano Ronaldo', 'vini' -> 'Vinicius Jr', 'messi' -> 'Lionel Messi')
+        3. Accent stripping and diacritics ('Mbappé' -> 'mbappe', 'Ødegaard' -> 'odegaard', 'Modrić' -> 'modric')
+        4. Word-boundary / surname matching against local SQLite cache
+        5. Fuzzy matching via match_player_name (score >= 0.70)
+        6. Dynamic live SoFIFA fetch & caching with multi-word fallbacks if missing locally
+        Returns the matched SoFIFA player dict (with wage, OVR, positions, etc.) or None.
+        """
+        if not player_name:
+            return None
+
+        raw_str = str(player_name).strip()
+        clean = raw_str
+        if clean.lower().startswith("custom:"):
+            clean = clean[7:].strip()
+        elif clean.lower().startswith("custom "):
+            clean = clean[7:].strip()
+        clean = clean.strip("\"' ")
+        if clean.startswith("<@") and clean.endswith(">"):
+            return None
+
+        if not clean or len(clean) < 2:
+            return None
+
+        if clean.isdigit():
+            cached = await self.get_cached_sofifa_player(clean)
+            if cached:
+                return cached
+
+        from utils.name_matcher import KNOWN_NICKNAMES, match_player_name, normalize_text as nm_normalize_text
+
+        # 1. Expand known nicknames / aliases
+        norm_q = nm_normalize_text(clean)
+        target_lookup = clean
+        if norm_q in KNOWN_NICKNAMES:
+            target_lookup = KNOWN_NICKNAMES[norm_q]
+            norm_q = nm_normalize_text(target_lookup)
+
+        # 2. Fast local SQLite cache matching
+        cached = await self.get_cached_sofifa_player(target_lookup)
+        if cached:
+            return cached
+
+        # Check candidate names in local cache
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            words = [w for w in norm_q.split() if len(w) >= 3]
+            if not words:
+                words = [norm_q]
+
+            candidate_rows = []
+            for w in words:
+                await cur.execute(
+                    """
+                    SELECT id, name, full_name, data_json FROM sofifa_players
+                    WHERE search_text LIKE ? OR LOWER(name) LIKE ? OR LOWER(full_name) LIKE ?
+                    ORDER BY overall_rating DESC LIMIT 25;
+                    """,
+                    (f"%{w}%", f"%{w}%", f"%{w}%"),
+                )
+                candidate_rows.extend(await cur.fetchall())
+
+            if candidate_rows:
+                cand_map = {}
+                for r in candidate_rows:
+                    if r["id"] not in cand_map:
+                        cand_map[r["id"]] = r
+
+                cand_list = list(cand_map.values())
+                all_names = [r["full_name"] for r in cand_list] + [r["name"] for r in cand_list]
+                best_name, score, _ = match_player_name(target_lookup, all_names)
+                if best_name and score >= 0.70:
+                    for r in cand_list:
+                        if r["full_name"] == best_name or r["name"] == best_name:
+                            return json.loads(r["data_json"])
+
+        # 3. Dynamic Live Fetch from SoFIFA if not found in local cache
+        if live_fetch:
+            try:
+                from utils.sofifa import fetch_sofifa_players
+                fetched = await fetch_sofifa_players(keyword=target_lookup, timeout=6)
+                if not fetched and target_lookup != clean:
+                    fetched = await fetch_sofifa_players(keyword=clean, timeout=6)
+
+                if fetched:
+                    await self.cache_sofifa_players(fetched)
+                    candidate_names = [p["full_name"] for p in fetched] + [p["name"] for p in fetched]
+                    best_name, score, _ = match_player_name(target_lookup, candidate_names)
+                    if best_name and score >= 0.65:
+                        for p in fetched:
+                            if p["full_name"] == best_name or p["name"] == best_name:
+                                return p
+                    top_cand = fetched[0]
+                    top_norm = nm_normalize_text(f"{top_cand['name']} {top_cand['full_name']}")
+                    if any(w in top_norm for w in words):
+                        return top_cand
+            except Exception as live_err:
+                logger.debug("Live SoFIFA fetch error in resolve_sofifa_player: %s", live_err)
+
+        return None
+
     # ------------------ SoFIFA Sep 19 2025 FC 26 Players Cache ------------------ #
 
     async def cache_sofifa_players(self, players: List[Dict[str, Any]]) -> int:
@@ -3925,6 +4129,10 @@ class DatabaseManager:
     async def search_cached_sofifa_players(self, query: str, limit: int = 25) -> List[Dict[str, Any]]:
         """Fast instant search for Discord autocomplete matching player name or full name."""
         clean = query.strip()
+        from utils.name_matcher import KNOWN_NICKNAMES, normalize_text as nm_normalize_text
+        norm_key = nm_normalize_text(clean)
+        expanded = KNOWN_NICKNAMES.get(norm_key)
+
         conn = await self.connect()
         async with conn.cursor() as cur:
             if not clean:
@@ -3943,22 +4151,27 @@ class DatabaseManager:
                 prefix_pattern = f"{norm}%"
                 word_pattern = f"% {norm}%"
                 raw_pattern = f"%{clean.lower()}%"
+                exp_norm = _normalize_search_text(expanded) if expanded else norm
+                exp_pattern = f"%{exp_norm}%"
+
                 await cur.execute(
                     """
                     SELECT id, name, full_name, primary_pos, overall_rating, potential, team, avatar_url, sofifa_url
                     FROM sofifa_players
                     WHERE search_text LIKE ? OR LOWER(name) LIKE ? OR LOWER(full_name) LIKE ?
+                       OR search_text LIKE ? OR LOWER(name) LIKE ? OR LOWER(full_name) LIKE ?
                     ORDER BY
                         CASE
                             WHEN search_text LIKE ? THEN 1
                             WHEN search_text LIKE ? THEN 2
                             WHEN search_text LIKE ? THEN 3
-                            ELSE 4
+                            WHEN search_text LIKE ? THEN 4
+                            ELSE 5
                         END,
                         overall_rating DESC
                     LIMIT ?;
                     """,
-                    (pattern, raw_pattern, raw_pattern, prefix_pattern, word_pattern, pattern, limit),
+                    (pattern, raw_pattern, raw_pattern, exp_pattern, exp_pattern, exp_pattern, prefix_pattern, word_pattern, pattern, exp_pattern, limit),
                 )
             rows = await cur.fetchall()
             return [dict(r) for r in rows]

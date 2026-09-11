@@ -4007,6 +4007,70 @@ async def test_club_payroll_summary(db: DatabaseManager):
     assert pytest.approx(payroll["runway"], 0.05) == (1000000 / 300000)
 
 
+@pytest.mark.asyncio
+async def test_intelligent_custom_player_wage_matching(db: DatabaseManager):
+    """
+    Verify intelligent SoFIFA player and wage resolution:
+    - Custom names like 'custom:Mbappe', 'cr7', 'vini jr', 'messi' auto-resolve real footballer wage
+    - Fictional custom players like 'ShadowStriker99' remain 0 wage
+    - Auto-population during get_club_lineup and matchday payroll deduction
+    """
+    guild_id = 888888888
+    owner_id = 112233
+
+    # 1. Test resolve_sofifa_player directly
+    # Offline pre-seeded dataset was loaded during db.init_db()
+    mbappe_res = await db.resolve_sofifa_player("custom:Mbappe", live_fetch=False)
+    assert mbappe_res is not None
+    assert "Mbappé" in mbappe_res["name"] or "Mbappé" in mbappe_res["full_name"]
+    assert mbappe_res.get("wage") is not None
+
+    cr7_res = await db.resolve_sofifa_player("cr7", live_fetch=False)
+    assert cr7_res is not None
+    assert "Ronaldo" in cr7_res["name"] or "Ronaldo" in cr7_res["full_name"]
+
+    vini_res = await db.resolve_sofifa_player("vini jr", live_fetch=False)
+    assert vini_res is not None
+    assert "Vini" in vini_res["name"] or "Vinícius" in vini_res["full_name"]
+
+    # Fictional player returns None
+    fictional_res = await db.resolve_sofifa_player("SuperStriker9999", live_fetch=False)
+    assert fictional_res is None
+
+    # Discord mention returns None (does not falsely match)
+    mention_res = await db.resolve_sofifa_player("<@1234567890123456>", live_fetch=False)
+    assert mention_res is None
+
+    # 2. Test club player addition with auto-resolved wage
+    _, _, club = await db.create_club(guild_id, "Galacticos", "GLX", owner_id)
+
+    # Adding 'custom:Mbappe' with default wage should automatically adopt Mbappe's real wage
+    ok1, _, p1 = await db.add_club_player(guild_id, club["id"], "custom:Mbappe", "ST", "starting")
+    assert ok1 is True
+    _, _, info1 = await db.get_player_info(guild_id, "custom:Mbappe", club_query=club["id"])
+    assert info1["player"]["wage"] > 0
+
+    # Adding 'cr7' with default wage should adopt Cristiano Ronaldo's real wage
+    ok2, _, p2 = await db.add_club_player(guild_id, club["id"], "cr7", "ST", "starting")
+    assert ok2 is True
+    _, _, info2 = await db.get_player_info(guild_id, "cr7", club_query=club["id"])
+    assert info2["player"]["wage"] > 0
+
+    # Adding fictional custom player should remain 0 wage
+    ok3, _, p3 = await db.add_club_player(guild_id, club["id"], "CustomDude99", "CAM", "bench")
+    assert ok3 is True
+    _, _, info3 = await db.get_player_info(guild_id, "CustomDude99", club_query=club["id"])
+    assert info3["player"]["wage"] == 0
+
+    # 3. Test get_club_lineup and get_club_payroll include auto-resolved wages
+    ok_p, _, payroll = await db.get_club_payroll(guild_id, club["id"])
+    assert ok_p is True
+    assert payroll["starting_wages"] > 0
+    assert payroll["bench_wages"] == 0
+    assert payroll["total_wage"] == payroll["starting_wages"]
+
+
+
 
 
 

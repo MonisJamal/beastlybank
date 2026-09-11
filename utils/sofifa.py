@@ -43,10 +43,17 @@ def normalize_text(text: str) -> str:
     return stripped.lower().strip()
 
 
-def _parse_sofifa_sync(keyword: str = "", offset: int = 0, timeout: int = 10) -> List[Dict[str, Any]]:
-    """Synchronous HTTP worker to scrape SoFIFA players for r=260004."""
+def _parse_sofifa_sync(
+    keyword: str = "",
+    offset: int = 0,
+    timeout: int = 10,
+    roster: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Synchronous HTTP worker to scrape SoFIFA players."""
     cols = ["pi", "ae", "hi", "wi", "pf", "oa", "pt", "bo", "bp", "vl", "wg", "rc", "cp", "cj"]
-    query_params = [("r", SOFIFA_ROSTER_VERSION), ("set", "true"), ("offset", str(offset))]
+    query_params: List[Tuple[str, str]] = [("set", "true"), ("offset", str(offset))]
+    if roster:
+        query_params.append(("r", roster))
     if keyword:
         query_params.append(("keyword", keyword))
     for c in cols:
@@ -80,14 +87,20 @@ def _parse_sofifa_sync(keyword: str = "", offset: int = 0, timeout: int = 10) ->
                 pid_str = str(pid).zfill(6)
                 avatar = f"https://cdn.sofifa.net/players/{pid_str[:3]}/{pid_str[3:]}/26_120.png"
 
-            # Name and Relative Link
-            name_m = re.search(r'<a href="(/player/\d+/[^/]+/260004/)"[^>]*data-tippy-content="([^"]+)">([^<]+)</a>', r)
+            # Robust name and relative link extraction
+            name_m = re.search(r'<a href="(/player/\d+/[^/]+/(?:\d+/)?[^"]*)"[^>]*data-tippy-content="([^"]+)">([^<]+)</a>', r)
             if not name_m:
-                name_m = re.search(r'<a href="(/player/\d+/[^/]+/[^/]+/)"[^>]*data-tippy-content="([^"]+)">([^<]+)</a>', r)
-            if not name_m:
-                continue
-
-            link, full_name, short_name = name_m.groups()
+                name_m = re.search(r'<a href="(/player/\d+/[^/]+/(?:\d+/)?[^"]*)"[^>]*>([^<]+)</a>', r)
+                if name_m:
+                    link = name_m.group(1)
+                    short_name = name_m.group(2).strip()
+                    full_name = short_name
+                else:
+                    continue
+            else:
+                link = name_m.group(1)
+                full_name = name_m.group(2).strip()
+                short_name = name_m.group(3).strip()
 
             # Clean full name & short name
             full_name = full_name.strip()
@@ -148,9 +161,48 @@ def _parse_sofifa_sync(keyword: str = "", offset: int = 0, timeout: int = 10) ->
     return players
 
 
-async def fetch_sofifa_players(keyword: str = "", offset: int = 0, timeout: int = 10) -> List[Dict[str, Any]]:
-    """Asynchronously scrape SoFIFA players for r=260004 in a background thread."""
-    return await asyncio.to_thread(_parse_sofifa_sync, keyword=keyword, offset=offset, timeout=timeout)
+async def fetch_sofifa_players(
+    keyword: str = "",
+    offset: int = 0,
+    timeout: int = 10,
+    roster: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Asynchronously fetch and parse SoFIFA players with multi-word fallbacks and intelligent ranking.
+    """
+    clean = keyword.strip()
+    # Primary search
+    results = await asyncio.to_thread(
+        _parse_sofifa_sync, keyword=clean, offset=offset, timeout=timeout, roster=roster
+    )
+
+    # Multi-word fallback: if compound name (e.g. "Vinicius Jr", "Son Heung-min") returns 0, try individual words
+    if not results and clean and " " in clean:
+        words = clean.split()
+        for w in [words[-1], words[0]]:
+            if len(w) >= 3 and w.lower() not in ("jr", "sr", "de", "da", "van", "von", "del"):
+                fallback_res = await asyncio.to_thread(
+                    _parse_sofifa_sync, keyword=w, offset=0, timeout=timeout, roster=roster
+                )
+                if fallback_res:
+                    results = fallback_res
+                    break
+
+    # If multiple candidates and keyword provided, rank matching candidate highest
+    if results and len(results) > 1 and clean:
+        try:
+            from utils.name_matcher import match_player_name
+            candidate_names = [p["full_name"] for p in results]
+            best_name, score, _ = match_player_name(clean, candidate_names)
+            if best_name:
+                idx = next((i for i, p in enumerate(results) if p["full_name"] == best_name), None)
+                if idx is not None and idx > 0:
+                    matched_p = results.pop(idx)
+                    results.insert(0, matched_p)
+        except Exception as e:
+            logger.debug("Ranking error in fetch_sofifa_players: %s", e)
+
+    return results
 
 
 def sofifa_player_embed(player: Dict[str, Any]) -> discord.Embed:

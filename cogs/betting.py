@@ -232,6 +232,12 @@ class Betting(commands.GroupCog, name="bet", description="BeastlyFC Matchday Spo
             color=COLOR_BEASTLY_GOLD,
         )
 
+        # Auto-deduct club matchday wages as the matchday kicks off
+        try:
+            await self.db.deduct_matchday_wages(interaction.guild_id, matchday=matchday, tournament_id=t["id"])
+        except Exception as w_err:
+            logger.debug("Auto matchday wage deduction notice on /bet open: %s", w_err)
+
         view = MatchdayBettingView(self.bot, t["id"], matchday, eligible_fixtures)
         msg = await interaction.followup.send(embed=embed, view=view)
 

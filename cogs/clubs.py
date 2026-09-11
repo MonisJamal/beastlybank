@@ -13,6 +13,7 @@ from config import CURRENCIES, COLOR_BEASTLY_GOLD, COLOR_PITCH_GREEN, COLOR_SUCC
 from utils.checks import require_beastlyfc, is_banker_or_admin
 from utils.embeds import (
     club_info_embed,
+    club_payroll_embed,
     club_roster_embed,
     create_beastly_embed,
     error_embed,
@@ -272,6 +273,42 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
         member_ids = [m["user_id"] for m in members[:12] if m.get("user_id")]
         member_names = await resolve_user_names(self.bot, interaction.guild, member_ids)
         embed = club_info_embed(target_club, members, owner_name=owner_name, member_names=member_names)
+        await send_msg(interaction, embed=embed)
+
+    @app_commands.command(
+        name="payroll",
+        description="Inspect a club's matchday wage bill, starting/bench payroll, and treasury runway.",
+    )
+    @app_commands.describe(club="Club role mention to lookup (defaults to your own club)")
+    @require_beastlyfc()
+    async def club_payroll(
+        self,
+        interaction: discord.Interaction,
+        club: Optional[discord.Role] = None,
+    ):
+        await safe_defer(interaction)
+        if club:
+            target_club = await self.db.get_or_create_club_from_role(
+                interaction.guild_id, club, default_owner_id=interaction.user.id
+            )
+        else:
+            target_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+
+        if not target_club:
+            target_text = f"for role {club.mention}" if club else "for your account"
+            await send_msg(
+                interaction,
+                embed=error_embed("Club Not Found", f"Could not find an active club {target_text}."),
+                ephemeral=True,
+            )
+            return
+
+        success, msg, payroll = await self.db.get_club_payroll(interaction.guild_id, target_club["id"])
+        if not success:
+            await send_msg(interaction, embed=error_embed("Payroll Error", msg), ephemeral=True)
+            return
+
+        embed = club_payroll_embed(payroll)
         await send_msg(interaction, embed=embed)
 
     @app_commands.command(
@@ -1115,6 +1152,36 @@ class ClubPrefixCommands(commands.Cog):
     async def prefix_club_info(self, ctx: commands.Context, *, club_query: Optional[str] = None):
         """bb!club info [@role_or_club_name]"""
         await self.prefix_club(ctx, club_query=club_query)
+
+    @prefix_club.command(name="payroll")
+    async def prefix_club_payroll(self, ctx: commands.Context, *, club_query: Optional[str] = None):
+        """View a club's matchday payroll and wage bill. Usage: bb!club payroll [@role/tag]"""
+        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        q = target_role if target_role else club_query
+
+        if q:
+            target_club = await self.db.get_or_create_club_from_role(
+                ctx.guild.id, q, default_owner_id=ctx.author.id
+            )
+        else:
+            target_club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+
+        if not target_club:
+            await ctx.send(embed=error_embed("Club Not Found", "Could not find an active club for you or the specified role/tag."))
+            return
+
+        success, msg, payroll = await self.db.get_club_payroll(ctx.guild.id, target_club["id"])
+        if not success:
+            await ctx.send(embed=error_embed("Payroll Error", msg))
+            return
+
+        embed = club_payroll_embed(payroll)
+        await send_msg(ctx, embed=embed)
+
+    @commands.command(name="payroll")
+    async def prefix_standalone_payroll(self, ctx: commands.Context, *, club_query: Optional[str] = None):
+        """Inspect matchday wage bill and treasury runway. Usage: bb!payroll [@role/tag]"""
+        await self.prefix_club_payroll(ctx, club_query=club_query)
 
     @prefix_club.command(name="create")
     async def prefix_club_create(self, ctx: commands.Context, *args):

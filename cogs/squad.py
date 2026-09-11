@@ -23,6 +23,7 @@ from utils.checks import require_beastlyfc, is_banker_or_admin
 from utils.embeds import (
     create_beastly_embed,
     club_lineup_embed,
+    club_payroll_embed,
     club_ratings_embed,
     player_card_embed,
     error_embed,
@@ -30,6 +31,7 @@ from utils.embeds import (
     formations_list_embed,
     send_msg,
 )
+from database.db import format_wage, parse_wage_to_int
 from utils.lineup_image import generate_lineup_image
 from utils.sofifa import fetch_sofifa_players
 
@@ -69,15 +71,18 @@ async def send_msg(
     target: discord.Interaction | commands.Context,
     embed: Optional[discord.Embed] = None,
     file: Optional[discord.File] = None,
+    view: Optional[discord.ui.View] = None,
     ephemeral: bool = False,
 ):
-    """Safely send embed or file responses to interactions or contexts."""
+    """Safely send embed, file, or view responses to interactions or contexts."""
     try:
         kwargs: Dict[str, Any] = {}
         if embed is not None:
             kwargs["embed"] = embed
         if file is not None:
             kwargs["file"] = file
+        if view is not None:
+            kwargs["view"] = view
 
         if isinstance(target, discord.Interaction):
             if target.response.is_done():
@@ -218,6 +223,103 @@ class AddAsCustomPlayerView(discord.ui.View):
             embed=error_embed("Cancelled", "Player addition cancelled."),
             view=None,
         )
+
+
+class EditWageModal(discord.ui.Modal, title="✏️ Edit Player Matchday Wage"):
+    """Modal allowing club managers/bankers to edit a player's matchday wage."""
+
+    wage_input = discord.ui.TextInput(
+        label="Matchday Wage (Cash / MD)",
+        placeholder="e.g. 150k, 250000, 1.2M, €150K",
+        required=True,
+        max_length=30,
+    )
+
+    def __init__(self, squad_cog, player_data: Dict[str, Any], club_data: Dict[str, Any]):
+        super().__init__()
+        self.squad_cog = squad_cog
+        self.player_data = player_data
+        self.club_data = club_data
+        w = player_data.get("wage") or 0
+        self.wage_input.default = format_wage(int(w)) if w else "0"
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        new_val = self.wage_input.value.strip()
+        parsed_int = parse_wage_to_int(new_val)
+
+        success, msg, _ = await self.squad_cog.db.edit_club_player(
+            guild_id=interaction.guild_id,
+            club_query=self.club_data["id"],
+            player_name=self.player_data["player_name"],
+            wage=new_val,
+            default_owner_id=interaction.user.id,
+        )
+        if not success:
+            await send_msg(interaction, embed=error_embed("Wage Update Failed", msg), ephemeral=True)
+            return
+
+        ok, _, updated_data = await self.squad_cog.db.get_player_info(
+            guild_id=interaction.guild_id,
+            player_name=self.player_data["player_name"],
+            club_query=self.club_data["id"],
+        )
+        if ok and updated_data:
+            updated_embed = player_card_embed(player=updated_data["player"], club=updated_data["club"])
+            updated_view = PlayerInfoView(
+                squad_cog=self.squad_cog,
+                player_data=updated_data["player"],
+                club_data=updated_data["club"],
+            )
+            try:
+                await interaction.edit_original_response(embed=updated_embed, view=updated_view)
+            except Exception:
+                await send_msg(
+                    interaction,
+                    embed=success_embed(
+                        "Wage Updated",
+                        f"Updated matchday wage for **{self.player_data['player_name']}** to 🪙 **{format_wage(parsed_int)} / MD**.",
+                    ),
+                    ephemeral=True,
+                )
+        else:
+            await send_msg(
+                interaction,
+                embed=success_embed(
+                    "Wage Updated",
+                    f"Updated matchday wage for **{self.player_data['player_name']}** to 🪙 **{format_wage(parsed_int)} / MD**.",
+                ),
+                ephemeral=True,
+            )
+
+
+class PlayerInfoView(discord.ui.View):
+    """Interactive card view with '✏️ Edit Wage' modal button."""
+
+    def __init__(self, squad_cog, player_data: Dict[str, Any], club_data: Dict[str, Any]):
+        super().__init__(timeout=180)
+        self.squad_cog = squad_cog
+        self.player_data = player_data
+        self.club_data = club_data
+
+    @discord.ui.button(label="Edit Wage", emoji="✏️", style=discord.ButtonStyle.primary)
+    async def edit_wage_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        has_perm, perm_msg = await check_squad_permission(
+            self.squad_cog.db, interaction.guild_id, interaction.user, self.club_data
+        )
+        if not has_perm:
+            await interaction.response.send_message(
+                embed=error_embed("Permission Denied", perm_msg),
+                ephemeral=True,
+            )
+            return
+
+        modal = EditWageModal(
+            squad_cog=self.squad_cog,
+            player_data=self.player_data,
+            club_data=self.club_data,
+        )
+        await interaction.response.send_modal(modal)
 
 
 class SquadCog(commands.Cog, name="Squad & Lineup"):
@@ -547,7 +649,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             return
 
         embed = player_card_embed(player=data["player"], club=data["club"])
-        await send_msg(interaction, embed=embed)
+        view = PlayerInfoView(squad_cog=self, player_data=data["player"], club_data=data["club"])
+        await send_msg(interaction, embed=embed, view=view)
 
     @player_group.command(name="add", description="Add a player to your club squad (SoFIFA auto-fill or Custom).")
     @app_commands.describe(
@@ -559,6 +662,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         rating="Overall rating (1-99, auto-filled from SoFIFA if recognized)",
         potential="Potential rating (1-99, auto-filled from SoFIFA if recognized)",
         alt_positions="Alternative positions separated by commas (optional - auto-filled from SoFIFA)",
+        wage="Weekly/matchday wage (e.g. 150k or 250000, defaults to SoFIFA if auto-matched)",
         club="Target club role (defaults to your club)",
     )
     @app_commands.autocomplete(
@@ -576,6 +680,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         rating: Optional[app_commands.Range[int, 1, 99]] = None,
         potential: Optional[app_commands.Range[int, 1, 99]] = None,
         alt_positions: Optional[str] = None,
+        wage: Optional[str] = None,
         club: Optional[discord.Role] = None,
     ):
         await interaction.response.defer()
@@ -672,6 +777,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             final_pos = (position.upper().strip() if position else None) or sofifa_data.get("primary_pos", "ST")
             final_rating = rating if rating is not None else sofifa_data.get("overall_rating", 75)
             final_pot = potential if potential is not None else sofifa_data.get("potential", final_rating)
+            final_wage = wage if wage is not None else sofifa_data.get("wage", 0)
             if alt_positions is not None:
                 final_alts = alt_positions
             else:
@@ -686,6 +792,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             final_rating = rating if rating is not None else 75
             final_pot = potential if potential is not None else 80
             final_alts = alt_positions
+            final_wage = wage if wage is not None else 0
             avatar_url = None
             team_origin = None
 
@@ -699,17 +806,22 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             rating=final_rating,
             potential=final_pot,
             alt_positions=final_alts,
+            wage=final_wage,
             default_owner_id=interaction.user.id,
         )
         if not success:
             await send_msg(interaction, embed=error_embed("Add Player Failed", msg), ephemeral=True)
             return
 
+        w_int = parse_wage_to_int(final_wage)
+        w_tag = f"• **Matchday Wage:** 🪙 **{format_wage(w_int)} / MD**\n" if w_int > 0 else ""
+
         if sofifa_data:
             desc = (
                 f"✅ **{final_name}** successfully registered from SoFIFA FC 26 database!\n\n"
                 f"• **Position:** `{final_pos}`" + (f" *(Alts: `{final_alts}`)*" if final_alts else "") + "\n"
                 f"• **Rating:** ⭐ **{final_rating} OVR** (Potential: **{final_pot}**)\n"
+                f"{w_tag}"
                 f"• **Original Club:** {team_origin or 'Free Agent'}\n"
                 f"• **Lineup Status:** `{status.title()}`" + (f" (Jersey #{number})" if number is not None else "") + "\n"
                 f"• **Club:** **[{target_club['tag']}] {target_club['name']}**\n\n"
@@ -727,6 +839,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 f"✅ **{final_name}** successfully registered as a **Custom Player**!\n\n"
                 f"• **Position:** `{final_pos}`" + (f" *(Alts: `{final_alts}`)*" if final_alts else "") + "\n"
                 f"• **Rating:** ⭐ **{final_rating} OVR** (Potential: **{final_pot}**)\n"
+                f"{w_tag}"
                 f"• **Lineup Status:** `{status.title()}`" + (f" (Jersey #{number})" if number is not None else "") + "\n"
                 f"• **Club:** **[{target_club['tag']}] {target_club['name']}**\n\n"
                 f"💡 *You can edit this player anytime with `/player edit` or `bb!editplayer`.*"
@@ -787,6 +900,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         rating="New overall rating (1-99)",
         potential="New potential rating (1-99)",
         alt_positions="New alternative positions separated by commas (e.g. 'pos1, pos2, pos3, .....')",
+        wage="New matchday wage (e.g. 150k, 250000, 1.2M)",
         club="Target club role (defaults to your club)",
     )
     @app_commands.autocomplete(position=position_autocomplete)
@@ -801,6 +915,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         rating: Optional[app_commands.Range[int, 1, 99]] = None,
         potential: Optional[app_commands.Range[int, 1, 99]] = None,
         alt_positions: Optional[str] = None,
+        wage: Optional[str] = None,
         club: Optional[discord.Role] = None,
     ):
         await interaction.response.defer()
@@ -840,6 +955,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             rating=rating,
             potential=potential,
             alt_positions=alt_positions,
+            wage=wage,
             default_owner_id=interaction.user.id,
         )
         if not success:
@@ -1534,7 +1650,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             return
 
         embed = player_card_embed(player=data["player"], club=data["club"])
-        await ctx.send(embed=embed)
+        view = PlayerInfoView(squad_cog=self, player_data=data["player"], club_data=data["club"])
+        await ctx.send(embed=embed, view=view)
 
     @commands.command(name="addplayer")
     async def prefix_addplayer(self, ctx: commands.Context, *args):
@@ -1703,6 +1820,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             avatar_url = None
             team_origin = None
 
+        final_wage = sofifa_data.get("wage", 0) if sofifa_data else 0
+
         success, msg, p_data = await self.db.add_club_player(
             guild_id=ctx.guild.id,
             club_query=target_role if target_role else target_club["id"],
@@ -1713,17 +1832,22 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             rating=final_rating,
             potential=final_pot,
             alt_positions=final_alts,
+            wage=final_wage,
             default_owner_id=ctx.author.id,
         )
         if not success:
             await ctx.send(embed=error_embed("Add Player Failed", msg))
             return
 
+        w_int = parse_wage_to_int(final_wage)
+        w_tag = f"• **Matchday Wage:** 🪙 **{format_wage(w_int)} / MD**\n" if w_int > 0 else ""
+
         if sofifa_data:
             desc = (
                 f"✅ **{final_name}** registered from SoFIFA FC 26 database!\n\n"
                 f"• **Position:** `{final_pos}`" + (f" *(Alts: `{final_alts}`)*" if final_alts else "") + "\n"
                 f"• **Rating:** ⭐ **{final_rating} OVR** (Potential: **{final_pot}**)\n"
+                f"{w_tag}"
                 f"• **Original Club:** {team_origin or 'Free Agent'}\n"
                 f"• **Lineup Status:** `{status.title()}`" + (f" (Jersey #{number})" if number is not None else "") + "\n"
                 f"• **Club:** **[{target_club['tag']}] {target_club['name']}**\n\n"
@@ -1741,6 +1865,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 f"✅ **{final_name}** registered as a **Custom Player**!\n\n"
                 f"• **Position:** `{final_pos}`" + (f" *(Alts: `{final_alts}`)*" if final_alts else "") + "\n"
                 f"• **Rating:** ⭐ **{final_rating} OVR** (Potential: **{final_pot}**)\n"
+                f"{w_tag}"
                 f"• **Lineup Status:** `{status.title()}`" + (f" (Jersey #{number})" if number is not None else "") + "\n"
                 f"• **Club:** **[{target_club['tag']}] {target_club['name']}**\n\n"
                 f"💡 *You can edit this player anytime with `/player edit` or `bb!editplayer`.*"
@@ -1778,9 +1903,10 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         """
         Edit an existing player's details.
         Usage: bb!editplayer <player> <field> <value> [@club_role]
-        Fields: name, position (or pos), status, number, rating, potential, alt (or altpos)
+        Fields: name, position (or pos), status, number, rating, potential, alt (or altpos), wage
         Example: bb!editplayer Messi pos RW @Barca
         Example: bb!editplayer Mbappe rating 91 @RealMadrid
+        Example: bb!editplayer Mbappe wage 150k @RealMadrid
         Example: bb!editplayer Mbappe alt "LW, RW, CAM, RM" @RealMadrid
         """
         target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
@@ -1791,7 +1917,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 embed=error_embed(
                     "Missing Parameters",
                     "Usage: `bb!editplayer <player> <field> <value> [@club_role]`\n"
-                    "Fields: `name`, `pos`, `status`, `number`, `rating`, `potential`, `alt`\n"
+                    "Fields: `name`, `pos`, `status`, `number`, `rating`, `potential`, `alt`, `wage`\n"
                     "Alt Positions Format: `\"pos1, pos2, pos3, .....\"` (e.g. `\"LW, RW, CAM\"`)",
                 )
             )
@@ -1808,6 +1934,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         new_rating = None
         new_pot = None
         new_alt = None
+        new_wage = None
 
         if field in ("name", "newname"):
             new_name = val
@@ -1832,11 +1959,13 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             new_pot = int(val)
         elif field in ("alt", "altpos", "alt_positions", "alts"):
             new_alt = val
+        elif field in ("wage", "salary", "pay"):
+            new_wage = val
         else:
             await ctx.send(
                 embed=error_embed(
                     "Invalid Field",
-                    f"Unknown field '{field}'. Valid fields are: `name`, `pos`, `status`, `number`, `rating`, `potential`, `alt`.",
+                    f"Unknown field '{field}'. Valid fields are: `name`, `pos`, `status`, `number`, `rating`, `potential`, `alt`, `wage`.",
                 )
             )
             return
@@ -1875,6 +2004,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             rating=new_rating,
             potential=new_pot,
             alt_positions=new_alt,
+            wage=new_wage,
             default_owner_id=ctx.author.id,
         )
         if not success:

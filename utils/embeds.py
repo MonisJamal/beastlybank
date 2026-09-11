@@ -12,9 +12,11 @@ from config import (
     COLOR_INFO,
     SERVER_NAME,
     CURRENCIES,
+    DEFAULT_FORMATION,
     SUPPORTED_FORMATIONS,
     POSITION_CATEGORIES,
 )
+from database.db import format_wage
 
 logger = logging.getLogger("BeastlyBank.Embeds")
 
@@ -946,6 +948,9 @@ def club_lineup_embed(
     def_str = f"{def_avg}" if def_avg is not None else "--"
     ovr_str = f"{ovr_avg}" if ovr_avg is not None else "--"
 
+    total_wage_bill = sum(int(p.get("wage") or 0) for p in (starting_players + bench_players))
+    wage_bill_str = format_wage(total_wage_bill)
+
     embed = create_beastly_embed(
         title=f"📋 Squad Lineup • [{club['tag']}] {club['name']}",
         description=(
@@ -953,6 +958,7 @@ def club_lineup_embed(
             f"Tactical Formation: **{formation}**\n"
             f"*{form_meta.get('desc', '')}*\n"
             f"📊 **Team Rating:** ⚡ ATT: **{att_str}** | ⚙️ MID: **{mid_str}** | 🛡️ DEF: **{def_str}** | ⭐ OVR: **{ovr_str}**\n"
+            f"💰 **Matchday Wage Bill:** 🪙 **{wage_bill_str} / MD**\n"
             f"━━━━━━━━━━━━━━━━━━━━━━"
         ),
         color=COLOR_PITCH_GREEN,
@@ -968,7 +974,9 @@ def club_lineup_embed(
         num = f"#{p['number']} " if p.get("number") is not None else ""
         name = p.get("player_name") or (f"<@{p['user_id']}>" if p.get("user_id") else "Player")
         r_tag = f" `[{p['rating']}]`" if p.get("rating") else ""
-        line_item = f"`{num}{p.get('position', '??')}` **{name}**{r_tag}"
+        w_val = int(p.get("wage") or 0)
+        w_tag = f" • 🪙 `{format_wage(w_val)}`" if w_val > 0 else ""
+        line_item = f"`{num}{p.get('position', '??')}` **{name}**{r_tag}{w_tag}"
 
         pos = (p.get("position") or "").upper()
         cat = POSITION_CATEGORIES.get(pos, "Midfield")
@@ -1017,7 +1025,9 @@ def club_lineup_embed(
         num = f"#{p['number']} " if p.get("number") is not None else ""
         name = p.get("player_name") or (f"<@{p['user_id']}>" if p.get("user_id") else "Player")
         r_tag = f" `[{p['rating']}]`" if p.get("rating") else ""
-        bench_items.append(f"`{num}{p.get('position', '??')}` **{name}**{r_tag}")
+        w_val = int(p.get("wage") or 0)
+        w_tag = f" • 🪙 `{format_wage(w_val)}`" if w_val > 0 else ""
+        bench_items.append(f"`{num}{p.get('position', '??')}` **{name}**{r_tag}{w_tag}")
 
     bench_text = "\n".join(f"• {x}" for x in bench_items) if bench_items else "*No bench players registered*"
     embed.add_field(
@@ -1028,7 +1038,7 @@ def club_lineup_embed(
 
     footer_ovr = f" • Team OVR: {ovr_str}" if ovr_avg is not None else ""
     embed.set_footer(
-        text=f"Total Squad: {len(starting_players) + len(bench_players)} players • Starters: {len(starting_players)}/11{footer_ovr}"
+        text=f"Total Squad: {len(starting_players) + len(bench_players)} players • Starters: {len(starting_players)}/11 • Wage Bill: {wage_bill_str}/MD{footer_ovr}"
     )
     return embed
 
@@ -1189,6 +1199,8 @@ def player_card_embed(player: Dict[str, Any], club: Optional[Dict[str, Any]] = N
     embed.add_field(name="🚀 Potential Rating", value=f"**{potential}** POT", inline=True)
     embed.add_field(name="🔢 Jersey Number", value=f"**{num}**", inline=True)
     embed.add_field(name="📊 Lineup Status", value=f"**{status_str}**", inline=True)
+    wage = int(player.get("wage") or 0)
+    embed.add_field(name="💰 Matchday Wage", value=f"**{format_wage(wage)}** / MD", inline=True)
 
     if player.get("user_id"):
         member_name = player.get("display_name")
@@ -1201,6 +1213,114 @@ def player_card_embed(player: Dict[str, Any], club: Optional[Dict[str, Any]] = N
     if joined:
         embed.add_field(name="📅 Registered / Transferred", value=f"`{joined[:10]}`", inline=True)
 
+    return embed
+
+
+def club_payroll_embed(payroll: Dict[str, Any]) -> discord.Embed:
+    """Generates a TV-broadcast style Club Matchday Payroll & Finance Card."""
+    club = payroll["club"]
+    role_str = f"<@&{club['role_id']}>" if club.get("role_id") else f"**[{club['tag']}] {club['name']}**"
+    total_wage = payroll["total_wage"]
+    treasury = payroll["treasury_cash"]
+    runway = payroll["runway"]
+    runway_str = f"{runway:.1f} Matchdays" if runway != float("inf") else "Unlimited"
+
+    top_earner = payroll.get("top_earner")
+    top_str = (
+        f"🌟 **{top_earner['player_name']}** (`{top_earner.get('position', '??')}`) — **{format_wage(top_earner.get('wage'))}/MD**"
+        if top_earner and top_earner.get("wage")
+        else "None registered"
+    )
+
+    status_icon = "🟢 Healthy" if runway >= 3 else ("🟡 Tight" if runway >= 1 else "🔴 Deficit Warning")
+
+    embed = create_beastly_embed(
+        title=f"💰 Club Payroll & Wage Bill • [{club['tag']}] {club['name']}",
+        description=(
+            f"Club: {role_str}\n"
+            f"Tactical Formation: **{club.get('formation', DEFAULT_FORMATION)}**\n\n"
+            f"### 🪙 Total Wage Bill: **{format_wage(total_wage)} / Matchday**\n"
+            f"🏦 Club Treasury: **{treasury:,} Cash** ({status_icon})\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=COLOR_BEASTLY_GOLD,
+    )
+
+    embed.add_field(
+        name="⚡ Starting XI Payroll",
+        value=f"**{format_wage(payroll['starting_wages'])}** / MD\n`{payroll['starters_count']} starting players`",
+        inline=True,
+    )
+    embed.add_field(
+        name="💺 Substitutes Bench Payroll",
+        value=f"**{format_wage(payroll['bench_wages'])}** / MD\n`{payroll['bench_count']} bench players`",
+        inline=True,
+    )
+    embed.add_field(
+        name="⏳ Treasury Runway",
+        value=f"**{runway_str}**\n`Treasury / Wage Bill`",
+        inline=True,
+    )
+    embed.add_field(
+        name="⭐ Highest Earner",
+        value=top_str,
+        inline=False,
+    )
+    embed.set_footer(text=f"BeastlyFC Financial Fair Play • Auto-deducted at Matchday kickoff • {BOT_NAME}")
+    return embed
+
+
+def matchday_payroll_report_embed(report: Dict[str, Any]) -> discord.Embed:
+    """Generates a TV-broadcast Matchday Kickoff & Payroll Deductions Report."""
+    md = report["matchday"]
+    tot_disbursed = report["total_disbursed"]
+    clubs = report["clubs"]
+    skipped = report.get("skipped", [])
+
+    embed = create_beastly_embed(
+        title=f"⚽ MATCHDAY {md} KICKOFF • OFFICIAL PAYROLL REPORT",
+        description=(
+            f"Matchday **{md}** has officially kicked off!\n"
+            f"All player matchday wages have been calculated and deducted from club treasuries.\n\n"
+            f"### 💸 Total League Payroll Disbursed: **{format_wage(tot_disbursed)}**\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=COLOR_PITCH_GREEN,
+    )
+
+    if clubs:
+        lines = []
+        for c in clubs:
+            club = c["club"]
+            w = c["total_wage"]
+            new_t = c["new_treasury"]
+            stat = "⚠️ DEFICIT" if c["status"] == "deficit" else "✅ Paid"
+            lines.append(
+                f"• **[{club['tag']}] {club['name']}**: `-`**{format_wage(w)}** (Treasury: `{new_t:,}` Cash) {stat}"
+            )
+        for i in range(0, len(lines), 10):
+            chunk = lines[i:i+10]
+            embed.add_field(
+                name=f"🏛️ Club Payroll Settlements ({i+1}-{i+len(chunk)})",
+                value="\n".join(chunk),
+                inline=False,
+            )
+    else:
+        embed.add_field(
+            name="🏛️ Club Payroll Settlements",
+            value="*No new club payrolls to process.*",
+            inline=False,
+        )
+
+    if skipped:
+        skip_tags = ", ".join(f"**[{c['tag']}]**" for c in skipped[:10])
+        embed.add_field(
+            name="ℹ️ Already Processed",
+            value=f"{skip_tags} had already settled wages for Matchday {md}.",
+            inline=False,
+        )
+
+    embed.set_footer(text=f"Matchday {md} Live • BeastlyFC Financial Engine • {BOT_NAME}")
     return embed
 
 

@@ -4,6 +4,7 @@ Supports Cash, Community Points, Training Tokens, Clubs, Shop, Inventory, Giveaw
 """
 import json
 import logging
+import re
 import unicodedata
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
@@ -72,6 +73,57 @@ def normalize_alt_positions(alt_positions: Optional[str], primary_pos: Optional[
                     deduped.append(cleaned)
 
     return ", ".join(deduped) if deduped else None
+
+
+def parse_wage_to_int(wage_val: Any) -> int:
+    """
+    Parses wage strings or numbers into an integer Cash amount.
+    Handles '€150K', '€1.2M', '50k', '150,000', None, etc.
+    """
+    if wage_val is None:
+        return 0
+    if isinstance(wage_val, (int, float)):
+        return max(0, int(wage_val))
+    s = str(wage_val).strip()
+    if not s:
+        return 0
+    s = re.sub(r'[€$£¥,\s]', '', s).lower()
+    s = s.replace("/wk", "").replace("/md", "").replace("/week", "")
+    if s.endswith("k"):
+        try:
+            return max(0, int(float(s[:-1]) * 1_000))
+        except ValueError:
+            return 0
+    elif s.endswith("m"):
+        try:
+            return max(0, int(float(s[:-1]) * 1_000_000))
+        except ValueError:
+            return 0
+    elif s.endswith("b"):
+        try:
+            return max(0, int(float(s[:-1]) * 1_000_000_000))
+        except ValueError:
+            return 0
+    try:
+        return max(0, int(float(s)))
+    except ValueError:
+        return 0
+
+
+def format_wage(amount: Any) -> str:
+    """
+    Formats integer wage into clean display e.g. €150K, €1.5M, €500.
+    """
+    amt = parse_wage_to_int(amount)
+    if amt <= 0:
+        return "€0"
+    if amt >= 1_000_000:
+        val = amt / 1_000_000
+        return f"€{val:.2f}".rstrip("0").rstrip(".") + "M"
+    elif amt >= 1_000:
+        val = amt / 1_000
+        return f"€{val:.1f}".rstrip("0").rstrip(".") + "K"
+    return f"€{amt:,}"
 
 
 class DatabaseManager:
@@ -216,6 +268,7 @@ class DatabaseManager:
                     rating INTEGER DEFAULT 75,
                     potential INTEGER DEFAULT 80,
                     alt_positions TEXT DEFAULT NULL,
+                    wage INTEGER NOT NULL DEFAULT 0,
                     transferred_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY (club_id) REFERENCES clubs(id) ON DELETE CASCADE
                 );
@@ -544,6 +597,28 @@ class DatabaseManager:
             except Exception:
                 pass
 
+            # Matchday Wage Payouts Ledger
+            await cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS matchday_wage_payouts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    guild_id INTEGER NOT NULL,
+                    club_id INTEGER NOT NULL,
+                    matchday INTEGER NOT NULL,
+                    tournament_id INTEGER DEFAULT NULL,
+                    total_wages INTEGER NOT NULL,
+                    treasury_before INTEGER NOT NULL,
+                    treasury_after INTEGER NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'paid',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(guild_id, club_id, matchday)
+                );
+                """
+            )
+            await cur.execute(
+                "CREATE INDEX IF NOT EXISTS idx_wage_payouts_lookup ON matchday_wage_payouts (guild_id, matchday, club_id);"
+            )
+
             # Performance Indices
             await cur.execute(
                 "CREATE INDEX IF NOT EXISTS idx_tx_user ON transactions (guild_id, sender_id, receiver_id);"
@@ -642,6 +717,7 @@ class DatabaseManager:
                 "ALTER TABLE club_players ADD COLUMN rating INTEGER DEFAULT 75;",
                 "ALTER TABLE club_players ADD COLUMN potential INTEGER DEFAULT 80;",
                 "ALTER TABLE club_players ADD COLUMN alt_positions TEXT DEFAULT NULL;",
+                "ALTER TABLE club_players ADD COLUMN wage INTEGER NOT NULL DEFAULT 0;",
                 "ALTER TABLE clubs ADD COLUMN logo_url TEXT DEFAULT NULL;",
                 "ALTER TABLE clubs ADD COLUMN kit_primary TEXT DEFAULT NULL;",
                 "ALTER TABLE clubs ADD COLUMN kit_secondary TEXT DEFAULT NULL;",
@@ -2543,6 +2619,7 @@ class DatabaseManager:
         alt_positions: Optional[str] = None,
         user_id: Optional[int] = None,
         default_owner_id: int = 0,
+        wage: Optional[Union[int, str]] = 0,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
         Add a player to a club squad (Starting XI or Bench).
@@ -2551,6 +2628,8 @@ class DatabaseManager:
         p_name = str(player_name).strip()
         if not p_name:
             return False, "Player name cannot be empty.", {}
+
+        w_val = parse_wage_to_int(wage)
 
         uid = user_id
         if not uid:
@@ -2640,10 +2719,10 @@ class DatabaseManager:
 
             await cur.execute(
                 """
-                INSERT INTO club_players (club_id, guild_id, player_name, role, position, status, number, rating, potential, alt_positions, user_id)
-                VALUES (?, ?, ?, 'Player', ?, ?, ?, ?, ?, ?, ?);
+                INSERT INTO club_players (club_id, guild_id, player_name, role, position, status, number, rating, potential, alt_positions, user_id, wage)
+                VALUES (?, ?, ?, 'Player', ?, ?, ?, ?, ?, ?, ?, ?);
                 """,
-                (club["id"], guild_id, p_name, pos, st, number, r_val, pot_val, clean_alt, uid),
+                (club["id"], guild_id, p_name, pos, st, number, r_val, pot_val, clean_alt, uid, w_val),
             )
             player_id = cur.lastrowid
 
@@ -2663,7 +2742,8 @@ class DatabaseManager:
             num_str = f" #{number}" if number is not None else ""
             status_desc = "Starting XI 🟢" if st == "starting" else "Bench 🟡"
             alt_desc = f" | Alt: {clean_alt}" if clean_alt else ""
-            return True, f"Added **{p_name}**{num_str} ({r_val} OVR / {pot_val} POT) as **{pos}**{alt_desc} ({status_desc}) to **[{club['tag']}] {club['name']}**!", dict(new_p)
+            wage_desc = f" | Wage: {format_wage(w_val)}/MD" if w_val > 0 else ""
+            return True, f"Added **{p_name}**{num_str} ({r_val} OVR / {pot_val} POT) as **{pos}**{alt_desc}{wage_desc} ({status_desc}) to **[{club['tag']}] {club['name']}**!", dict(new_p)
 
     async def edit_club_player(
         self,
@@ -2678,9 +2758,10 @@ class DatabaseManager:
         potential: Optional[int] = None,
         alt_positions: Optional[str] = None,
         default_owner_id: int = 0,
+        wage: Optional[Union[int, str]] = None,
     ) -> Tuple[bool, str, Dict[str, Any]]:
         """
-        Edit an existing player's details (name, position, lineup status, jersey number, rating, potential, alt positions).
+        Edit an existing player's details (name, position, lineup status, jersey number, rating, potential, alt positions, wage).
         """
         p_name = str(player_name).strip()
         if not p_name:
@@ -2782,6 +2863,12 @@ class DatabaseManager:
                 if cleaned_existing != player["alt_positions"]:
                     updates.append("alt_positions = ?")
                     params.append(cleaned_existing)
+
+            if wage is not None:
+                clean_wage = parse_wage_to_int(wage)
+                updates.append("wage = ?")
+                params.append(clean_wage)
+                changes.append(f"Wage: **{format_wage(clean_wage)}/MD**")
 
             if not updates:
                 return False, "No modifications provided. Specify at least one attribute to edit.", {}
@@ -3259,6 +3346,29 @@ class DatabaseManager:
             await self._realign_club_starters(cur, club["id"], club.get("formation", DEFAULT_FORMATION))
             await conn.commit()
 
+            # Automatically populate wages from SoFIFA cache for squad players with 0 or NULL wage
+            try:
+                await cur.execute(
+                    """
+                    SELECT p.id, s.wage FROM club_players p
+                    JOIN sofifa_players s ON (
+                        LOWER(p.player_name) = LOWER(s.name)
+                        OR LOWER(p.player_name) = LOWER(s.full_name)
+                    )
+                    WHERE p.club_id = ? AND (p.wage IS NULL OR p.wage = 0);
+                    """,
+                    (club["id"],),
+                )
+                sofifa_matches = await cur.fetchall()
+                for sm in sofifa_matches:
+                    w_int = parse_wage_to_int(sm["wage"])
+                    if w_int > 0:
+                        await cur.execute("UPDATE club_players SET wage = ? WHERE id = ?;", (w_int, sm["id"]))
+                if sofifa_matches:
+                    await conn.commit()
+            except Exception as w_err:
+                logger.debug("Auto SoFIFA wage sync notice: %s", w_err)
+
             await cur.execute(
                 """
                 SELECT * FROM club_players
@@ -3371,6 +3481,26 @@ class DatabaseManager:
                 return False, f"Player **{p_name}** was not found in any registered club squad.", {}
 
             data = dict(row)
+            if not data.get("wage"):
+                try:
+                    await cur.execute(
+                        """
+                        SELECT wage FROM sofifa_players
+                        WHERE LOWER(name) = LOWER(?) OR LOWER(full_name) = LOWER(?)
+                        ORDER BY overall_rating DESC LIMIT 1;
+                        """,
+                        (data["player_name"], data["player_name"]),
+                    )
+                    sm = await cur.fetchone()
+                    if sm:
+                        w_int = parse_wage_to_int(sm["wage"])
+                        if w_int > 0:
+                            await cur.execute("UPDATE club_players SET wage = ? WHERE id = ?;", (w_int, data["id"]))
+                            await conn.commit()
+                            data["wage"] = w_int
+                except Exception as w_err:
+                    logger.debug("SoFIFA wage sync notice for player: %s", w_err)
+
             return True, "", {
                 "player": data,
                 "club": {
@@ -3575,6 +3705,161 @@ class DatabaseManager:
                 f"🔺 **[ON]** **{bencher['player_name']}** (`{actual_on_pos}`)\n"
                 f"Club: **[{club['tag']}] {club['name']}**"
             )
+
+    async def deduct_matchday_wages(
+        self,
+        guild_id: int,
+        matchday: int,
+        tournament_id: Optional[int] = None,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Deducts matchday wages for all clubs registered in the guild.
+        Prevents duplicate deduction for the same matchday via matchday_wage_payouts table.
+        Logs each club transaction in the audit ledger and returns a detailed payroll report.
+        """
+        if matchday < 1:
+            return False, "Matchday must be greater than or equal to 1.", {}
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            # Fetch all clubs in guild
+            await cur.execute(
+                "SELECT * FROM clubs WHERE guild_id = ? ORDER BY id ASC;",
+                (guild_id,),
+            )
+            clubs = [dict(r) for r in await cur.fetchall()]
+            if not clubs:
+                return False, "No clubs registered in this server.", {}
+
+            # Check for already processed clubs for this matchday
+            await cur.execute(
+                "SELECT club_id FROM matchday_wage_payouts WHERE guild_id = ? AND matchday = ?;",
+                (guild_id, matchday),
+            )
+            already_paid_ids = {r["club_id"] for r in await cur.fetchall()}
+
+            processed_clubs = []
+            skipped_clubs = []
+            total_payroll_disbursed = 0
+
+            for club in clubs:
+                cid = club["id"]
+                if cid in already_paid_ids:
+                    skipped_clubs.append(club)
+                    continue
+
+                # Auto-sync any unassigned wages from SoFIFA before computing
+                try:
+                    await cur.execute(
+                        """
+                        SELECT p.id, s.wage FROM club_players p
+                        JOIN sofifa_players s ON (
+                            LOWER(p.player_name) = LOWER(s.name)
+                            OR LOWER(p.player_name) = LOWER(s.full_name)
+                        )
+                        WHERE p.club_id = ? AND (p.wage IS NULL OR p.wage = 0);
+                        """,
+                        (cid,),
+                    )
+                    for sm in await cur.fetchall():
+                        w_int = parse_wage_to_int(sm["wage"])
+                        if w_int > 0:
+                            await cur.execute("UPDATE club_players SET wage = ? WHERE id = ?;", (w_int, sm["id"]))
+                except Exception as w_err:
+                    logger.debug("Auto SoFIFA wage sync notice for club %s: %s", cid, w_err)
+
+                # Calculate total wage bill for all squad players
+                await cur.execute(
+                    "SELECT COALESCE(SUM(wage), 0) as total_wage, COUNT(*) as p_cnt FROM club_players WHERE club_id = ?;",
+                    (cid,),
+                )
+                wage_row = await cur.fetchone()
+                club_wage = int(wage_row["total_wage"] if wage_row else 0)
+                p_cnt = int(wage_row["p_cnt"] if wage_row else 0)
+
+                old_treasury = int(club.get("treasury_cash") or 0)
+                new_treasury = old_treasury - club_wage
+                status = "paid" if new_treasury >= 0 else "deficit"
+
+                # Deduct from treasury_cash
+                await cur.execute(
+                    "UPDATE clubs SET treasury_cash = ? WHERE id = ?;",
+                    (new_treasury, cid),
+                )
+
+                # Record in matchday_wage_payouts
+                await cur.execute(
+                    """
+                    INSERT INTO matchday_wage_payouts (guild_id, club_id, matchday, tournament_id, total_wages, treasury_before, treasury_after, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (guild_id, cid, matchday, tournament_id, club_wage, old_treasury, new_treasury, status),
+                )
+
+                # Record in transactions audit log
+                if club_wage > 0:
+                    await cur.execute(
+                        """
+                        INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                        VALUES (?, ?, NULL, 'cash', ?, 'matchday_wage', ?);
+                        """,
+                        (guild_id, club.get("owner_id"), club_wage, f"Matchday {matchday} Squad Wage Bill for [{club['tag']}] {club['name']}"),
+                    )
+
+                total_payroll_disbursed += club_wage
+                processed_clubs.append({
+                    "club": club,
+                    "total_wage": club_wage,
+                    "player_count": p_cnt,
+                    "old_treasury": old_treasury,
+                    "new_treasury": new_treasury,
+                    "status": status,
+                })
+
+            await conn.commit()
+
+            report = {
+                "matchday": matchday,
+                "processed_count": len(processed_clubs),
+                "skipped_count": len(skipped_clubs),
+                "total_disbursed": total_payroll_disbursed,
+                "clubs": processed_clubs,
+                "skipped": skipped_clubs,
+            }
+            msg = f"Matchday {matchday} payroll successfully processed for {len(processed_clubs)} clubs ({format_wage(total_payroll_disbursed)} total deducted)."
+            if skipped_clubs:
+                msg += f" ({len(skipped_clubs)} clubs were already settled for MD {matchday})."
+            return True, msg, report
+
+    async def get_club_payroll(self, guild_id: int, club_query: Any) -> Tuple[bool, str, Dict[str, Any]]:
+        """Fetch full payroll summary for a club: starters wage, bench wage, total wage, treasury, and runway."""
+        success, msg, lineup = await self.get_club_lineup(guild_id, club_query)
+        if not success:
+            return False, msg, {}
+
+        club = lineup["club"]
+        starting = lineup["starting"]
+        bench = lineup["bench"]
+
+        starting_wages = sum(int(p.get("wage") or 0) for p in starting)
+        bench_wages = sum(int(p.get("wage") or 0) for p in bench)
+        total_wage = starting_wages + bench_wages
+        treasury = int(club.get("treasury_cash") or 0)
+        runway = (treasury / total_wage) if total_wage > 0 else float("inf")
+
+        top_earner = max(starting + bench, key=lambda p: int(p.get("wage") or 0)) if (starting + bench) else None
+
+        return True, "Payroll retrieved successfully.", {
+            "club": club,
+            "starting_wages": starting_wages,
+            "bench_wages": bench_wages,
+            "total_wage": total_wage,
+            "treasury_cash": treasury,
+            "runway": runway,
+            "top_earner": top_earner,
+            "starters_count": len(starting),
+            "bench_count": len(bench),
+        }
 
     # ------------------ SoFIFA Sep 19 2025 FC 26 Players Cache ------------------ #
 

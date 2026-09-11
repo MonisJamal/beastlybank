@@ -12,10 +12,12 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+from utils.checks import is_banker_or_admin
 from utils.embeds import (
     COLOR_BEASTLY_GOLD,
     create_beastly_embed,
     error_embed,
+    matchday_payroll_report_embed,
     success_embed,
 )
 from utils.match_parser import parse_matchsimulator_html
@@ -408,6 +410,11 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
             for md in range(1, parsed.get("highest_matchday", 38) + 1):
                 payouts = await self.db.settle_matchday_bets(saved["id"], matchday=md)
                 settled_total += len([p for p in payouts if p["status"] == "won"])
+                # Auto-settle matchday wages if not yet processed
+                try:
+                    await self.db.deduct_matchday_wages(interaction.guild_id, matchday=md, tournament_id=saved["id"])
+                except Exception as w_err:
+                    logger.debug("Auto matchday wage settlement on import notice: %s", w_err)
 
             champ_msg = f"• Champion: **{saved.get('champion', 'TBD')}**\n" if saved.get("champion") else ""
             await interaction.followup.send(
@@ -419,14 +426,84 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
                     f"• Total Matchdays: **{saved['total_matchdays']}**\n"
                     f"• Teams: **{len(parsed['standings'])}**\n"
                     f"{champ_msg}"
-                    f"• Winning Bets Settled: **{settled_total}**",
+                    f"• Winning Bets Settled: **{settled_total}**\n"
+                    f"• Matchday Payrolls: **Auto-Synced**",
                 )
             )
         except Exception as e:
             logger.error("Error importing tournament HTML: %s", e, exc_info=True)
             await interaction.followup.send(embed=error_embed("Import Failed", f"Could not parse file: `{str(e)}`"), ephemeral=True)
 
+    @app_commands.command(name="startmd", description="Officially kick off a matchday and settle all club squad wage deductions.")
+    @app_commands.describe(matchday="Matchday number to kick off (e.g. 1)")
+    async def matches_startmd(self, interaction: discord.Interaction, matchday: int):
+        await interaction.response.defer()
+        if not is_banker_or_admin(interaction.user):
+            await interaction.followup.send(
+                embed=error_embed("Permission Denied", "Only BeastlyBank Bankers or Server Admins can kick off a matchday payroll."),
+                ephemeral=True,
+            )
+            return
 
+        success, msg, report = await self.db.deduct_matchday_wages(interaction.guild_id, matchday)
+        if not success:
+            await interaction.followup.send(embed=error_embed("Matchday Payroll Error", msg), ephemeral=True)
+            return
+
+        embed = matchday_payroll_report_embed(report)
+        await interaction.followup.send(embed=embed)
+
+
+class Matchday(commands.GroupCog, name="matchday", description="BeastlyFC Matchday Operations & Kickoff"):
+    """Matchday kickoff and automatic club squad payroll settlements."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db = bot.db
+
+    @app_commands.command(name="start", description="Kick off a matchday and automatically settle all squad wage deductions.")
+    @app_commands.describe(matchday="Matchday number to kick off (e.g. 1)")
+    async def matchday_start(self, interaction: discord.Interaction, matchday: int):
+        await interaction.response.defer()
+        if not is_banker_or_admin(interaction.user):
+            await interaction.followup.send(
+                embed=error_embed("Permission Denied", "Only BeastlyBank Bankers or Server Admins can kick off a matchday."),
+                ephemeral=True,
+            )
+            return
+
+        success, msg, report = await self.db.deduct_matchday_wages(interaction.guild_id, matchday)
+        if not success:
+            await interaction.followup.send(embed=error_embed("Matchday Payroll Error", msg), ephemeral=True)
+            return
+
+        embed = matchday_payroll_report_embed(report)
+        await interaction.followup.send(embed=embed)
+
+    @commands.group(name="matchday", invoke_without_command=True)
+    async def prefix_matchday(self, ctx: commands.Context, sub: Optional[str] = None):
+        """Matchday operations. Usage: bb!matchday start <matchday>"""
+        await ctx.send(embed=error_embed("Matchday Command", "Usage: `bb!matchday start <matchday>` or `bb!startmd <matchday>`"))
+
+    @prefix_matchday.command(name="start")
+    async def prefix_matchday_start(self, ctx: commands.Context, matchday: int):
+        """Kick off matchday and settle wages. Usage: bb!matchday start <matchday>"""
+        if not is_banker_or_admin(ctx.author):
+            await ctx.send(embed=error_embed("Permission Denied", "Only BeastlyBank Bankers or Server Admins can kick off a matchday."))
+            return
+
+        success, msg, report = await self.db.deduct_matchday_wages(ctx.guild.id, matchday)
+        if not success:
+            await ctx.send(embed=error_embed("Matchday Payroll Error", msg))
+            return
+
+        embed = matchday_payroll_report_embed(report)
+        await ctx.send(embed=embed)
+
+    @commands.command(name="startmd")
+    async def prefix_startmd(self, ctx: commands.Context, matchday: int):
+        """Kick off matchday and settle club wages. Usage: bb!startmd <matchday>"""
+        await self.prefix_matchday_start(ctx, matchday=matchday)
 
 
 class Standings(commands.Cog):
@@ -468,3 +545,4 @@ class Standings(commands.Cog):
 async def setup(bot: commands.Bot):
     await bot.add_cog(Matches(bot))
     await bot.add_cog(Standings(bot))
+    await bot.add_cog(Matchday(bot))

@@ -3820,6 +3820,194 @@ async def test_formation_352_and_department_ovr(db: DatabaseManager):
     assert any("2 attackers" in f.value for f in ratings_embed.fields)
 
 
+@pytest.mark.asyncio
+async def test_parse_and_format_wage():
+    """Verify parsing of SoFIFA wage strings and formatting to BeastlyBank cash."""
+    from database.db import parse_wage_to_int, format_wage
+
+    assert parse_wage_to_int("€150K") == 150000
+    assert parse_wage_to_int("€1.2M") == 1200000
+    assert parse_wage_to_int("250000") == 250000
+    assert parse_wage_to_int("$350k") == 350000
+    assert parse_wage_to_int("£50K/wk") == 50000
+    assert parse_wage_to_int("€85.5K/md") == 85500
+    assert parse_wage_to_int(200000) == 200000
+    assert parse_wage_to_int(None) == 0
+    assert parse_wage_to_int("") == 0
+    assert parse_wage_to_int("invalid") == 0
+
+    assert format_wage(150000) == "€150K"
+    assert format_wage(0) == "€0"
+    assert format_wage(1200000) == "€1.2M"
+
+
+@pytest.mark.asyncio
+async def test_player_wage_auto_fetch_from_sofifa(db: DatabaseManager):
+    """Verify player wages auto-populate from cached SoFIFA database if unassigned."""
+    guild_id = 999999999
+    user_id = 12345
+
+    # Cache SoFIFA player
+    await db.cache_sofifa_players([{
+        "id": 231747,
+        "name": "Kylian Mbappé",
+        "full_name": "Kylian Mbappé Lottin",
+        "overall_rating": 91,
+        "potential": 94,
+        "primary_pos": "ST",
+        "positions": "ST, LW",
+        "team": "Real Madrid",
+        "avatar": "https://cdn.sofifa.net/players/231/747/25_120.png",
+        "wage": "€150K",
+    }])
+
+    # Create club
+    _, _, club = await db.create_club(guild_id, "Real Madrid CF", "RMA", user_id, 888888)
+
+    # Add player without wage (wage defaults to 0)
+    add_ok, _, p_data = await db.add_club_player(
+        guild_id=guild_id,
+        club_query=club["id"],
+        player_name="Kylian Mbappé",
+        position="ST",
+        status="starting",
+        rating=91,
+    )
+    assert add_ok is True
+
+    # Check get_player_info: auto-syncs from SoFIFA cache
+    info_ok, _, p_info = await db.get_player_info(guild_id, "Kylian Mbappé", club_query=club["id"])
+    assert info_ok is True
+    assert p_info["player"]["wage"] == 150000
+
+    # Check get_club_lineup: auto-syncs and calculates wage bill
+    lineup_ok, _, lineup = await db.get_club_lineup(guild_id, club["id"])
+    assert lineup_ok is True
+    assert lineup["starting"][0]["wage"] == 150000
+
+    # Check lineup embed
+    from utils.embeds import club_lineup_embed
+    embed = club_lineup_embed(
+        club=lineup["club"],
+        formation="4-3-3",
+        starting_players=lineup["starting"],
+        bench_players=lineup["bench"],
+    )
+    assert "Matchday Wage Bill:" in embed.description
+    assert "€150K / MD" in embed.description
+    assert any("• 🪙 `€150K`" in f.value for f in embed.fields)
+
+
+@pytest.mark.asyncio
+async def test_player_wage_manual_edit(db: DatabaseManager):
+    """Verify manual editing of player wages via edit_club_player."""
+    guild_id = 999999999
+    user_id = 12345
+
+    _, _, club = await db.create_club(guild_id, "Manchester City", "MCI", user_id, 777777)
+    await db.add_club_player(guild_id, club["id"], "Erling Haaland", "ST", "starting", rating=91, wage=100000)
+
+    # Verify initial wage
+    _, _, p_info = await db.get_player_info(guild_id, "Erling Haaland", club_query=club["id"])
+    assert p_info["player"]["wage"] == 100000
+
+    # Edit wage to 350k
+    edit_ok, msg, _ = await db.edit_club_player(guild_id, club["id"], "Erling Haaland", wage="350k")
+    assert edit_ok is True
+    _, _, p_info2 = await db.get_player_info(guild_id, "Erling Haaland", club_query=club["id"])
+    assert p_info2["player"]["wage"] == 350000
+
+    # Edit wage with formatted currency string
+    edit_ok2, _, _ = await db.edit_club_player(guild_id, club["id"], "Erling Haaland", wage="€500,000 / week")
+    assert edit_ok2 is True
+    _, _, p_info3 = await db.get_player_info(guild_id, "Erling Haaland", club_query=club["id"])
+    assert p_info3["player"]["wage"] == 500000
+
+
+@pytest.mark.asyncio
+async def test_matchday_wage_deduction_and_idempotency(db: DatabaseManager):
+    """Verify matchday kickoff automatically deducts club wages, prevents duplicates, and tracks deficits."""
+    guild_id = 999999999
+    user_id = 12345
+
+    _, _, club = await db.create_club(guild_id, "Arsenal FC", "ARS", user_id, 666666)
+    # Set starting treasury to 500,000 cash
+    await db.update_club_treasury(guild_id, club["id"], "cash", "add", 500000, user_id)
+
+    # Add 2 squad players: total wage = 200,000
+    await db.add_club_player(guild_id, club["id"], "Bukayo Saka", "RW", "starting", wage=120000)
+    await db.add_club_player(guild_id, club["id"], "Declan Rice", "CDM", "starting", wage=80000)
+
+    # Deduct Matchday 1
+    ok, msg, report = await db.deduct_matchday_wages(guild_id, matchday=1)
+    assert ok is True
+    assert report["matchday"] == 1
+    assert report["processed_count"] == 1
+    assert report["total_disbursed"] == 200000
+    assert report["clubs"][0]["new_treasury"] == 300000
+    assert report["clubs"][0]["status"] == "paid"
+
+    # Check treasury in db
+    updated_club = await db.get_club_by_name(guild_id, club["id"])
+    assert updated_club["treasury_cash"] == 300000
+
+    # Check audit ledger transaction
+    txs = await db.get_transactions(user_id, guild_id)
+    wage_txs = [t for t in txs if t["tx_type"] == "matchday_wage"]
+    assert len(wage_txs) == 1
+    assert wage_txs[0]["amount"] == 200000
+
+    # Idempotency test: Run Matchday 1 AGAIN
+    ok2, msg2, report2 = await db.deduct_matchday_wages(guild_id, matchday=1)
+    assert ok2 is True
+    assert report2["processed_count"] == 0
+    assert report2["skipped_count"] == 1
+    assert report2["total_disbursed"] == 0
+    # Treasury unchanged
+    club_recheck = await db.get_club_by_name(guild_id, club["id"])
+    assert club_recheck["treasury_cash"] == 300000
+
+    # Deduct Matchday 2: 300k - 200k = 100k
+    ok3, _, report3 = await db.deduct_matchday_wages(guild_id, matchday=2)
+    assert ok3 is True
+    assert report3["clubs"][0]["new_treasury"] == 100000
+    assert report3["clubs"][0]["status"] == "paid"
+
+    # Deduct Matchday 3: 100k - 200k = -100k (Deficit)
+    ok4, _, report4 = await db.deduct_matchday_wages(guild_id, matchday=3)
+    assert ok4 is True
+    assert report4["clubs"][0]["new_treasury"] == -100000
+    assert report4["clubs"][0]["status"] == "deficit"
+
+
+@pytest.mark.asyncio
+async def test_club_payroll_summary(db: DatabaseManager):
+    """Verify get_club_payroll breakdown calculation."""
+    guild_id = 999999999
+    user_id = 12345
+
+    _, _, club = await db.create_club(guild_id, "Liverpool FC", "LIV", user_id, 555555)
+    await db.update_club_treasury(guild_id, club["id"], "cash", "add", 1000000, user_id)
+
+    # 2 Starters (150k + 100k = 250k)
+    await db.add_club_player(guild_id, club["id"], "Mo Salah", "RW", "starting", wage=150000)
+    await db.add_club_player(guild_id, club["id"], "Virgil van Dijk", "CB", "starting", wage=100000)
+    # 1 Bench (50k)
+    await db.add_club_player(guild_id, club["id"], "Darwin Nunez", "ST", "bench", wage=50000)
+
+    ok, msg, payroll = await db.get_club_payroll(guild_id, club["id"])
+    assert ok is True
+    assert payroll["starting_wages"] == 250000
+    assert payroll["bench_wages"] == 50000
+    assert payroll["total_wage"] == 300000
+    assert payroll["starters_count"] == 2
+    assert payroll["bench_count"] == 1
+    assert payroll["top_earner"]["player_name"] == "Mo Salah"
+    # Runway: 1,000,000 / 300,000 = 3.333...
+    assert pytest.approx(payroll["runway"], 0.05) == (1000000 / 300000)
+
+
+
 
 
 

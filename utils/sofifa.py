@@ -47,7 +47,7 @@ def _parse_sofifa_sync(
     keyword: str = "",
     offset: int = 0,
     timeout: int = 10,
-    roster: Optional[str] = None,
+    roster: Optional[str] = SOFIFA_ROSTER_VERSION,
 ) -> List[Dict[str, Any]]:
     """Synchronous HTTP worker to scrape SoFIFA players."""
     cols = ["pi", "ae", "hi", "wi", "pf", "oa", "pt", "bo", "bp", "vl", "wg", "rc", "cp", "cj"]
@@ -165,10 +165,11 @@ async def fetch_sofifa_players(
     keyword: str = "",
     offset: int = 0,
     timeout: int = 10,
-    roster: Optional[str] = None,
+    roster: Optional[str] = SOFIFA_ROSTER_VERSION,
 ) -> List[Dict[str, Any]]:
     """
     Asynchronously fetch and parse SoFIFA players with multi-word fallbacks and intelligent ranking.
+    Defaults to the official Sep 19, 2025 FC 26 launch database (r=260004).
     """
     clean = keyword.strip()
     # Primary search
@@ -187,6 +188,12 @@ async def fetch_sofifa_players(
                 if fallback_res:
                     results = fallback_res
                     break
+
+    # If no results with Sep 19 2025 roster, try without roster restriction (e.g. for free agents or late-added stars)
+    if not results and clean and roster == SOFIFA_ROSTER_VERSION:
+        results = await asyncio.to_thread(
+            _parse_sofifa_sync, keyword=clean, offset=offset, timeout=timeout, roster=None
+        )
 
     # If multiple candidates and keyword provided, rank matching candidate highest
     if results and len(results) > 1 and clean:

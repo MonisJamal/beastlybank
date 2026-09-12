@@ -6,7 +6,7 @@ Admin & Settings Cogs:
 """
 import asyncio
 import inspect
-from typing import Literal, Optional
+from typing import Literal, Optional, Union, Dict, Any, List
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -598,6 +598,153 @@ class ServerSettings(commands.GroupCog, name="settings", description="Manage Ser
         await interaction.response.send_message(embed=embed)
 
 
+class TreasuryRecoveryView(discord.ui.View):
+    def __init__(self, bot: commands.Bot, guild_id: int, admin_user: Any, balances: list):
+        super().__init__(timeout=300)
+        self.bot = bot
+        self.guild_id = guild_id
+        self.admin_user = admin_user
+        self.balances = balances
+
+    @discord.ui.button(label="Apply Reconstructed Balances", style=discord.ButtonStyle.success, emoji="✅")
+    async def btn_apply(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from utils.checks import is_banker_or_admin
+        if not is_banker_or_admin(interaction.user):
+            await interaction.response.send_message(
+                embed=error_embed("Staff Authorization Required", "Only Server Admins and Bankers can apply restorations."),
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer()
+        count, restored = await self.bot.db.restore_club_ledger_balances(self.guild_id, interaction.user.id)
+
+        from utils.backup import upload_database_backup
+        await upload_database_backup(self.bot, reason=f"Club Treasury Audit Restoration by {interaction.user.display_name}")
+
+        lines = []
+        for r in restored:
+            lines.append(f"• **[{r['tag']}] {r['name']}**: 🪙 **{r['restored_balance']:,} Cash** restored *(from {r['events']} ledger events)*")
+
+        if not lines:
+            lines.append("ℹ️ *No club balances required restoration.*")
+
+        embed = discord.Embed(
+            title="🏦 Club Treasury Balances Restored!",
+            description=(
+                f"✅ **Successfully restored balances for {count} clubs based on transaction history:**\n\n"
+                + "\n".join(lines) + "\n\n"
+                f"👮 **Authorized by:** {interaction.user.mention}\n"
+                f"💾 *A fresh cloud checkpoint has been saved to the backup channel.*"
+            ),
+            color=0x2ECC71,
+        )
+        for child in self.children:
+            child.disabled = True
+        if interaction.message:
+            await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=self)
+        else:
+            await interaction.followup.send(embed=embed)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, emoji="❌")
+    async def btn_cancel(self, interaction: discord.Interaction, button: discord.ui.Button):
+        from utils.checks import is_banker_or_admin
+        if not is_banker_or_admin(interaction.user):
+            await interaction.response.send_message("❌ Unauthorized.", ephemeral=True)
+            return
+        for child in self.children:
+            child.disabled = True
+        embed = discord.Embed(
+            title="❌ Treasury Audit Cancelled",
+            description="No balances were altered.",
+            color=0x95A5A6,
+        )
+        if interaction.response.is_done():
+            if interaction.message:
+                await interaction.followup.edit_message(message_id=interaction.message.id, embed=embed, view=self)
+            else:
+                await interaction.followup.send(embed=embed)
+        else:
+            await interaction.response.edit_message(embed=embed, view=self)
+
+
+async def handle_audit_treasuries(bot: commands.Bot, target: Union[commands.Context, discord.Interaction]):
+    from utils.checks import is_banker_or_admin
+    author = target.user if isinstance(target, discord.Interaction) else target.author
+    if not is_banker_or_admin(author):
+        err_msg = "Only Server Admins and Bankers can audit club treasuries."
+        if isinstance(target, discord.Interaction):
+            await target.response.send_message(embed=error_embed("Staff Authorization Required", err_msg), ephemeral=True)
+        else:
+            await target.send(f"❌ {err_msg}")
+        return
+
+    if isinstance(target, discord.Interaction) and not target.response.is_done():
+        await target.response.defer(ephemeral=False)
+
+    guild_id = target.guild_id if isinstance(target, discord.Interaction) else target.guild.id
+    balances = await bot.db.calculate_club_ledger_balances(guild_id)
+
+    if not balances:
+        msg = "No registered clubs found in this server."
+        if isinstance(target, discord.Interaction):
+            await target.followup.send(embed=error_embed("No Clubs", msg))
+        else:
+            await target.send(f"❌ {msg}")
+        return
+
+    lines = []
+    has_restorable = False
+    for b in balances:
+        calc = b["calculated_balance"]
+        curr = b["current_balance"]
+        inflow = b["inflow"]
+        outflow = b["outflow"]
+        events = b["events"]
+        if calc > 0 and curr == 0:
+            has_restorable = True
+            lines.append(
+                f"• **[{b['tag']}] {b['name']}**\n"
+                f"  Current DB: `🪙 {curr:,}` ➔ **Calculated Ledger: `🪙 {calc:,} Cash`**\n"
+                f"  *(Inflows: `+{inflow:,}` | Outflows: `-{outflow:,}` | {events} transactions)*"
+            )
+        elif calc > 0:
+            lines.append(
+                f"• **[{b['tag']}] {b['name']}**\n"
+                f"  Current DB: `🪙 {curr:,}` | Calculated Ledger: `🪙 {calc:,} Cash`"
+            )
+        else:
+            lines.append(
+                f"• **[{b['tag']}] {b['name']}**\n"
+                f"  Current DB: `🪙 {curr:,}` | Calculated Ledger: `🪙 0 Cash` *(No ledger history)*"
+            )
+
+    desc = (
+        "🔍 **Historical Club Treasury Ledger Audit**\n\n"
+        "Even if club vaults were zeroed out, **the immutable transaction ledger and wage logs preserved the complete financial history!**\n\n"
+        + "\n".join(lines) + "\n\n"
+    )
+
+    if has_restorable:
+        desc += "💡 Click **Apply Reconstructed Balances** below to automatically restore every club back to its exact calculated ledger balance!"
+        view = TreasuryRecoveryView(bot, guild_id, author, balances)
+    else:
+        desc += "ℹ️ *All clubs already match their ledger balance or have no recorded transaction history.*"
+        view = None
+
+    embed = discord.Embed(
+        title="🏦 BeastlyBank Club Treasury Audit & Recovery",
+        description=desc,
+        color=0x3498DB if has_restorable else 0x2ECC71,
+    )
+    embed.set_footer(text=f"{BOT_NAME} Financial Ledger Reconciliation")
+
+    if isinstance(target, discord.Interaction):
+        await target.followup.send(embed=embed, view=view)
+    else:
+        await target.send(embed=embed, view=view)
+
+
 class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff & Banker Controls"):
     """Banker and Staff administrative management."""
 
@@ -846,6 +993,15 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
     async def bank_restore(self, interaction: discord.Interaction, backup_file: discord.Attachment):
         from utils.backup import handle_restore_execution
         await handle_restore_execution(self.bot, interaction, backup_file)
+
+    @app_commands.command(
+        name="audit_treasuries",
+        description="Audit each club's transaction history and calculate/restore previous balances.",
+    )
+    @require_beastlyfc()
+    @require_banker_or_admin()
+    async def bank_audit_treasuries(self, interaction: discord.Interaction):
+        await handle_audit_treasuries(self.bot, interaction)
 
     @app_commands.command(
         name="rolegrant",
@@ -1475,6 +1631,11 @@ class BankerPrefixCommands(commands.Cog):
             )
         except Exception as e:
             await msg.edit(content=f"❌ **Slash Command Sync Failed:** `{e}`")
+
+    @commands.command(name="auditclubs", aliases=["recalculateclubs", "audittreasuries", "recalculatetreasuries"])
+    async def prefix_audit_clubs(self, ctx: commands.Context):
+        """Audit each club's transaction history and calculate/restore previous balances."""
+        await handle_audit_treasuries(self.bot, ctx)
 
 
 

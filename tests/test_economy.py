@@ -4420,3 +4420,63 @@ async def test_backup_and_restore_handlers(db: DatabaseManager, tmp_path):
             assert "Database Restored" in rest_call["embed"].title
 
 
+@pytest.mark.asyncio
+async def test_audit_treasuries_recalculation(db: DatabaseManager):
+    """Verify club balances can be reconstructed and restored from transaction ledger history."""
+    from cogs.admin import handle_audit_treasuries
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    guild_id = 999999999
+    admin_id = 888888888
+
+    # 1. Create 2 clubs
+    _, _, club_a = await db.create_club(guild_id, "Audit Club A", "ACA", admin_id)
+    _, _, club_b = await db.create_club(guild_id, "Audit Club B", "ACB", admin_id)
+
+    # Preload user with cash and deposit into Club A
+    await db.update_balance(admin_id, guild_id, "cash", 100_000_000, "Seed")
+    await db.club_deposit(club_a["id"], admin_id, guild_id, "cash", 70_000_000, is_banker=True)
+
+    # Simulate wipeout to 0
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        await cur.execute("UPDATE clubs SET treasury_cash = 0 WHERE guild_id = ?;", (guild_id,))
+        await conn.commit()
+
+    c_a_wiped = await db.get_club_by_name(guild_id, club_a["id"])
+    assert c_a_wiped["treasury_cash"] == 0
+
+    # 2. Calculate ledger balances
+    calc = await db.calculate_club_ledger_balances(guild_id)
+    club_a_calc = next(c for c in calc if c["id"] == club_a["id"])
+    assert club_a_calc["calculated_balance"] == 70_000_000
+    assert club_a_calc["current_balance"] == 0
+
+    # 3. Restore via restore_club_ledger_balances
+    count, restored = await db.restore_club_ledger_balances(guild_id, admin_id)
+    assert count >= 1
+    c_a_restored = await db.get_club_by_name(guild_id, club_a["id"])
+    assert c_a_restored["treasury_cash"] == 70_000_000
+
+    # 4. Verify handle_audit_treasuries sends interactive embed
+    bot_mock = MagicMock()
+    bot_mock.db = db
+    inter_mock = MagicMock(spec=discord.Interaction)
+    inter_mock.guild_id = guild_id
+    inter_mock.user = MagicMock()
+    inter_mock.user.id = admin_id
+    inter_mock.user.guild_permissions.administrator = True
+    inter_mock.response = MagicMock()
+    inter_mock.response.is_done.return_value = False
+    inter_mock.response.defer = AsyncMock()
+    inter_mock.followup = MagicMock()
+    inter_mock.followup.send = AsyncMock()
+
+    with patch("utils.checks.is_banker_or_admin", return_value=True):
+        await handle_audit_treasuries(bot_mock, inter_mock)
+        inter_mock.followup.send.assert_awaited_once()
+        embed = inter_mock.followup.send.call_args[1]["embed"]
+        assert "Club Treasury Audit" in embed.title
+
+
+

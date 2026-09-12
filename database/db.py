@@ -1717,6 +1717,149 @@ class DatabaseManager:
                 "new_balance": new_val,
             }
 
+    async def calculate_club_ledger_balances(self, guild_id: int) -> List[Dict[str, Any]]:
+        """
+        Reconstructs the historical balance of every club in a guild from the immutable
+        transactions and matchday_wage_payouts tables.
+        """
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT * FROM clubs WHERE guild_id = ? ORDER BY name ASC;", (guild_id,))
+            clubs = [dict(r) for r in await cur.fetchall()]
+            if not clubs:
+                return []
+
+            await cur.execute("SELECT * FROM transactions WHERE guild_id = ? ORDER BY id ASC;", (guild_id,))
+            txs = [dict(r) for r in await cur.fetchall()]
+
+            await cur.execute("SELECT * FROM matchday_wage_payouts WHERE guild_id = ? ORDER BY id ASC;", (guild_id,))
+            wages = [dict(r) for r in await cur.fetchall()]
+
+            reconstructed = []
+            for c in clubs:
+                cid = c["id"]
+                tag = c["tag"].strip().lower()
+                role_id = str(c.get("role_id") or "")
+
+                inflow = 0
+                outflow = 0
+                events = 0
+
+                # 1. Process transactions
+                for t in txs:
+                    if t.get("currency") != "cash":
+                        continue
+                    amt = int(t["amount"])
+                    reason = t.get("reason") or ""
+                    reason_l = reason.lower()
+                    ttype = t.get("tx_type") or ""
+
+                    # Club deposits
+                    if ttype == "club_deposit":
+                        if f"club #{cid}" in reason_l or f"[{tag}]" in reason_l:
+                            inflow += amt
+                            events += 1
+                    # Club withdrawals
+                    elif ttype == "club_withdraw":
+                        if f"[{tag}]" in reason_l or f"club #{cid}" in reason_l:
+                            outflow += amt
+                            events += 1
+                    # Transfer market
+                    elif ttype == "transfer_market":
+                        m = re.search(r"from\s+\[(.*?)\]\s+to\s+\[(.*?)\]", reason, re.IGNORECASE)
+                        if m:
+                            from_t = m.group(1).strip().lower()
+                            to_t = m.group(2).strip().lower()
+                            if tag == from_t:
+                                inflow += amt
+                                events += 1
+                            elif tag == to_t:
+                                outflow += amt
+                                events += 1
+                        elif (role_id and f"<@&{role_id}>" in reason) or f"[{tag}]" in reason_l:
+                            inflow += amt
+                            events += 1
+                    # Banker vault operations
+                    elif ttype == "banker_vault_add":
+                        if f"[{tag}]" in reason_l or f"club #{cid}" in reason_l:
+                            inflow += amt
+                            events += 1
+                    elif ttype == "banker_vault_remove":
+                        if f"[{tag}]" in reason_l or f"club #{cid}" in reason_l:
+                            outflow += amt
+                            events += 1
+                    elif ttype == "banker_vault_set":
+                        if f"[{tag}]" in reason_l or f"club #{cid}" in reason_l:
+                            inflow = amt
+                            outflow = 0
+                            events += 1
+                    # Auctions
+                    elif ttype in ("auction_win", "auction_bid"):
+                        if f"[{tag}]" in reason_l or f"club #{cid}" in reason_l:
+                            outflow += amt
+                            events += 1
+                    elif ttype == "auction_outbid_refund":
+                        if f"[{tag}]" in reason_l or f"club #{cid}" in reason_l:
+                            inflow += amt
+                            events += 1
+                    # Fixture betting
+                    elif ttype == "fixture_wager":
+                        if f"[{tag}]" in reason_l or f"club #{cid}" in reason_l:
+                            outflow += amt
+                            events += 1
+                    elif ttype == "fixture_win":
+                        if f"[{tag}]" in reason_l or f"club #{cid}" in reason_l:
+                            inflow += amt
+                            events += 1
+
+                # 2. Process matchday wages
+                club_wages = [w for w in wages if w["club_id"] == cid]
+                for w in club_wages:
+                    w_amt = int(w.get("total_wages") or 0)
+                    outflow += w_amt
+                    events += 1
+
+                calc_bal = max(0, inflow - outflow)
+                reconstructed.append({
+                    "id": cid,
+                    "name": c["name"],
+                    "tag": c["tag"],
+                    "role_id": c.get("role_id"),
+                    "current_balance": int(c.get("treasury_cash") or 0),
+                    "calculated_balance": calc_bal,
+                    "inflow": inflow,
+                    "outflow": outflow,
+                    "events": events,
+                })
+
+            return reconstructed
+
+    async def restore_club_ledger_balances(self, guild_id: int, admin_id: int) -> Tuple[int, List[Dict[str, Any]]]:
+        """
+        Applies reconstructed ledger balances to every club in the guild.
+        """
+        balances = await self.calculate_club_ledger_balances(guild_id)
+        restored = []
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            for item in balances:
+                calc = item["calculated_balance"]
+                if calc > 0:
+                    await cur.execute(
+                        "UPDATE clubs SET treasury_cash = ? WHERE id = ?;",
+                        (calc, item["id"]),
+                    )
+                    await cur.execute(
+                        """
+                        INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                        VALUES (?, ?, NULL, 'cash', ?, 'banker_vault_set', ?);
+                        """,
+                        (guild_id, admin_id, calc, f"Ledger Audit Restoration [{item['tag']}]: Restored {calc:,} Cash"),
+                    )
+                    restored.append({**item, "restored_balance": calc})
+            await conn.commit()
+        return len(restored), restored
+
     async def set_club_manager(
         self, club_id: int, owner_id: int, target_user_id: int, is_manager: bool, is_admin: bool = False
     ) -> Tuple[bool, str]:

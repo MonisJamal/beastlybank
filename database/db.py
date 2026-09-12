@@ -688,25 +688,6 @@ class DatabaseManager:
                     default_items,
                 )
 
-            # Reset any users that had the legacy starter pack to 0
-            await cur.execute(
-                """
-                UPDATE users
-                SET cash = 0, points = 0, tokens = 0
-                WHERE cash = 1000 AND points = 250 AND tokens = 5;
-                """
-            )
-            await cur.execute("DELETE FROM transactions WHERE tx_type = 'starter_bonus';")
-
-            # Reset any legacy club vaults to 0
-            await cur.execute(
-                """
-                UPDATE clubs
-                SET treasury_cash = 0, treasury_points = 0, treasury_tokens = 0
-                WHERE treasury_cash != 0 OR treasury_points != 0 OR treasury_tokens != 0;
-                """
-            )
-
             # Ensure role_id, formation, and squad player columns exist
             for col_stmt in [
                 "ALTER TABLE clubs ADD COLUMN role_id INTEGER;",

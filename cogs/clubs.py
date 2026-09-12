@@ -9,7 +9,7 @@ from discord.ext import commands
 
 logger = logging.getLogger("BeastlyBank.Clubs")
 
-from config import CURRENCIES, COLOR_BEASTLY_GOLD, COLOR_PITCH_GREEN, COLOR_SUCCESS, parse_amount
+from config import CURRENCIES, COLOR_BEASTLY_GOLD, COLOR_PITCH_GREEN, COLOR_SUCCESS, COLOR_ERROR, COLOR_INFO, parse_amount
 from utils.checks import require_beastlyfc, is_banker_or_admin
 from utils.embeds import (
     club_info_embed,
@@ -45,6 +45,329 @@ async def club_name_autocomplete(
         return []
 
 
+class TransferConfirmationView(discord.ui.View):
+    """
+    Two-owner confirmation view for club player transfers.
+    Requires explicit acceptance from both the selling club owner and buying club owner
+    before executing the transfer.
+    """
+
+    def __init__(
+        self,
+        db,
+        guild_id: int,
+        player_name: str,
+        from_club: dict,
+        to_club: dict,
+        amount: int,
+        amount_str: str,
+        caller: discord.User | discord.Member,
+        from_role_or_str: Any,
+        to_role_or_str: Any,
+        from_label: str,
+        to_label: str,
+        timeout: float = 300.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.db = db
+        self.guild_id = guild_id
+        self.player_name = player_name
+        self.from_club = from_club
+        self.to_club = to_club
+        self.amount = amount
+        self.amount_str = amount_str
+        self.caller = caller
+        self.from_role_or_str = from_role_or_str
+        self.to_role_or_str = to_role_or_str
+        self.from_label = from_label
+        self.to_label = to_label
+
+        self.seller_owner_id: int = int(from_club.get("owner_id") or 0)
+        self.buyer_owner_id: int = int(to_club.get("owner_id") or 0)
+
+        self.seller_accepted: bool = False
+        self.buyer_accepted: bool = False
+        self.seller_accepted_by: Optional[discord.User | discord.Member] = None
+        self.buyer_accepted_by: Optional[discord.User | discord.Member] = None
+        self.is_completed: bool = False
+        self.message: Optional[Any] = None
+
+    def build_proposal_embed(self) -> discord.Embed:
+        """Construct the live transfer proposal embed reflecting current acceptance status."""
+        seller_owner_mention = f"<@{self.seller_owner_id}>" if self.seller_owner_id else "Vacant"
+        buyer_owner_mention = f"<@{self.buyer_owner_id}>" if self.buyer_owner_id else "Vacant"
+
+        if self.seller_accepted:
+            s_by = self.seller_accepted_by.mention if self.seller_accepted_by else seller_owner_mention
+            seller_status = f"✅ **Accepted** ({s_by})"
+        else:
+            seller_status = f"⏳ **Pending Acceptance** ({seller_owner_mention})"
+
+        if self.buyer_accepted:
+            b_by = self.buyer_accepted_by.mention if self.buyer_accepted_by else buyer_owner_mention
+            buyer_status = f"✅ **Accepted** ({b_by})"
+        else:
+            buyer_status = f"⏳ **Pending Acceptance** ({buyer_owner_mention})"
+
+        embed = create_beastly_embed(
+            title="🤝 OFFICIAL TRANSFER PROPOSAL • PENDING APPROVAL",
+            description=(
+                f"An official transfer agreement has been proposed for **{self.player_name}**!\n"
+                f"**Both club owners must accept** below before the transfer is officially executed.\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            ),
+            color=COLOR_BEASTLY_GOLD,
+        )
+
+        embed.add_field(
+            name="🏃 Player",
+            value=f"**{self.player_name}**",
+            inline=True,
+        )
+        embed.add_field(
+            name="💰 Transfer Fee",
+            value=f"💵 **{self.amount:,} Cash** (`{self.amount_str}`)",
+            inline=True,
+        )
+        embed.add_field(
+            name="📋 Proposed By",
+            value=self.caller.mention,
+            inline=True,
+        )
+        embed.add_field(
+            name="📤 Selling Club",
+            value=f"{self.from_label}\n• **Owner:** {seller_owner_mention}",
+            inline=True,
+        )
+        embed.add_field(
+            name="📥 Destination Club",
+            value=f"{self.to_label}\n• **Owner:** {buyer_owner_mention}",
+            inline=True,
+        )
+        embed.add_field(
+            name="💳 Fee Payable To",
+            value=f"{self.from_label} Treasury",
+            inline=True,
+        )
+        embed.add_field(
+            name="⚖️ Owner Approvals Required",
+            value=(
+                f"• 📤 **[{self.from_club['tag']}] {self.from_club['name']}**: {seller_status}\n"
+                f"• 📥 **[{self.to_club['tag']}] {self.to_club['name']}**: {buyer_status}"
+            ),
+            inline=False,
+        )
+
+        embed.set_footer(text="BeastlyFC Official Transfer Market • Both owners must click Accept Transfer")
+        return embed
+
+    @discord.ui.button(label="Accept Transfer", emoji="✅", style=discord.ButtonStyle.success)
+    async def btn_accept(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Handle an owner's acceptance."""
+        if self.is_completed:
+            await interaction.response.send_message("ℹ️ This transfer has already been completed or cancelled.", ephemeral=True)
+            return
+
+        u_id = interaction.user.id
+        is_seller = (self.seller_owner_id != 0 and u_id == self.seller_owner_id)
+        is_buyer = (self.buyer_owner_id != 0 and u_id == self.buyer_owner_id)
+        is_admin = is_banker_or_admin(interaction.user)
+
+        if not is_seller and not is_buyer and not is_admin:
+            seller_mention = f"<@{self.seller_owner_id}>" if self.seller_owner_id else "Vacant"
+            buyer_mention = f"<@{self.buyer_owner_id}>" if self.buyer_owner_id else "Vacant"
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Permission Denied",
+                    f"Only the owners of **[{self.from_club['tag']}] {self.from_club['name']}** ({seller_mention}) and "
+                    f"**[{self.to_club['tag']}] {self.to_club['name']}** ({buyer_mention}), or server administrators, can accept this transfer."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        # Check who is accepting
+        recorded = False
+        if is_seller and is_buyer:
+            # Same owner owns both clubs
+            self.seller_accepted = True
+            self.buyer_accepted = True
+            self.seller_accepted_by = interaction.user
+            self.buyer_accepted_by = interaction.user
+            recorded = True
+        elif is_seller:
+            if self.seller_accepted:
+                await interaction.response.send_message("ℹ️ You have already accepted this transfer on behalf of the selling club.", ephemeral=True)
+                return
+            self.seller_accepted = True
+            self.seller_accepted_by = interaction.user
+            recorded = True
+        elif is_buyer:
+            if self.buyer_accepted:
+                await interaction.response.send_message("ℹ️ You have already accepted this transfer on behalf of the buying club.", ephemeral=True)
+                return
+            self.buyer_accepted = True
+            self.buyer_accepted_by = interaction.user
+            recorded = True
+        elif is_admin:
+            if not self.seller_accepted:
+                self.seller_accepted = True
+                self.seller_accepted_by = interaction.user
+                recorded = True
+            elif not self.buyer_accepted:
+                self.buyer_accepted = True
+                self.buyer_accepted_by = interaction.user
+                recorded = True
+            else:
+                await interaction.response.send_message("ℹ️ Both clubs have already been approved.", ephemeral=True)
+                return
+
+        if not recorded:
+            await interaction.response.send_message("ℹ️ No pending acceptance for your role.", ephemeral=True)
+            return
+
+        # Check if BOTH have accepted
+        if self.seller_accepted and self.buyer_accepted:
+            self.is_completed = True
+            self.stop()
+
+            # Execute the transfer in the database
+            try:
+                success, msg, data = await self.db.transfer_player(
+                    guild_id=self.guild_id,
+                    player_name=self.player_name,
+                    from_club_query=self.from_role_or_str,
+                    to_club_query=self.to_role_or_str,
+                    amount=self.amount,
+                    payer_id=self.buyer_owner_id if self.buyer_owner_id else self.caller.id,
+                    recipient_id=None,
+                )
+            except Exception as e:
+                logger.error("Error executing player transfer upon dual acceptance: %s", e, exc_info=True)
+                err_emb = error_embed("Transfer Error", f"An unexpected error occurred during transfer: {str(e)}")
+                for item in self.children:
+                    item.disabled = True
+                await self._edit_message(interaction, embed=err_emb, view=self)
+                return
+
+            if not success:
+                err_emb = error_embed("Transfer Failed", msg)
+                for item in self.children:
+                    item.disabled = True
+                await self._edit_message(interaction, embed=err_emb, view=self)
+                return
+
+            f_club = data["from_club"]
+            t_club = data["to_club"]
+            player_name = data["player_name"]
+
+            confirm_embed = create_beastly_embed(
+                title="🚨 OFFICIAL TRANSFER CONFIRMED • HERE WE GO! 🚨",
+                description=(
+                    f"Official agreement finalized! **{player_name}** has completed the transfer from {self.from_label} to {self.to_label}!\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                ),
+                color=COLOR_BEASTLY_GOLD,
+            )
+            confirm_embed.add_field(name="🏃 Player", value=f"**{player_name}**", inline=True)
+            confirm_embed.add_field(name="💰 Transfer Fee", value=f"💵 **{self.amount:,} Cash** (`{self.amount_str}`)", inline=True)
+            confirm_embed.add_field(name="💳 Fee Paid To", value=f"{self.from_label} Treasury", inline=True)
+            confirm_embed.add_field(name="📤 Departing Club", value=self.from_label, inline=True)
+            confirm_embed.add_field(name="📥 Destination Club", value=self.to_label, inline=True)
+            confirm_embed.add_field(name="📋 Proposed By", value=self.caller.mention, inline=True)
+
+            seller_name = self.seller_accepted_by.mention if self.seller_accepted_by else f"<@{self.seller_owner_id}>"
+            buyer_name = self.buyer_accepted_by.mention if self.buyer_accepted_by else f"<@{self.buyer_owner_id}>"
+            confirm_embed.add_field(
+                name="✍️ Accepted & Signed By Both Owners",
+                value=f"• 📤 **[{f_club['tag']}] {f_club['name']}**: {seller_name}\n• 📥 **[{t_club['tag']}] {t_club['name']}**: {buyer_name}",
+                inline=False,
+            )
+            confirm_embed.set_footer(text="BeastlyFC Official Transfer Market • BeastlyBank")
+            await self._edit_message(interaction, embed=confirm_embed, view=None)
+        else:
+            # One accepted, waiting for the second owner
+            updated_embed = self.build_proposal_embed()
+            await self._edit_message(interaction, embed=updated_embed, view=self)
+
+    @discord.ui.button(label="Decline Transfer", emoji="❌", style=discord.ButtonStyle.danger)
+    async def btn_decline(self, interaction: discord.Interaction, button: discord.ui.Button):
+        """Handle an owner or proposer declining/cancelling the transfer."""
+        if self.is_completed:
+            await interaction.response.send_message("ℹ️ This transfer has already been completed or cancelled.", ephemeral=True)
+            return
+
+        u_id = interaction.user.id
+        is_seller = (self.seller_owner_id != 0 and u_id == self.seller_owner_id)
+        is_buyer = (self.buyer_owner_id != 0 and u_id == self.buyer_owner_id)
+        is_caller = (u_id == self.caller.id)
+        is_admin = is_banker_or_admin(interaction.user)
+
+        if not is_seller and not is_buyer and not is_caller and not is_admin:
+            await interaction.response.send_message(
+                embed=error_embed(
+                    "Permission Denied",
+                    "Only the participating club owners, the transfer proposer, or server administrators can decline this transfer."
+                ),
+                ephemeral=True,
+            )
+            return
+
+        self.is_completed = True
+        self.stop()
+        for item in self.children:
+            item.disabled = True
+
+        cancel_embed = create_beastly_embed(
+            title="❌ TRANSFER PROPOSAL DECLINED",
+            description=(
+                f"The proposed transfer of **{self.player_name}** from {self.from_label} to {self.to_label} was declined by {interaction.user.mention}.\n\n"
+                f"**Status:** Deal cancelled. No players or funds were transferred."
+            ),
+            color=COLOR_ERROR,
+        )
+        cancel_embed.set_footer(text="BeastlyFC Official Transfer Market • Cancelled")
+        await self._edit_message(interaction, embed=cancel_embed, view=self)
+
+    async def _edit_message(self, interaction: discord.Interaction, embed: discord.Embed, view: Optional[discord.ui.View]):
+        """Helper to safely edit message or interaction response."""
+        try:
+            if not interaction.response.is_done():
+                await interaction.response.edit_message(embed=embed, view=view)
+            else:
+                await interaction.message.edit(embed=embed, view=view)
+        except Exception as e:
+            logger.debug("Failed to edit interaction message: %s", e)
+            if self.message:
+                try:
+                    await self.message.edit(embed=embed, view=view)
+                except Exception:
+                    pass
+
+    async def on_timeout(self):
+        """Disable buttons and mark proposal expired upon timeout."""
+        if self.is_completed:
+            return
+        self.is_completed = True
+        for item in self.children:
+            item.disabled = True
+        if self.message:
+            try:
+                timeout_embed = create_beastly_embed(
+                    title="⌛ TRANSFER PROPOSAL EXPIRED",
+                    description=(
+                        f"The transfer proposal for **{self.player_name}** from {self.from_label} to {self.to_label} has expired.\n"
+                        f"Both club owners did not accept within the time limit (5 minutes).\n\n"
+                        f"No players or funds were transferred."
+                    ),
+                    color=COLOR_ERROR,
+                )
+                timeout_embed.set_footer(text="BeastlyFC Official Transfer Market • Expired")
+                await self.message.edit(embed=timeout_embed, view=self)
+            except Exception as e:
+                logger.debug("Failed to edit expired transfer message: %s", e)
+
+
 async def execute_transfer(
     db,
     ctx_or_interaction: discord.Interaction | commands.Context,
@@ -52,8 +375,11 @@ async def execute_transfer(
     from_club: discord.Role | str,
     to_club: discord.Role | str,
     amount: str,
-):
-    """Shared execution logic for /transfer, /club transfer, and bb!transfer."""
+) -> Optional[TransferConfirmationView]:
+    """
+    Shared execution logic for /transfer, /club transfer, and bb!transfer.
+    Sends a transfer proposal requiring dual-owner confirmation before completing.
+    """
     guild_id = ctx_or_interaction.guild_id if hasattr(ctx_or_interaction, "guild_id") and ctx_or_interaction.guild_id else ctx_or_interaction.guild.id
     caller = ctx_or_interaction.user if hasattr(ctx_or_interaction, "user") else ctx_or_interaction.author
 
@@ -73,7 +399,7 @@ async def execute_transfer(
             ),
             ephemeral=True,
         )
-        return
+        return None
 
     clean_player = player.strip()
     if not clean_player:
@@ -82,88 +408,75 @@ async def execute_transfer(
             embed=error_embed("Invalid Player Name", "Player name cannot be empty."),
             ephemeral=True,
         )
-        return
+        return None
 
     if isinstance(ctx_or_interaction, discord.Interaction):
         if not ctx_or_interaction.response.is_done():
             await ctx_or_interaction.response.defer()
 
-    try:
-        success, msg, data = await db.transfer_player(
-            guild_id=guild_id,
-            player_name=clean_player,
-            from_club_query=from_club,
-            to_club_query=to_club,
-            amount=parsed_fee,
-            payer_id=caller.id,
-            recipient_id=None,
-        )
-    except Exception as e:
-        logger.error("Error executing player transfer: %s", e, exc_info=True)
+    from_label = from_club.mention if hasattr(from_club, "mention") else f"'{from_club}'"
+    to_label = to_club.mention if hasattr(to_club, "mention") else f"'{to_club}'"
+
+    f_club = await db.get_or_create_club_from_role(guild_id, from_club, default_owner_id=caller.id)
+    to_club_obj = await db.get_or_create_club_from_role(guild_id, to_club, default_owner_id=caller.id)
+
+    if not f_club:
         await send_msg(
             ctx_or_interaction,
-            embed=error_embed("Transfer Error", f"An unexpected error occurred during transfer: {str(e)}"),
+            embed=error_embed("Selling Club Not Found", f"Selling club {from_label} not found in BeastlyBank."),
             ephemeral=True,
         )
-        return
+        return None
 
-    if not success:
+    if not to_club_obj:
         await send_msg(
             ctx_or_interaction,
-            embed=error_embed("Transfer Failed", msg),
+            embed=error_embed("Buying Club Not Found", f"Buying club {to_label} not found in BeastlyBank."),
             ephemeral=True,
         )
-        return
+        return None
 
-    f_club = data["from_club"]
-    t_club = data["to_club"]
-    player_name = data["player_name"]
+    if f_club["id"] == to_club_obj["id"]:
+        await send_msg(
+            ctx_or_interaction,
+            embed=error_embed("Invalid Transfer", "Selling club and buying club cannot be the same."),
+            ephemeral=True,
+        )
+        return None
 
-    from_label = from_club.mention if hasattr(from_club, "mention") else (f"<@&{f_club['role_id']}>" if f_club.get("role_id") else f"**[{f_club['tag']}] {f_club['name']}**")
-    to_label = to_club.mention if hasattr(to_club, "mention") else (f"<@&{t_club['role_id']}>" if t_club.get("role_id") else f"**[{t_club['tag']}] {t_club['name']}**")
+    # Check if player exists in database to display correct casing/name
+    conn = await db.connect()
+    async with conn.cursor() as cur:
+        await cur.execute(
+            "SELECT player_name, club_id FROM club_players WHERE guild_id = ? AND LOWER(player_name) = LOWER(?);",
+            (guild_id, clean_player),
+        )
+        p_row = await cur.fetchone()
 
-    embed = create_beastly_embed(
-        title="🚨 OFFICIAL TRANSFER CONFIRMED • HERE WE GO! 🚨",
-        description=(
-            f"Official agreement finalized! **{player_name}** has completed the transfer from {from_label} to {to_label}!\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-        ),
-        color=COLOR_BEASTLY_GOLD,
-    )
+    display_player_name = p_row["player_name"] if p_row else clean_player
 
-    embed.add_field(
-        name="🏃 Player",
-        value=f"**{player_name}**",
-        inline=True,
-    )
-    embed.add_field(
-        name="💰 Transfer Fee",
-        value=f"💵 **{parsed_fee:,} Cash** (`{amount}`)",
-        inline=True,
-    )
-    embed.add_field(
-        name="💳 Fee Paid To",
-        value=f"{from_label} Treasury",
-        inline=True,
-    )
-    embed.add_field(
-        name="📤 Departing Club",
-        value=from_label,
-        inline=True,
-    )
-    embed.add_field(
-        name="📥 Destination Club",
-        value=to_label,
-        inline=True,
-    )
-    embed.add_field(
-        name="📋 Authorized By",
-        value=caller.mention,
-        inline=True,
+    actual_from_label = from_club.mention if hasattr(from_club, "mention") else (f"<@&{f_club['role_id']}>" if f_club.get("role_id") else f"**[{f_club['tag']}] {f_club['name']}**")
+    actual_to_label = to_club.mention if hasattr(to_club, "mention") else (f"<@&{to_club_obj['role_id']}>" if to_club_obj.get("role_id") else f"**[{to_club_obj['tag']}] {to_club_obj['name']}**")
+
+    view = TransferConfirmationView(
+        db=db,
+        guild_id=guild_id,
+        player_name=display_player_name,
+        from_club=f_club,
+        to_club=to_club_obj,
+        amount=parsed_fee,
+        amount_str=amount,
+        caller=caller,
+        from_role_or_str=from_club,
+        to_role_or_str=to_club,
+        from_label=actual_from_label,
+        to_label=actual_to_label,
     )
 
-    embed.set_footer(text="BeastlyFC Official Transfer Market • BeastlyBank")
-    await send_msg(ctx_or_interaction, embed=embed)
+    proposal_embed = view.build_proposal_embed()
+    msg = await send_msg(ctx_or_interaction, embed=proposal_embed, view=view)
+    view.message = msg
+    return view
 
 
 async def resolve_owner_names(

@@ -1226,9 +1226,9 @@ class DatabaseManager:
             else:
                 payee_desc = "Free Transfer"
 
-            # Fetch existing custom player details to preserve position, number, rating, potential, alt_positions
+            # Fetch existing custom player details to preserve position, number, rating, potential, alt_positions, wage
             await cur.execute(
-                "SELECT position, number, rating, potential, alt_positions FROM club_players WHERE guild_id = ? AND LOWER(player_name) = LOWER(?);",
+                "SELECT position, number, rating, potential, alt_positions, wage FROM club_players WHERE guild_id = ? AND LOWER(player_name) = LOWER(?);",
                 (guild_id, p_name),
             )
             old_p = await cur.fetchone()
@@ -1237,6 +1237,7 @@ class DatabaseManager:
             p_rating = old_p["rating"] if old_p and old_p["rating"] is not None else 75
             p_pot = old_p["potential"] if old_p and old_p["potential"] is not None else 80
             p_alt = normalize_alt_positions(old_p["alt_positions"], primary_pos=p_pos) if old_p and old_p["alt_positions"] else None
+            p_wage = old_p["wage"] if old_p and old_p["wage"] is not None else 0
 
             # Update custom players roster
             await cur.execute(
@@ -1245,10 +1246,10 @@ class DatabaseManager:
             )
             await cur.execute(
                 """
-                INSERT INTO club_players (club_id, guild_id, player_name, role, position, status, number, rating, potential, alt_positions)
-                VALUES (?, ?, ?, 'Player', ?, 'starting', ?, ?, ?, ?);
+                INSERT INTO club_players (club_id, guild_id, player_name, role, position, status, number, rating, potential, alt_positions, wage)
+                VALUES (?, ?, ?, 'Player', ?, 'starting', ?, ?, ?, ?, ?);
                 """,
-                (to_club["id"], guild_id, p_name, p_pos, p_num, p_rating, p_pot, p_alt),
+                (to_club["id"], guild_id, p_name, p_pos, p_num, p_rating, p_pot, p_alt, p_wage),
             )
 
             # If p_name happens to be a mention or numeric user id, also move in club_members

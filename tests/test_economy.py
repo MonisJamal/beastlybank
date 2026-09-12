@@ -4070,6 +4070,280 @@ async def test_intelligent_custom_player_wage_matching(db: DatabaseManager):
     assert payroll["total_wage"] == payroll["starting_wages"]
 
 
+@pytest.mark.asyncio
+async def test_transfer_dual_owner_confirmation_flow(db: DatabaseManager):
+    """
+    Verify the dual-owner confirmation button flow in /transfer:
+    1. Proposing a transfer sends a TransferConfirmationView with Accept & Decline buttons.
+    2. Transfer is NOT executed until BOTH the selling club owner and buying club owner accept.
+    3. Unauthorized users cannot accept the transfer.
+    4. When one owner accepts, status updates to Accepted while other remains Pending (still not executed).
+    5. When the second owner accepts, the transfer executes in the database, updating rosters and fees.
+    6. Player's wage is properly preserved during the transfer.
+    7. Declining the transfer cancels the deal without executing.
+    8. Timeout cancels the deal.
+    """
+    from unittest.mock import AsyncMock, MagicMock
+    from cogs.clubs import execute_transfer, TransferConfirmationView
+    import discord
+
+    guild_id = 888777666
+    seller_owner_id = 11111
+    buyer_owner_id = 22222
+    unauthorized_user_id = 99999
+
+    # Create seller and buyer clubs
+    _, _, seller_club = await db.create_club(guild_id, "Real Stars", "RST", seller_owner_id)
+    _, _, buyer_club = await db.create_club(guild_id, "Blue Hawks", "BHW", buyer_owner_id)
+
+    # Add player to seller club with specific wage, rating, position
+    ok, _, p = await db.add_club_player(
+        guild_id=guild_id,
+        club_query=seller_club["id"],
+        player_name="Erling Haaland",
+        position="ST",
+        status="starting",
+        number=9,
+        rating=90,
+        potential=93,
+        wage="€260K",
+    )
+    assert ok is True
+
+    # Fund buyer club treasury with 50M
+    await db.update_club_treasury(guild_id, buyer_club["id"], "cash", "add", 50_000_000, buyer_owner_id, "Seed")
+
+    # Seller owner proposes transfer of Haaland to Blue Hawks for 26M
+    ctx = MagicMock()
+    ctx.guild_id = guild_id
+    ctx.guild.id = guild_id
+    caller_seller = MagicMock()
+    caller_seller.id = seller_owner_id
+    caller_seller.mention = f"<@{seller_owner_id}>"
+    ctx.user = caller_seller
+    ctx.author = caller_seller
+    ctx.send = AsyncMock()
+
+    view: TransferConfirmationView = await execute_transfer(
+        db=db,
+        ctx_or_interaction=ctx,
+        player="Erling Haaland",
+        from_club="RST",
+        to_club="BHW",
+        amount="26e6",
+    )
+    assert view is not None
+    assert isinstance(view, TransferConfirmationView)
+    assert view.seller_owner_id == seller_owner_id
+    assert view.buyer_owner_id == buyer_owner_id
+    assert view.amount == 26_000_000
+
+    # Proposal sent with Accept and Decline buttons
+    ctx.send.assert_called_once()
+    sent_embed = ctx.send.call_args[1]["embed"]
+    assert "TRANSFER PROPOSAL" in sent_embed.title
+    assert "Erling Haaland" in str(sent_embed.fields)
+
+    # 1. VERIFY: Transfer is NOT yet executed in database!
+    assert view.seller_accepted is False
+    assert view.buyer_accepted is False
+    assert view.is_completed is False
+
+    _, _, seller_roster = await db.get_player_info(guild_id, "Erling Haaland", club_query=seller_club["id"])
+    assert seller_roster is not None
+    assert seller_roster["player"]["club_id"] == seller_club["id"]
+
+    buyer_club_check = await db.get_club_by_name(guild_id, "BHW")
+    assert buyer_club_check["treasury_cash"] == 50_000_000  # Not debited
+
+    # 2. Unauthorized user attempts to accept
+    unauth_user = MagicMock()
+    unauth_user.id = unauthorized_user_id
+    unauth_interaction = MagicMock(spec=discord.Interaction)
+    unauth_interaction.user = unauth_user
+    unauth_interaction.response = MagicMock()
+    unauth_interaction.response.send_message = AsyncMock()
+
+    await view.btn_accept.callback(unauth_interaction)
+    unauth_interaction.response.send_message.assert_called_once()
+    assert "Permission Denied" in unauth_interaction.response.send_message.call_args[1]["embed"].title
+    assert view.seller_accepted is False
+    assert view.buyer_accepted is False
+
+    # 3. Seller owner accepts
+    seller_interaction = MagicMock(spec=discord.Interaction)
+    seller_interaction.user = caller_seller
+    seller_interaction.response = MagicMock()
+    seller_interaction.response.is_done.return_value = False
+    seller_interaction.response.edit_message = AsyncMock()
+
+    await view.btn_accept.callback(seller_interaction)
+    assert view.seller_accepted is True
+    assert view.buyer_accepted is False
+    assert view.is_completed is False
+    seller_interaction.response.edit_message.assert_called_once()
+
+    # Verify still NOT executed in DB after only 1 owner accepted
+    buyer_club_check = await db.get_club_by_name(guild_id, "BHW")
+    assert buyer_club_check["treasury_cash"] == 50_000_000
+
+    # 4. Buying owner accepts -> BOTH owners have accepted!
+    caller_buyer = MagicMock()
+    caller_buyer.id = buyer_owner_id
+    caller_buyer.mention = f"<@{buyer_owner_id}>"
+
+    buyer_interaction = MagicMock(spec=discord.Interaction)
+    buyer_interaction.user = caller_buyer
+    buyer_interaction.response = MagicMock()
+    buyer_interaction.response.is_done.return_value = False
+    buyer_interaction.response.edit_message = AsyncMock()
+
+    await view.btn_accept.callback(buyer_interaction)
+    assert view.buyer_accepted is True
+    assert view.is_completed is True
+    buyer_interaction.response.edit_message.assert_called_once()
+    confirm_embed = buyer_interaction.response.edit_message.call_args[1]["embed"]
+    assert "OFFICIAL TRANSFER CONFIRMED" in confirm_embed.title
+
+    # 5. Verify database changes: player moved, wage retained, funds transferred
+    _, _, p_after = await db.get_player_info(guild_id, "Erling Haaland", club_query=buyer_club["id"])
+    assert p_after is not None
+    assert p_after["player"]["club_id"] == buyer_club["id"]
+    assert p_after["player"]["rating"] == 90
+    assert p_after["player"]["wage"] == 260_000  # Wage preserved!
+
+    seller_after = await db.get_club_by_name(guild_id, "RST")
+    assert seller_after["treasury_cash"] == 26_000_000  # Credited
+
+    buyer_after = await db.get_club_by_name(guild_id, "BHW")
+    assert buyer_after["treasury_cash"] == 24_000_000  # Debited 50M - 26M = 24M
+
+    # 6. Test Decline Button cancels transfer
+    ctx_dec = MagicMock()
+    ctx_dec.guild_id = guild_id
+    ctx_dec.guild.id = guild_id
+    ctx_dec.user = caller_seller
+    ctx_dec.author = caller_seller
+    ctx_dec.send = AsyncMock()
+
+    dec_view = await execute_transfer(
+        db=db,
+        ctx_or_interaction=ctx_dec,
+        player="Erling Haaland",
+        from_club="BHW",
+        to_club="RST",
+        amount="10m",
+    )
+    assert dec_view is not None
+    dec_interaction = MagicMock(spec=discord.Interaction)
+    dec_interaction.user = caller_seller
+    dec_interaction.response = MagicMock()
+    dec_interaction.response.is_done.return_value = False
+    dec_interaction.response.edit_message = AsyncMock()
+
+    await dec_view.btn_decline.callback(dec_interaction)
+    assert dec_view.is_completed is True
+    dec_interaction.response.edit_message.assert_called_once()
+    assert "DECLINED" in dec_interaction.response.edit_message.call_args[1]["embed"].title
+
+    # 7. Test Timeout marks expired
+    timeout_view = await execute_transfer(
+        db=db,
+        ctx_or_interaction=ctx_dec,
+        player="Erling Haaland",
+        from_club="BHW",
+        to_club="RST",
+        amount="5m",
+    )
+    assert timeout_view is not None
+    mock_msg = MagicMock()
+    mock_msg.edit = AsyncMock()
+    timeout_view.message = mock_msg
+    await timeout_view.on_timeout()
+    assert timeout_view.is_completed is True
+    mock_msg.edit.assert_called_once()
+    assert "EXPIRED" in mock_msg.edit.call_args[1]["embed"].title
+
+    # 8. Test Buyer accepts first, Seller accepts second (Reverse order)
+    ctx_rev = MagicMock()
+    ctx_rev.guild_id = guild_id
+    ctx_rev.guild.id = guild_id
+    ctx_rev.user = caller_seller
+    ctx_rev.author = caller_seller
+    ctx_rev.send = AsyncMock()
+
+    rev_view = await execute_transfer(
+        db=db,
+        ctx_or_interaction=ctx_rev,
+        player="Erling Haaland",
+        from_club="BHW",
+        to_club="RST",
+        amount="15m",
+    )
+    assert rev_view is not None
+    # Seller is BHW (buyer_owner_id = 22222), Buyer is RST (seller_owner_id = 11111)
+    # 22222 is selling club owner, 11111 is buying club owner
+    # Buying club owner (11111) accepts first
+    inter_rst = MagicMock(spec=discord.Interaction)
+    inter_rst.user = caller_seller  # 11111 (buyer)
+    inter_rst.response = MagicMock()
+    inter_rst.response.is_done.return_value = False
+    inter_rst.response.edit_message = AsyncMock()
+
+    await rev_view.btn_accept.callback(inter_rst)
+    assert rev_view.buyer_accepted is True
+    assert rev_view.seller_accepted is False
+    assert rev_view.is_completed is False
+
+    # Selling club owner (22222) accepts second -> completed!
+    inter_bhw = MagicMock(spec=discord.Interaction)
+    inter_bhw.user = caller_buyer  # 22222 (seller)
+    inter_bhw.response = MagicMock()
+    inter_bhw.response.is_done.return_value = False
+    inter_bhw.response.edit_message = AsyncMock()
+
+    await rev_view.btn_accept.callback(inter_bhw)
+    assert rev_view.seller_accepted is True
+    assert rev_view.is_completed is True
+    assert "OFFICIAL TRANSFER CONFIRMED" in inter_bhw.response.edit_message.call_args[1]["embed"].title
+
+    # 9. Test Single owner managing both clubs
+    _, _, solo_club1 = await db.create_club(guild_id, "Solo Club A", "SCA", 55555)
+    _, _, solo_club2 = await db.create_club(guild_id, "Solo Club B", "SCB", 55555)
+    await db.add_club_player(guild_id, solo_club1["id"], "Solo Player", "CM", "starting")
+
+    caller_solo = MagicMock()
+    caller_solo.id = 55555
+    ctx_solo = MagicMock()
+    ctx_solo.guild_id = guild_id
+    ctx_solo.guild.id = guild_id
+    ctx_solo.user = caller_solo
+    ctx_solo.author = caller_solo
+    ctx_solo.send = AsyncMock()
+
+    solo_view = await execute_transfer(
+        db=db,
+        ctx_or_interaction=ctx_solo,
+        player="Solo Player",
+        from_club="SCA",
+        to_club="SCB",
+        amount="0",
+    )
+    assert solo_view is not None
+    inter_solo = MagicMock(spec=discord.Interaction)
+    inter_solo.user = caller_solo
+    inter_solo.response = MagicMock()
+    inter_solo.response.is_done.return_value = False
+    inter_solo.response.edit_message = AsyncMock()
+
+    await solo_view.btn_accept.callback(inter_solo)
+    assert solo_view.is_completed is True
+    assert solo_view.seller_accepted is True
+    assert solo_view.buyer_accepted is True
+    assert "OFFICIAL TRANSFER CONFIRMED" in inter_solo.response.edit_message.call_args[1]["embed"].title
+
+
+
 
 
 

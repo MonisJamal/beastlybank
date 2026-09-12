@@ -86,13 +86,14 @@ async def restore_database_from_discord(bot: commands.Bot) -> bool:
 
     logger.info("🔍 Checking Discord backup channel (%d) for database snapshots...", BACKUP_CHANNEL_ID)
     try:
-        messages = await bot.http.logs_from(BACKUP_CHANNEL_ID, limit=15)
+        messages = await asyncio.wait_for(bot.http.logs_from(BACKUP_CHANNEL_ID, limit=10), timeout=4.0)
         for msg in messages:
             for att in msg.get("attachments", []):
                 filename = att.get("filename", "").lower()
                 if filename.endswith(".db") or filename.endswith(".sqlite"):
                     url = att.get("url")
-                    async with aiohttp.ClientSession() as session:
+                    client_timeout = aiohttp.ClientTimeout(total=5.0, connect=2.0)
+                    async with aiohttp.ClientSession(timeout=client_timeout) as session:
                         async with session.get(url) as resp:
                             if resp.status == 200:
                                 data = await resp.read()
@@ -110,6 +111,19 @@ async def restore_database_from_discord(bot: commands.Bot) -> bool:
                                     )
                                     return True
         logger.info("ℹ️ No previous database backups found in channel. Initializing fresh.")
+    except discord.Forbidden:
+        logger.warning(
+            "⚠️ Bot lacks permissions to access backup channel (%d). "
+            "Please ensure the bot is in the server and granted 'View Channel', 'Read Message History', and 'Attach Files'.",
+            BACKUP_CHANNEL_ID,
+        )
+    except discord.NotFound:
+        logger.warning(
+            "⚠️ Backup channel (%d) was not found. Please verify BACKUP_CHANNEL_ID in your configuration.",
+            BACKUP_CHANNEL_ID,
+        )
+    except asyncio.TimeoutError:
+        logger.warning("⏱️ Timeout while querying Discord backup channel (%d). Proceeding with startup.", BACKUP_CHANNEL_ID)
     except Exception as e:
         logger.warning("Could not restore database from Discord: %s", e)
     return False
@@ -140,7 +154,24 @@ async def upload_database_backup(
 
         channel = bot.get_channel(BACKUP_CHANNEL_ID)
         if not channel:
-            channel = await bot.fetch_channel(BACKUP_CHANNEL_ID)
+            try:
+                channel = await asyncio.wait_for(bot.fetch_channel(BACKUP_CHANNEL_ID), timeout=5.0)
+            except discord.Forbidden:
+                logger.warning(
+                    "⚠️ Bot lacks permission to access backup channel (%d). "
+                    "Please ensure the bot has 'View Channel', 'Send Messages', and 'Attach Files' permissions.",
+                    BACKUP_CHANNEL_ID,
+                )
+                return None
+            except discord.NotFound:
+                logger.warning(
+                    "⚠️ Backup channel (%d) was not found. Please verify BACKUP_CHANNEL_ID.",
+                    BACKUP_CHANNEL_ID,
+                )
+                return None
+            except Exception as fe:
+                logger.warning("Could not fetch backup channel (%d): %s", BACKUP_CHANNEL_ID, fe)
+                return None
         if not channel:
             return None
 
@@ -193,6 +224,13 @@ async def upload_database_backup(
             logger.debug("Old backup prune: %s", prune_err)
 
         return msg
+    except discord.Forbidden:
+        logger.warning(
+            "⚠️ Bot cannot send database backup to channel (%d): Forbidden. "
+            "Please ensure the bot has 'View Channel', 'Send Messages', and 'Attach Files' permissions in that channel.",
+            BACKUP_CHANNEL_ID,
+        )
+        return None
     except Exception as e:
         logger.warning("Failed to upload database backup to Discord: %s", e)
         return None

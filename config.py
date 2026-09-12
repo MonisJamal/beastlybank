@@ -14,7 +14,7 @@ DISCORD_TOKEN = os.getenv("DISCORD_TOKEN", "").strip().strip("'\"")
 
 # Server Lock: BeastlyFC Guild ID
 # If set, all slash commands and interactions are restricted strictly to this Guild ID.
-_guild_id_raw = os.getenv("BEASTLYFC_GUILD_ID", "").strip()
+_guild_id_raw = os.getenv("BEASTLYFC_GUILD_ID", "").strip().strip("'\"")
 BEASTLYFC_GUILD_ID = int(_guild_id_raw) if _guild_id_raw.isdigit() else 0
 
 # Staff and Banker Roles
@@ -28,7 +28,7 @@ ADMIN_ROLE_IDS = [int(r.strip()) for r in _admin_ids_raw if r.strip().isdigit()]
 DATABASE_PATH = os.getenv("DATABASE_PATH", str(BASE_DIR / "beastlybank.db"))
 TURSO_DATABASE_URL = os.getenv("TURSO_DATABASE_URL", "").strip().strip("'\"")
 TURSO_AUTH_TOKEN = os.getenv("TURSO_AUTH_TOKEN", "").strip().strip("'\"")
-_backup_chan_raw = os.getenv("BACKUP_CHANNEL_ID", "").strip()
+_backup_chan_raw = os.getenv("BACKUP_CHANNEL_ID", "").strip().strip("'\"")
 BACKUP_CHANNEL_ID = int(_backup_chan_raw) if _backup_chan_raw.isdigit() else 0
 
 # Brand Identity

@@ -6,6 +6,16 @@ import asyncio
 import logging
 import sys
 from pathlib import Path
+
+# Ensure logs flush immediately in non-TTY / cloud environments (Render, Discloud, etc.)
+try:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(line_buffering=True)
+except Exception:
+    pass
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -119,8 +129,14 @@ class BeastlyBankBot(commands.Bot):
     async def setup_hook(self) -> None:
         """Initialize database, persistent views, and load cogs."""
         # Cloud persistence: attempt to restore latest database from Discord backup channel
-        from utils.backup import restore_database_from_discord
-        await restore_database_from_discord(self)
+        # Guarded with a strict timeout so bot startup and Gateway connection never hang
+        try:
+            from utils.backup import restore_database_from_discord
+            await asyncio.wait_for(restore_database_from_discord(self), timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("⏱️ Cloud database restore check timed out (5.0s limit reached). Proceeding with startup.")
+        except Exception as e:
+            logger.warning("⚠️ Cloud database restore encountered an error: %s. Proceeding with startup.", e)
 
         logger.info("Initializing BeastlyBank database...")
         await self.db.init_db()
@@ -164,21 +180,24 @@ class BeastlyBankBot(commands.Bot):
                 guild_obj = discord.Object(id=BEASTLYFC_GUILD_ID)
                 # 1. PURGE ALL OLD/DUPLICATE GLOBAL COMMANDS FROM DISCORD'S SERVERS
                 try:
-                    await self.http.bulk_upsert_global_commands(self.application_id, [])
+                    await asyncio.wait_for(
+                        self.http.bulk_upsert_global_commands(self.application_id, []),
+                        timeout=10.0,
+                    )
                     logger.info("🧹 Purged old duplicate global commands from Discord API.")
                 except Exception as e:
                     logger.warning("Could not purge global slash commands: %s", e)
 
                 # 2. Sync exclusively to BeastlyFC Guild for instant updates without duplicates
                 self.tree.copy_global_to(guild=guild_obj)
-                synced_guild = await self.tree.sync(guild=guild_obj)
+                synced_guild = await asyncio.wait_for(self.tree.sync(guild=guild_obj), timeout=15.0)
                 logger.info(
                     "⚡ Instantly synced %d commands exclusively to BeastlyFC (Guild ID: %d)",
                     len(synced_guild),
                     BEASTLYFC_GUILD_ID,
                 )
             else:
-                synced_global = await self.tree.sync()
+                synced_global = await asyncio.wait_for(self.tree.sync(), timeout=15.0)
                 logger.info("Synced %d commands globally.", len(synced_global))
         except Exception as e:
             logger.warning("Slash command tree sync postponed: %s", e)

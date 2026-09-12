@@ -4343,14 +4343,80 @@ async def test_transfer_dual_owner_confirmation_flow(db: DatabaseManager):
     assert "OFFICIAL TRANSFER CONFIRMED" in inter_solo.response.edit_message.call_args[1]["embed"].title
 
 
+@pytest.mark.asyncio
+async def test_backup_and_restore_handlers(db: DatabaseManager, tmp_path):
+    """Verify local snapshots, direct file attachment backup, and restore execution."""
+    from utils.backup import (
+        create_local_backup_file,
+        create_pre_restore_snapshot,
+        handle_backup_execution,
+        handle_restore_execution,
+    )
+    from unittest.mock import AsyncMock, MagicMock, patch
 
+    # 1. Local backup creation
+    with patch("utils.backup.DATABASE_PATH", str(db.db_path)):
+        with patch("utils.backup.Path") as mock_path:
+            backup_dir = tmp_path / "backups"
+            mock_path.side_effect = lambda p: backup_dir if p == "backups" else (tmp_path / p if isinstance(p, str) and not p.startswith("/") else tmp_path / getattr(p, "name", str(p)))
+            snapshot = create_local_backup_file()
+            assert snapshot is not None
+            assert snapshot.exists()
 
+            # Pre-restore snapshot
+            pre_snap = create_pre_restore_snapshot()
+            assert pre_snap is not None
+            assert pre_snap.exists()
 
+    # 2. handle_backup_execution sends direct file attachment
+    bot_mock = MagicMock()
+    bot_mock.db = db
 
+    admin_user = MagicMock()
+    admin_user.guild_permissions.administrator = True
+    admin_user.display_name = "AdminTester"
 
+    inter_mock = MagicMock(spec=discord.Interaction)
+    inter_mock.user = admin_user
+    inter_mock.response = MagicMock()
+    inter_mock.response.is_done.return_value = False
+    inter_mock.response.defer = AsyncMock()
+    inter_mock.response.send_message = AsyncMock()
+    inter_mock.followup = MagicMock()
+    inter_mock.followup.send = AsyncMock()
 
+    with patch("utils.backup.DATABASE_PATH", str(db.db_path)):
+        with patch("utils.backup.is_banker_or_admin", return_value=True):
+            await handle_backup_execution(bot_mock, inter_mock)
 
+            inter_mock.response.defer.assert_awaited_once()
+            inter_mock.followup.send.assert_awaited_once()
+            call_kwargs = inter_mock.followup.send.call_args[1]
+            assert "embed" in call_kwargs
+            assert "file" in call_kwargs
+            assert isinstance(call_kwargs["file"], discord.File)
+            assert "Database Backup" in call_kwargs["embed"].title
 
+    # 3. handle_restore_execution with invalid file rejected
+    bad_att = MagicMock()
+    bad_att.filename = "malicious.exe"
+    with patch("utils.backup.is_banker_or_admin", return_value=True):
+        await handle_restore_execution(bot_mock, inter_mock, bad_att)
+        inter_mock.response.send_message.assert_awaited_once()
+        err_call = inter_mock.response.send_message.call_args[1]
+        assert "Invalid File" in err_call["embed"].title
 
+    # 4. handle_restore_execution with valid SQLite backup
+    valid_att = MagicMock()
+    valid_att.filename = "beastlybank.db"
+    with open(db.db_path, "rb") as f:
+        db_bytes = f.read()
+    valid_att.read = AsyncMock(return_value=db_bytes)
+
+    with patch("utils.backup.DATABASE_PATH", str(db.db_path)):
+        with patch("utils.backup.is_banker_or_admin", return_value=True):
+            await handle_restore_execution(bot_mock, inter_mock, valid_att)
+            rest_call = inter_mock.followup.send.call_args[1]
+            assert "Database Restored" in rest_call["embed"].title
 
 

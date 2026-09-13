@@ -4421,6 +4421,31 @@ async def test_backup_and_restore_handlers(db: DatabaseManager, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_backup_upload_does_not_delete_previous_messages(db: DatabaseManager):
+    """Verify that upload_database_backup preserves channel history and does not delete previous backups."""
+    from utils.backup import upload_database_backup
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    bot_mock = MagicMock()
+    bot_mock.db = db
+    bot_mock.user = MagicMock()
+
+    channel_mock = MagicMock()
+    channel_mock.send = AsyncMock(return_value=MagicMock())
+    channel_mock.history = MagicMock()
+
+    bot_mock.get_channel.return_value = channel_mock
+
+    with patch("utils.backup.DATABASE_PATH", str(db.db_path)):
+        with patch("utils.backup.BACKUP_CHANNEL_ID", 123456789):
+            msg = await upload_database_backup(bot_mock, reason="Test No Deletion")
+            assert msg is not None
+            channel_mock.send.assert_awaited_once()
+            # Ensure channel history is not queried for pruning and no messages are deleted
+            channel_mock.history.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_audit_treasuries_recalculation(db: DatabaseManager):
     """Verify club balances can be reconstructed and restored from transaction ledger history."""
     from cogs.admin import handle_audit_treasuries

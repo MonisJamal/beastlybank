@@ -9,6 +9,7 @@ import shutil
 import sqlite3
 import tempfile
 import logging
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Union, Dict, Any
@@ -86,7 +87,7 @@ async def restore_database_from_discord(bot: commands.Bot) -> bool:
 
     logger.info("🔍 Checking Discord backup channel (%d) for database snapshots...", BACKUP_CHANNEL_ID)
     try:
-        messages = await asyncio.wait_for(bot.http.logs_from(BACKUP_CHANNEL_ID, limit=10), timeout=4.0)
+        messages = await asyncio.wait_for(bot.http.logs_from(BACKUP_CHANNEL_ID, limit=50), timeout=5.0)
         for msg in messages:
             for att in msg.get("attachments", []):
                 filename = att.get("filename", "").lower()
@@ -208,21 +209,7 @@ async def upload_database_backup(
         _last_backup_timestamp = time.time()
         logger.info("💾 Successfully uploaded database backup to Discord (%s).", reason)
 
-        # Prune older backup messages to keep channel clean (keep newest 5)
-        try:
-            bot_msgs = []
-            async for old_msg in channel.history(limit=25):
-                if old_msg.author == bot.user and old_msg.attachments:
-                    bot_msgs.append(old_msg)
-            if len(bot_msgs) > 5:
-                for old in bot_msgs[5:]:
-                    try:
-                        await old.delete()
-                    except Exception:
-                        pass
-        except Exception as prune_err:
-            logger.debug("Old backup prune: %s", prune_err)
-
+        # Note: Previous backup messages are preserved in the channel to maintain complete backup history.
         return msg
     except discord.Forbidden:
         logger.warning(
@@ -263,12 +250,14 @@ class BackupCog(commands.Cog):
         wal_size = wal_path.stat().st_size if wal_path.exists() else 0
 
         current_max_mtime = max(mtime_main, mtime_wal)
-        has_new_data = (wal_size > 0) or (current_max_mtime > _last_backup_mtime)
+        has_new_data = current_max_mtime > _last_backup_mtime
         time_elapsed = now - _last_backup_timestamp
-        is_heartbeat = (time_elapsed >= 600)  # 10 minutes heartbeat
+        # Heartbeat every 1 hour (3600s), or if new data and at least 15 minutes (900s) since last backup
+        is_heartbeat = time_elapsed >= 3600
+        is_data_change = has_new_data and (time_elapsed >= 900)
 
-        if has_new_data or is_heartbeat:
-            reason = "Live Data Change" if has_new_data else "Scheduled 10-Min Heartbeat"
+        if is_data_change or is_heartbeat:
+            reason = "Live Data Change" if is_data_change else "Scheduled Hourly Heartbeat"
             await upload_database_backup(self.bot, reason=reason)
 
     @auto_backup_loop.before_loop

@@ -1,8 +1,9 @@
 """
 Club Treasuries Cog: Club vaults, formations, deposits, withdrawals, and leaderboards.
 """
+from __future__ import annotations
 import logging
-from typing import Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 import discord
 from discord import app_commands
 from discord.ext import commands

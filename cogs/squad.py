@@ -461,6 +461,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         formation = data["formation"]
         starting_players = data["starting"]
         bench_players = data.get("bench") or []
+        reserves = data.get("reserves") or []
 
         if view == "image":
             # Resolve manager display name and avatar
@@ -503,6 +504,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 formation_name=formation,
                 starting_players=starting_players,
                 bench_players=bench_players,
+                reserves=reserves,
                 role_color=role_color,
                 custom_branding=custom_branding,
                 manager_avatar_bytes=manager_avatar_bytes,
@@ -514,7 +516,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 club=club_info,
                 formation=formation,
                 starting_players=starting_players,
-                bench_players=data["bench"],
+                bench_players=bench_players,
+                reserves=reserves,
             )
             await send_msg(interaction, embed=embed)
 
@@ -578,6 +581,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             formation=data["formation"],
             starting_players=data["starting"],
             bench_players=data.get("bench") or [],
+            reserves=data.get("reserves") or [],
         )
         await send_msg(interaction, embed=embed)
 
@@ -613,13 +617,21 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 })
 
         bench_list = []
+        reserve_list = []
         if bench:
             bench_names = [p.strip() for p in bench.split(",") if p.strip()]
-            for idx, b_name in enumerate(bench_names[:10], start=12):
+            for idx, b_name in enumerate(bench_names[:9], start=12):
                 bench_list.append({
                     "player_name": b_name,
                     "number": idx,
                     "position": "SUB",
+                    "rating": None,
+                })
+            for idx, r_name in enumerate(bench_names[9:], start=21):
+                reserve_list.append({
+                    "player_name": r_name,
+                    "number": idx,
+                    "position": "RES",
                     "rating": None,
                 })
 
@@ -635,6 +647,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             formation_name=formation,
             starting_players=player_list,
             bench_players=bench_list,
+            reserves=reserve_list,
             manager_avatar_bytes=manager_avatar_bytes,
         )
         file = discord.File(fp=buf, filename="lineup.png")
@@ -680,7 +693,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         player="Player name or SoFIFA search (autocomplete suggestions available)",
         source="Player source: SoFIFA FC 26 database (auto-fills stats) or Custom Player",
         position="Primary position (optional - auto-filled from SoFIFA if recognized)",
-        status="Lineup status: starting (Starting XI) or bench (Substitutes)",
+        status="Lineup status: starting (Starting XI), bench (Substitutes, max 9), or reserve (Reserves)",
         number="Jersey number (0-99)",
         rating="Overall rating (1-99, auto-filled from SoFIFA if recognized)",
         potential="Potential rating (1-99, auto-filled from SoFIFA if recognized)",
@@ -698,7 +711,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         player: str,
         source: Literal["SoFIFA FC 26 (Auto)", "Custom Player"] = "SoFIFA FC 26 (Auto)",
         position: Optional[str] = None,
-        status: Literal["starting", "bench"] = "starting",
+        status: Literal["starting", "bench", "reserve"] = "starting",
         number: Optional[int] = None,
         rating: Optional[app_commands.Range[int, 1, 99]] = None,
         potential: Optional[app_commands.Range[int, 1, 99]] = None,
@@ -879,7 +892,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
     @app_commands.describe(
         player="Custom player name or Discord mention",
         position="Primary position (e.g. ST, CB, CM, GK, default: ST)",
-        status="Lineup status: starting (Starting XI) or bench (Substitutes)",
+        status="Lineup status: starting (Starting XI), bench (Substitutes, max 9), or reserve (Reserves)",
         number="Jersey number (0-99)",
         rating="Overall rating (1-99, default: 75)",
         potential="Potential rating (1-99, default: 80)",
@@ -892,7 +905,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         interaction: discord.Interaction,
         player: str,
         position: Optional[str] = "ST",
-        status: Literal["starting", "bench"] = "starting",
+        status: Literal["starting", "bench", "reserve"] = "starting",
         number: Optional[int] = None,
         rating: Optional[app_commands.Range[int, 1, 99]] = 75,
         potential: Optional[app_commands.Range[int, 1, 99]] = 80,
@@ -918,7 +931,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         player="Player name or Discord mention to edit",
         new_name="New name for the player",
         position="New primary position (e.g. ST, CB, CM, GK)",
-        status="Lineup status: starting or bench",
+        status="Lineup status: starting, bench, or reserve",
         number="New jersey number (0-99)",
         rating="New overall rating (1-99)",
         potential="New potential rating (1-99)",
@@ -933,7 +946,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         player: str,
         new_name: Optional[str] = None,
         position: Optional[str] = None,
-        status: Optional[Literal["starting", "bench"]] = None,
+        status: Optional[Literal["starting", "bench", "reserve"]] = None,
         number: Optional[int] = None,
         rating: Optional[app_commands.Range[int, 1, 99]] = None,
         potential: Optional[app_commands.Range[int, 1, 99]] = None,
@@ -1136,6 +1149,54 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             return
 
         embed = success_embed("Moved to Bench", msg)
+        await send_msg(interaction, embed=embed)
+
+    @player_group.command(name="reserve", description="Move a player to the Reserves.")
+    @app_commands.describe(
+        player="Player name or Discord mention",
+        club="Target club role (defaults to your club)",
+    )
+    async def slash_player_reserve(
+        self,
+        interaction: discord.Interaction,
+        player: str,
+        club: Optional[discord.Role] = None,
+    ):
+        await interaction.response.defer()
+        if club:
+            target_club = await self.db.get_or_create_club_from_role(
+                interaction.guild_id, club, default_owner_id=interaction.user.id
+            )
+        else:
+            target_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
+
+        if not target_club:
+            await send_msg(
+                interaction,
+                embed=error_embed("Club Not Found", "You must belong to a club or specify a club role."),
+                ephemeral=True,
+            )
+            return
+
+        has_perm, perm_msg = await check_squad_permission(
+            self.db, interaction.guild_id, interaction.user, target_club
+        )
+        if not has_perm:
+            await send_msg(interaction, embed=error_embed("Permission Denied", perm_msg), ephemeral=True)
+            return
+
+        success, msg, _ = await self.db.edit_club_player(
+            guild_id=interaction.guild_id,
+            club_query=club if club else target_club["id"],
+            player_name=player,
+            status="reserve",
+            default_owner_id=interaction.user.id,
+        )
+        if not success:
+            await send_msg(interaction, embed=error_embed("Action Failed", msg), ephemeral=True)
+            return
+
+        embed = success_embed("Moved to Reserves", msg)
         await send_msg(interaction, embed=embed)
 
     @player_group.command(name="swap", description="Swap two players (substitute or switch positions).")
@@ -1394,7 +1455,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             club=data["club"],
             formation=data["formation"],
             starting_players=data["starting"],
-            bench_players=data["bench"],
+            bench_players=data.get("bench") or [],
+            reserves=data.get("reserves") or [],
         )
         await ctx.send(embed=embed)
 
@@ -1435,6 +1497,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
         formation = data["formation"]
         starting_players = data["starting"]
         bench_players = data.get("bench") or []
+        reserves = data.get("reserves") or []
 
         manager_name = "Club Manager"
         manager_avatar_bytes = None
@@ -1473,6 +1536,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             formation_name=formation,
             starting_players=starting_players,
             bench_players=bench_players,
+            reserves=reserves,
             role_color=role_color,
             custom_branding=custom_branding,
             manager_avatar_bytes=manager_avatar_bytes,
@@ -1519,6 +1583,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             formation=data["formation"],
             starting_players=data["starting"],
             bench_players=data.get("bench") or [],
+            reserves=data.get("reserves") or [],
         )
         await ctx.send(embed=embed)
 
@@ -1556,13 +1621,21 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
                 })
 
         bench_list = []
+        reserve_list = []
         if len(parts) >= 5 and parts[4]:
             raw_bench = [p.strip() for p in parts[4].split(",") if p.strip()]
-            for idx, b_name in enumerate(raw_bench[:10], start=12):
+            for idx, b_name in enumerate(raw_bench[:9], start=12):
                 bench_list.append({
                     "player_name": b_name,
                     "number": idx,
                     "position": "SUB",
+                    "rating": None,
+                })
+            for idx, r_name in enumerate(raw_bench[9:], start=21):
+                reserve_list.append({
+                    "player_name": r_name,
+                    "number": idx,
+                    "position": "RES",
                     "rating": None,
                 })
 
@@ -1578,6 +1651,7 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             formation_name=formation,
             starting_players=player_list,
             bench_players=bench_list,
+            reserves=reserve_list,
             manager_avatar_bytes=manager_avatar_bytes,
         )
         file = discord.File(fp=buf, filename="lineup.png")
@@ -1721,8 +1795,8 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
 
         for arg in remaining:
             al = arg.lower().strip()
-            if al in ("starting", "bench"):
-                status = al
+            if al in ("starting", "bench", "reserve", "reserves"):
+                status = "reserve" if al in ("reserve", "reserves") else al
             elif al.startswith(("num:", "number:", "jersey:")):
                 v = al.split(":", 1)[1]
                 if v.isdigit():
@@ -2184,6 +2258,54 @@ class SquadCog(commands.Cog, name="Squad & Lineup"):
             return
 
         embed = success_embed("Moved to Bench", msg)
+        await ctx.send(embed=embed)
+
+    @commands.command(name="reserve", aliases=["reserves"])
+    async def prefix_reserve(self, ctx: commands.Context, *args):
+        """
+        Move a player to the Reserves.
+        Usage: bb!reserve <player> [@club_role]
+        """
+        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        clean_args = [a for a in args if not (a.startswith("<@&") and a.endswith(">"))]
+
+        if not clean_args:
+            await ctx.send(
+                embed=error_embed("Missing Player Name", "Usage: `bb!reserve <player> [@club_role]`")
+            )
+            return
+
+        player = clean_args[0]
+        if target_role:
+            target_club = await self.db.get_or_create_club_from_role(
+                ctx.guild.id, target_role, default_owner_id=ctx.author.id
+            )
+        else:
+            target_club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
+
+        if not target_club:
+            await ctx.send(embed=error_embed("Club Not Found", "You must belong to a club or mention a club role."))
+            return
+
+        has_perm, perm_msg = await check_squad_permission(
+            self.db, ctx.guild.id, ctx.author, target_club
+        )
+        if not has_perm:
+            await ctx.send(embed=error_embed("Permission Denied", perm_msg))
+            return
+
+        success, msg, _ = await self.db.edit_club_player(
+            guild_id=ctx.guild.id,
+            club_query=target_role if target_role else target_club["id"],
+            player_name=player,
+            status="reserve",
+            default_owner_id=ctx.author.id,
+        )
+        if not success:
+            await ctx.send(embed=error_embed("Action Failed", msg))
+            return
+
+        embed = success_embed("Moved to Reserves", msg)
         await ctx.send(embed=embed)
 
     @commands.command(name="swap")

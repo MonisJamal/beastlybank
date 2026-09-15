@@ -12,6 +12,7 @@ logger = logging.getLogger("BeastlyBank.Clubs")
 
 from config import CURRENCIES, COLOR_BEASTLY_GOLD, COLOR_PITCH_GREEN, COLOR_SUCCESS, COLOR_ERROR, COLOR_INFO, parse_amount
 from utils.checks import require_beastlyfc, is_banker_or_admin
+from utils.lineup_image import get_preset_choices, resolve_club_preset
 from utils.embeds import (
     club_info_embed,
     club_payroll_embed,
@@ -44,6 +45,112 @@ async def club_name_autocomplete(
         return choices[:25]
     except Exception:
         return []
+
+
+async def club_preset_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete supported club branding presets."""
+    try:
+        choices = []
+        presets = get_preset_choices()
+        cur_low = current.lower()
+        for name in presets:
+            if not current or cur_low in name.lower():
+                choices.append(app_commands.Choice(name=name, value=name))
+        return choices[:25]
+    except Exception:
+        return []
+
+
+async def execute_setbranding(
+    db: Any,
+    target: Union[discord.Interaction, commands.Context],
+    club: Optional[discord.Role] = None,
+    preset: Optional[str] = None,
+    kit_primary: Optional[str] = None,
+    kit_secondary: Optional[str] = None,
+    slogan_1: Optional[str] = None,
+    slogan_2: Optional[str] = None,
+    chant: Optional[str] = None,
+    logo_url: Optional[str] = None,
+):
+    """Core logic to update club branding or apply official club presets."""
+    guild_id = target.guild_id if isinstance(target, discord.Interaction) else target.guild.id
+    user = target.user if isinstance(target, discord.Interaction) else target.author
+
+    if club:
+        target_club = await db.get_or_create_club_from_role(
+            guild_id, club, default_owner_id=user.id
+        )
+    else:
+        target_club = await db.get_club_by_user(guild_id, user.id)
+
+    if not target_club:
+        await send_msg(
+            target,
+            embed=error_embed("Club Not Found", "You must belong to a club or mention a club role."),
+            ephemeral=True,
+        )
+        return
+
+    is_owner = target_club.get("owner_id") == user.id
+    can_admin = is_banker_or_admin(user)
+    if not is_owner and not can_admin:
+        await send_msg(
+            target,
+            embed=error_embed("Permission Denied", "Only the club owner or server administrators can edit club branding."),
+            ephemeral=True,
+        )
+        return
+
+    preset_applied_name = None
+    if preset:
+        preset_data = resolve_club_preset(preset)
+        if preset_data:
+            preset_applied_name = preset_data.get("display_name", preset.title())
+            if kit_primary is None:
+                kit_primary = preset_data.get("primary")
+            if kit_secondary is None:
+                kit_secondary = preset_data.get("secondary")
+            if slogan_1 is None:
+                slogan_1 = preset_data.get("slogan_1")
+            if slogan_2 is None:
+                slogan_2 = preset_data.get("slogan_2")
+            if chant is None:
+                chant = preset_data.get("chant")
+
+    success, msg, updated = await db.set_club_branding(
+        guild_id=guild_id,
+        club_query=target_club["id"],
+        kit_primary=kit_primary,
+        kit_secondary=kit_secondary,
+        logo_url=logo_url,
+        slogan_1=slogan_1,
+        slogan_2=slogan_2,
+        chant=chant,
+    )
+
+    if not success:
+        await send_msg(target, embed=error_embed("Branding Update Failed", msg), ephemeral=True)
+        return
+
+    preset_info = f"*(Applied preset: **{preset_applied_name}**)*\n\n" if preset_applied_name else ""
+    embed = success_embed(
+        "Club Branding Updated!",
+        (
+            f"Successfully customized matchday branding for **[{updated['tag']}] {updated['name']}**:\n\n"
+            f"{preset_info}"
+            f"• **Primary Kit Color:** `{updated.get('kit_primary') or 'Default'}`\n"
+            f"• **Secondary Kit Color:** `{updated.get('kit_secondary') or 'Default'}`\n"
+            f"• **Tactical Motto 1:** `{updated.get('slogan_1') or 'Default'}`\n"
+            f"• **Tactical Motto 2:** `{updated.get('slogan_2') or 'Default'}`\n"
+            f"• **Footer Chant:** `{updated.get('chant') or 'Default'}`\n\n"
+            f"Run `/lineupcard` or `bb!lineupimage` to preview your club's new matchday card!"
+        ),
+    )
+    await send_msg(target, embed=embed)
 
 
 class TransferConfirmationView(discord.ui.View):
@@ -1164,10 +1271,11 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
 
     @app_commands.command(
         name="setbranding",
-        description="Customize your club's matchday lineup card colors, slogans, and chant.",
+        description="Customize your club's matchday lineup card colors, slogans, chant, or apply a world club preset.",
     )
     @app_commands.describe(
         club="Club role to update (defaults to your own club)",
+        preset="Official club preset (e.g. Real Madrid, Arsenal, Galatasaray, PSG...)",
         kit_primary="Primary kit hex color (e.g. #DA291C)",
         kit_secondary="Secondary kit/accent hex color (e.g. #FFFFFF)",
         slogan_1="Tactical motto line 1 (e.g. LEAD. ADAPT. WIN.)",
@@ -1175,11 +1283,13 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
         chant="Club chant/motto at the bottom (e.g. GLORY GLORY MAN UNITED.)",
         logo_url="Direct image URL for club crest",
     )
+    @app_commands.autocomplete(preset=club_preset_autocomplete)
     @require_beastlyfc()
     async def slash_club_setbranding(
         self,
         interaction: discord.Interaction,
         club: Optional[discord.Role] = None,
+        preset: Optional[str] = None,
         kit_primary: Optional[str] = None,
         kit_secondary: Optional[str] = None,
         slogan_1: Optional[str] = None,
@@ -1188,59 +1298,18 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
         logo_url: Optional[str] = None,
     ):
         await interaction.response.defer()
-        if club:
-            target_club = await self.db.get_or_create_club_from_role(
-                interaction.guild_id, club, default_owner_id=interaction.user.id
-            )
-        else:
-            target_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
-
-        if not target_club:
-            await send_msg(
-                interaction,
-                embed=error_embed("Club Not Found", "You must belong to a club or mention a club role."),
-                ephemeral=True,
-            )
-            return
-
-        is_owner = target_club.get("owner_id") == interaction.user.id
-        can_admin = await is_banker_or_admin(interaction)
-        if not is_owner and not can_admin:
-            await send_msg(
-                interaction,
-                embed=error_embed("Permission Denied", "Only the club owner or server administrators can edit club branding."),
-                ephemeral=True,
-            )
-            return
-
-        success, msg, updated = await self.db.set_club_branding(
-            guild_id=interaction.guild_id,
-            club_query=target_club["id"],
+        await execute_setbranding(
+            self.db,
+            interaction,
+            club=club,
+            preset=preset,
             kit_primary=kit_primary,
             kit_secondary=kit_secondary,
-            logo_url=logo_url,
             slogan_1=slogan_1,
             slogan_2=slogan_2,
             chant=chant,
+            logo_url=logo_url,
         )
-
-        if not success:
-            await send_msg(interaction, embed=error_embed("Branding Update Failed", msg), ephemeral=True)
-            return
-
-        embed = success_embed(
-            "Club Branding Updated!",
-            (
-                f"Successfully customized matchday branding for **[{updated['tag']}] {updated['name']}**:\n\n"
-                f"• **Primary Kit Color:** `{updated.get('kit_primary') or 'Default'}`\n"
-                f"• **Secondary Kit Color:** `{updated.get('kit_secondary') or 'Default'}`\n"
-                f"• **Tactical Motto 1:** `{updated.get('slogan_1') or 'Default'}`\n"
-                f"• **Tactical Motto 2:** `{updated.get('slogan_2') or 'Default'}`\n"
-                f"• **Footer Chant:** `{updated.get('chant') or 'Default'}`\n\n"
-                f"Run `/lineupcard` to preview your club's new matchday card!"
-            ),
-        )
-        await send_msg(interaction, embed=embed)
 
 
 class TransferMarket(commands.Cog):
@@ -1909,8 +1978,13 @@ class ClubPrefixCommands(commands.Cog):
     async def prefix_club_setbranding(self, ctx: commands.Context, *, args: str = ""):
         """
         Customize your club's matchday branding.
-        Usage: bb!setbranding <kit_primary> | <kit_secondary> | <slogan_1> | <slogan_2> | <chant> [@role]
-        Example: bb!setbranding #DA291C | #FFFFFF | LEAD. ADAPT. WIN. | UNITED IS THE WAY. | GLORY GLORY MAN UNITED. @United
+        Usage:
+          bb!setbranding <preset_name> [@club_role]
+          bb!setbranding <kit_primary> | <kit_secondary> | <slogan_1> | <slogan_2> | <chant> [@club_role]
+        Examples:
+          bb!setbranding Real Madrid
+          bb!setbranding Arsenal @Gunners
+          bb!setbranding #DA291C | #FFFFFF | LEAD. ADAPT. WIN. | UNITED IS THE WAY. | GLORY GLORY MAN UNITED. @United
         """
         target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
         clean_content = ctx.message.content
@@ -1918,17 +1992,42 @@ class ClubPrefixCommands(commands.Cog):
             clean_content = clean_content.replace(target_role.mention, "").strip()
 
         parts = clean_content.split(" ", 1)
-        raw_args = parts[1] if len(parts) > 1 else ""
-        fields = [f.strip() for f in raw_args.split("|")]
+        raw_args = parts[1].strip() if len(parts) > 1 else ""
 
-        if not fields or not fields[0]:
+        if not raw_args:
             await send_msg(
                 ctx,
                 embed=error_embed(
                     "Missing Information",
-                    "**Usage:** `bb!setbranding <primary_color> | [secondary_color] | [motto_1] | [motto_2] | [chant] [@club_role]`\n"
-                    "**Example:** `bb!setbranding #DA291C | #FFFFFF | LEAD. ADAPT. WIN. | UNITED IS THE WAY. | GLORY GLORY MAN UNITED. @United`"
+                    "**Usage:** `bb!setbranding <preset_name> [@club_role]`\n"
+                    "**Or:** `bb!setbranding <primary_color> | [secondary_color] | [motto_1] | [motto_2] | [chant] [@club_role]`\n\n"
+                    "**Examples:**\n"
+                    "• `bb!setbranding Real Madrid`\n"
+                    "• `bb!setbranding Galatasaray @Gala`\n"
+                    "• `bb!setbranding #DA291C | #FFFFFF | LEAD. ADAPT. WIN. | UNITED IS THE WAY. | GLORY GLORY MAN UNITED. @United`"
                 )
+            )
+            return
+
+        # Check if raw_args is a preset name directly (no pipes)
+        if "|" not in raw_args:
+            preset_data = resolve_club_preset(raw_args)
+            if preset_data:
+                await execute_setbranding(
+                    self.db,
+                    ctx,
+                    club=target_role,
+                    preset=raw_args,
+                )
+                return
+
+        fields = [f.strip() for f in raw_args.split("|")]
+        if len(fields) == 1 and resolve_club_preset(fields[0]):
+            await execute_setbranding(
+                self.db,
+                ctx,
+                club=target_role,
+                preset=fields[0],
             )
             return
 
@@ -1938,42 +2037,66 @@ class ClubPrefixCommands(commands.Cog):
         slogan_2 = fields[3] if len(fields) > 3 and fields[3] else None
         chant = fields[4] if len(fields) > 4 and fields[4] else None
 
-        if target_role:
-            target_club = await self.db.get_or_create_club_from_role(
-                ctx.guild.id, target_role, default_owner_id=ctx.author.id
-            )
-        else:
-            target_club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
-
-        if not target_club:
-            await send_msg(ctx, embed=error_embed("Club Not Found", "You must belong to a club or mention a club role."))
-            return
-
-        is_owner = target_club.get("owner_id") == ctx.author.id
-        can_admin = await is_banker_or_admin(ctx)
-        if not is_owner and not can_admin:
-            await send_msg(ctx, embed=error_embed("Permission Denied", "Only club owners or server administrators can edit branding."))
-            return
-
-        success, msg, updated = await self.db.set_club_branding(
-            guild_id=ctx.guild.id,
-            club_query=target_club["id"],
+        await execute_setbranding(
+            self.db,
+            ctx,
+            club=target_role,
             kit_primary=kit_primary,
             kit_secondary=kit_secondary,
             slogan_1=slogan_1,
             slogan_2=slogan_2,
             chant=chant,
         )
-        if not success:
-            await send_msg(ctx, embed=error_embed("Branding Update Failed", msg))
-            return
 
-        embed = success_embed(
-            "Club Branding Updated!",
-            f"Successfully updated matchday branding for **[{updated['tag']}] {updated['name']}**.\n"
-            f"Use `/lineupcard` or `bb!lineupimage` to preview!"
+
+class ClubBrandingCog(commands.Cog):
+    """Top-level branding command (/setbranding) for BeastlyFC."""
+
+    def __init__(self, bot: commands.Bot):
+        self.bot = bot
+        self.db = bot.db  # type: ignore
+
+    @app_commands.command(
+        name="setbranding",
+        description="Customize matchday lineup card colors, slogans, chant, or apply a world club preset.",
+    )
+    @app_commands.describe(
+        club="Club role to update (defaults to your own club)",
+        preset="Official club preset (e.g. Real Madrid, Arsenal, Galatasaray, PSG...)",
+        kit_primary="Primary kit hex color (e.g. #DA291C)",
+        kit_secondary="Secondary kit/accent hex color (e.g. #FFFFFF)",
+        slogan_1="Tactical motto line 1 (e.g. LEAD. ADAPT. WIN.)",
+        slogan_2="Tactical motto line 2 (e.g. UNITED IS THE WAY.)",
+        chant="Club chant/motto at the bottom (e.g. GLORY GLORY MAN UNITED.)",
+        logo_url="Direct image URL for club crest",
+    )
+    @app_commands.autocomplete(preset=club_preset_autocomplete)
+    @require_beastlyfc()
+    async def slash_setbranding_top(
+        self,
+        interaction: discord.Interaction,
+        club: Optional[discord.Role] = None,
+        preset: Optional[str] = None,
+        kit_primary: Optional[str] = None,
+        kit_secondary: Optional[str] = None,
+        slogan_1: Optional[str] = None,
+        slogan_2: Optional[str] = None,
+        chant: Optional[str] = None,
+        logo_url: Optional[str] = None,
+    ):
+        await interaction.response.defer()
+        await execute_setbranding(
+            self.db,
+            interaction,
+            club=club,
+            preset=preset,
+            kit_primary=kit_primary,
+            kit_secondary=kit_secondary,
+            slogan_1=slogan_1,
+            slogan_2=slogan_2,
+            chant=chant,
+            logo_url=logo_url,
         )
-        await send_msg(ctx, embed=embed)
 
 
 async def setup(bot: commands.Bot):
@@ -1981,4 +2104,6 @@ async def setup(bot: commands.Bot):
     await bot.add_cog(ClubHistoryTop(bot))
     await bot.add_cog(ClubPrefixCommands(bot))
     await bot.add_cog(TransferMarket(bot))
+    await bot.add_cog(ClubBrandingCog(bot))
+
 

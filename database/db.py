@@ -2856,8 +2856,10 @@ class DatabaseManager:
             return False, f"Invalid position '{position}'. Valid positions are: {', '.join(VALID_POSITIONS)}.", {}
 
         st = status.lower().strip()
-        if st not in ("starting", "bench"):
-            return False, "Invalid status. Must be either 'starting' (Starting XI) or 'bench' (Substitutes).", {}
+        if st in ("reserves", "reserve"):
+            st = "reserve"
+        if st not in ("starting", "bench", "reserve"):
+            return False, "Invalid status. Must be 'starting' (Starting XI), 'bench' (Substitutes, max 9), or 'reserve' (Reserves).", {}
 
         if number is not None and (number < 0 or number > 99):
             return False, "Jersey number must be between 0 and 99.", {}
@@ -2888,7 +2890,15 @@ class DatabaseManager:
                 )
                 start_cnt = (await cur.fetchone())["cnt"]
                 if start_cnt >= 11:
-                    return False, f"Starting XI for **[{club['tag']}] {club['name']}** already has 11 players! Add as `bench` or move a player to the bench first.", {}
+                    return False, f"Starting XI for **[{club['tag']}] {club['name']}** already has 11 players! Add as `bench` or `reserve`, or move a player first.", {}
+            elif st == "bench":
+                await cur.execute(
+                    "SELECT COUNT(*) as cnt FROM club_players WHERE club_id = ? AND status = 'bench';",
+                    (club["id"],),
+                )
+                bench_cnt = (await cur.fetchone())["cnt"]
+                if bench_cnt >= 9:
+                    return False, f"Substitutes Bench for **[{club['tag']}] {club['name']}** is full (9/9 players)! Add as `reserve` or move another player to reserves first.", {}
 
             if uid:
                 await cur.execute(
@@ -2951,7 +2961,7 @@ class DatabaseManager:
             await cur.execute("SELECT * FROM club_players WHERE id = ?;", (player_id,))
             new_p = await cur.fetchone()
             num_str = f" #{number}" if number is not None else ""
-            status_desc = "Starting XI 🟢" if st == "starting" else "Bench 🟡"
+            status_desc = "Starting XI 🟢" if st == "starting" else ("Bench 🟡" if st == "bench" else "Reserves 📦")
             alt_desc = f" | Alt: {clean_alt}" if clean_alt else ""
             wage_desc = f" | Wage: {format_wage(w_val)}/MD" if w_val > 0 else ""
             return True, f"Added **{p_name}**{num_str} ({r_val} OVR / {pot_val} POT) as **{pos}**{alt_desc}{wage_desc} ({status_desc}) to **[{club['tag']}] {club['name']}**!", dict(new_p)
@@ -3029,8 +3039,10 @@ class DatabaseManager:
 
             if status is not None and status.strip():
                 st = status.lower().strip()
-                if st not in ("starting", "bench"):
-                    return False, "Invalid status. Must be either 'starting' (Starting XI) or 'bench' (Substitutes).", {}
+                if st in ("reserves", "reserve"):
+                    st = "reserve"
+                if st not in ("starting", "bench", "reserve"):
+                    return False, "Invalid status. Must be either 'starting' (Starting XI), 'bench' (Substitutes, max 9), or 'reserve' (Reserves).", {}
                 if st == "starting" and player["status"] != "starting":
                     await cur.execute(
                         "SELECT COUNT(*) as cnt FROM club_players WHERE club_id = ? AND status = 'starting';",
@@ -3038,10 +3050,19 @@ class DatabaseManager:
                     )
                     start_cnt = (await cur.fetchone())["cnt"]
                     if start_cnt >= 11:
-                        return False, f"Starting XI for **[{club['tag']}] {club['name']}** already has 11 players! Bench another player before moving this player to starting.", {}
+                        return False, f"Starting XI for **[{club['tag']}] {club['name']}** already has 11 players! Bench or reserve another player before moving this player to starting.", {}
+                elif st == "bench" and player["status"] != "bench":
+                    await cur.execute(
+                        "SELECT COUNT(*) as cnt FROM club_players WHERE club_id = ? AND status = 'bench';",
+                        (club["id"],),
+                    )
+                    bench_cnt = (await cur.fetchone())["cnt"]
+                    if bench_cnt >= 9:
+                        return False, f"Substitutes Bench for **[{club['tag']}] {club['name']}** is full (9/9 players)! Move another player to reserves or use `reserve` status.", {}
                 updates.append("status = ?")
                 params.append(st)
-                changes.append(f"Status: **{'Starting XI 🟢' if st == 'starting' else 'Bench 🟡'}**")
+                status_label = "Starting XI 🟢" if st == "starting" else ("Bench 🟡" if st == "bench" else "Reserves 📦")
+                changes.append(f"Status: **{status_label}**")
 
             if number is not None:
                 if number < 0 or number > 99:
@@ -3602,7 +3623,7 @@ class DatabaseManager:
                 SELECT * FROM club_players
                 WHERE club_id = ?
                 ORDER BY
-                    CASE status WHEN 'starting' THEN 1 ELSE 2 END,
+                    CASE status WHEN 'starting' THEN 1 WHEN 'bench' THEN 2 ELSE 3 END,
                     CASE position
                         WHEN 'GK' THEN 1
                         WHEN 'CB' THEN 2
@@ -3626,14 +3647,24 @@ class DatabaseManager:
                 (club["id"],),
             )
             rows = await cur.fetchall()
-            starting = [dict(r) for r in rows if r["status"] == "starting"]
-            bench = [dict(r) for r in rows if r["status"] == "bench"]
+            all_starting = [dict(r) for r in rows if r["status"] == "starting"]
+            all_bench = [dict(r) for r in rows if r["status"] == "bench"]
+            all_reserves = [dict(r) for r in rows if r["status"] not in ("starting", "bench")]
+
+            starting = all_starting[:11]
+            overflow_starters = all_starting[11:]
+
+            bench = all_bench[:9]
+            overflow_bench = all_bench[9:]
+
+            reserves = all_reserves + overflow_starters + overflow_bench
 
             return True, "", {
                 "club": club,
                 "formation": club.get("formation", DEFAULT_FORMATION),
                 "starting": starting,
                 "bench": bench,
+                "reserves": reserves,
             }
 
     async def get_player_info(
@@ -3772,40 +3803,59 @@ class DatabaseManager:
                 return False, "Cannot swap a player with themselves."
 
             if p1["status"] != p2["status"]:
-                starter = p1 if p1["status"] == "starting" else p2
-                bencher = p2 if p1["status"] == "starting" else p1
+                # If one is starting and one is non-starting (bench or reserve):
+                if "starting" in (p1["status"], p2["status"]):
+                    starter = p1 if p1["status"] == "starting" else p2
+                    non_starter = p2 if p1["status"] == "starting" else p1
 
-                # Target slot for bencher entering the starting lineup:
-                target_slots = get_formation_positions(club.get("formation", DEFAULT_FORMATION))
-                target_pos = starter["position"]
-                if bencher["position"] in target_slots:
-                    if starter["position"] not in target_slots or (starter["position"] == "CAM" and bencher["position"] in ("LW", "RW")):
-                        target_pos = bencher["position"]
+                    target_slots = get_formation_positions(club.get("formation", DEFAULT_FORMATION))
+                    target_pos = starter["position"]
+                    if non_starter["position"] in target_slots:
+                        if starter["position"] not in target_slots or (starter["position"] == "CAM" and non_starter["position"] in ("LW", "RW")):
+                            target_pos = non_starter["position"]
 
-                # Starter moves to bench keeping their natural position
-                bench_pos = starter["position"]
+                    out_status = non_starter["status"]
+                    out_pos = starter["position"]
 
-                await cur.execute(
-                    "UPDATE club_players SET status = 'starting', position = ? WHERE id = ?;",
-                    (target_pos, bencher["id"]),
-                )
-                await cur.execute(
-                    "UPDATE club_players SET status = 'bench', position = ? WHERE id = ?;",
-                    (bench_pos, starter["id"]),
-                )
-                await conn.commit()
-                return True, (
-                    f"🔁 **Substitution Complete!**\n"
-                    f"• **{bencher['player_name']}**: Now **Starting** (`{target_pos}`)\n"
-                    f"• **{starter['player_name']}**: Now **Bench** (`{bench_pos}`)\n"
-                    f"Club: **[{club['tag']}] {club['name']}**"
-                )
+                    await cur.execute(
+                        "UPDATE club_players SET status = 'starting', position = ? WHERE id = ?;",
+                        (target_pos, non_starter["id"]),
+                    )
+                    await cur.execute(
+                        "UPDATE club_players SET status = ?, position = ? WHERE id = ?;",
+                        (out_status, out_pos, starter["id"]),
+                    )
+                    await conn.commit()
+                    out_label = "Bench" if out_status == "bench" else "Reserves"
+                    return True, (
+                        f"🔁 **Substitution Complete!**\n"
+                        f"• **{non_starter['player_name']}**: Now **Starting** (`{target_pos}`)\n"
+                        f"• **{starter['player_name']}**: Now **{out_label}** (`{out_pos}`)\n"
+                        f"Club: **[{club['tag']}] {club['name']}**"
+                    )
+                else:
+                    # Swapping between bench and reserve
+                    await cur.execute(
+                        "UPDATE club_players SET status = ? WHERE id = ?;",
+                        (p2["status"], p1["id"]),
+                    )
+                    await cur.execute(
+                        "UPDATE club_players SET status = ? WHERE id = ?;",
+                        (p1["status"], p2["id"]),
+                    )
+                    await conn.commit()
+                    p1_label = "Bench" if p2["status"] == "bench" else "Reserves"
+                    p2_label = "Bench" if p1["status"] == "bench" else "Reserves"
+                    return True, (
+                        f"🔁 **Squad Status Swapped!**\n"
+                        f"• **{p1['player_name']}**: Now **{p1_label}**\n"
+                        f"• **{p2['player_name']}**: Now **{p2_label}**\n"
+                        f"Club: **[{club['tag']}] {club['name']}**"
+                    )
             else:
-                # Both same status (e.g. both starting)
+                # Both same status (e.g. both starting or both bench)
                 p1_pos = p2["position"]
                 p2_pos = p1["position"]
-                # If both are starting and both currently hold the same position (e.g. CAM and CAM),
-                # resolve to missing wing slots in the formation!
                 if p1["position"] == p2["position"] and p1["status"] == "starting":
                     target_slots = get_formation_positions(club.get("formation", DEFAULT_FORMATION))
                     await cur.execute(
@@ -3843,8 +3893,8 @@ class DatabaseManager:
         default_owner_id: int = 0,
     ) -> Tuple[bool, str]:
         """
-        Execute a tactical substitution: sub out player_off (from Starting XI) and bring in player_on (from Bench).
-        Smart auto-detection reverses the arguments if player_off is bench and player_on is starting.
+        Execute a tactical substitution: sub out player_off (from Starting XI) and bring in player_on (from Bench or Reserves).
+        Smart auto-detection reverses the arguments if player_off is bench/reserves and player_on is starting.
         """
         p_off_name = str(player_off_name).strip()
         p_on_name = str(player_on_name).strip()
@@ -3873,7 +3923,7 @@ class DatabaseManager:
                 return False, "Cannot substitute a player with themselves."
 
             # Smart detection if user inverted off/on
-            if p_off["status"] == "bench" and p_on["status"] == "starting":
+            if p_off["status"] in ("bench", "reserve", "reserves") and p_on["status"] == "starting":
                 p_off, p_on = p_on, p_off
 
             if p_off["status"] == "starting" and p_on["status"] == "starting":
@@ -3882,31 +3932,37 @@ class DatabaseManager:
                     f"💡 Use `/player swap` or `bb!swap {p_off['player_name']} {p_on['player_name']}` to switch their positions."
                 )
 
-            if p_off["status"] == "bench" and p_on["status"] == "bench":
+            if p_off["status"] != "starting" and p_on["status"] != "starting":
+                if p_off["status"] == "bench" and p_on["status"] == "bench":
+                    return False, (
+                        f"Both **{p_off['player_name']}** and **{p_on['player_name']}** are currently on the **Bench** (neither is in the Starting XI)!\n"
+                        f"💡 Specify a starting player to sub off."
+                    )
                 return False, (
-                    f"Both **{p_off['player_name']}** and **{p_on['player_name']}** are currently on the **Bench**!\n"
-                    f"💡 Specify a starting player to sub off, or use `bb!lineup add` to promote them."
+                    f"Neither player is in the Starting XI (**{p_off['player_name']}** is `{p_off['status'].title()}`, **{p_on['player_name']}** is `{p_on['status'].title()}`)!\n"
+                    f"💡 Specify a starting player to sub off."
                 )
 
-            # At this point: p_off is 'starting' and p_on is 'bench'
+            # At this point: p_off is 'starting' and p_on is 'bench' or 'reserve'
             starter = p_off
-            bencher = p_on
+            sub_in = p_on
 
             target_slots = get_formation_positions(club.get("formation", DEFAULT_FORMATION))
             target_pos = starter["position"]
-            if bencher["position"] in target_slots:
-                if starter["position"] not in target_slots or (starter["position"] == "CAM" and bencher["position"] in ("LW", "RW")):
-                    target_pos = bencher["position"]
+            if sub_in["position"] in target_slots:
+                if starter["position"] not in target_slots or (starter["position"] == "CAM" and sub_in["position"] in ("LW", "RW")):
+                    target_pos = sub_in["position"]
 
-            bench_pos = starter["position"]
+            out_status = sub_in["status"]
+            out_pos = starter["position"]
 
             await cur.execute(
                 "UPDATE club_players SET status = 'starting', position = ? WHERE id = ?;",
-                (target_pos, bencher["id"]),
+                (target_pos, sub_in["id"]),
             )
             await cur.execute(
-                "UPDATE club_players SET status = 'bench', position = ? WHERE id = ?;",
-                (bench_pos, starter["id"]),
+                "UPDATE club_players SET status = ?, position = ? WHERE id = ?;",
+                (out_status, out_pos, starter["id"]),
             )
             await conn.commit()
 
@@ -3914,15 +3970,16 @@ class DatabaseManager:
             await self._realign_club_starters(cur, club["id"], club.get("formation", DEFAULT_FORMATION))
             await conn.commit()
 
-            # Re-fetch updated position of bencher after realignment
-            await cur.execute("SELECT position FROM club_players WHERE id = ?;", (bencher["id"],))
+            # Re-fetch updated position of sub_in after realignment
+            await cur.execute("SELECT position FROM club_players WHERE id = ?;", (sub_in["id"],))
             row_on = await cur.fetchone()
             actual_on_pos = row_on["position"] if row_on else target_pos
 
+            out_desc = "Bench" if out_status == "bench" else "Reserves"
             return True, (
                 f"🔄 **Tactical Substitution Executed!**\n"
-                f"🔻 **[OFF]** **{starter['player_name']}** (`{bench_pos}`)\n"
-                f"🔺 **[ON]** **{bencher['player_name']}** (`{actual_on_pos}`)\n"
+                f"🔻 **[OFF]** **{starter['player_name']}** (`{out_pos}` -> {out_desc})\n"
+                f"🔺 **[ON]** **{sub_in['player_name']}** (`{actual_on_pos}` -> Starting XI)\n"
                 f"Club: **[{club['tag']}] {club['name']}**"
             )
 

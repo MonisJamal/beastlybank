@@ -629,6 +629,34 @@ CLUB_PRESETS: Dict[str, Dict[str, Any]] = {
         "chant": "BEASTLY BANK - UNSTOPPABLE DYNASTY!",
         "mascot": "crest",
     },
+    "nottingham forest": {
+        "display_name": "NOTTINGHAM FOREST",
+        "primary": "#DD0000",
+        "secondary": "#FFFFFF",
+        "dark": "#0E2340",
+        "border_kit": "#0E2340",
+        "gk_primary": "#FDB913",
+        "gk_secondary": "#000000",
+        "accent": "#DD0000",
+        "slogan_1": "CITY GROUND PRIDE.",
+        "slogan_2": "YOU'VE LOST THAT LOVIN' FEELIN'.",
+        "chant": "MULL OF KINTYRE, OH MIST ROLLING IN FROM THE TRENT!",
+        "mascot": "tree",
+    },
+    "galatasaray": {
+        "display_name": "GALATASARAY SK",
+        "primary": "#A90432",
+        "secondary": "#FDB913",
+        "dark": "#1A050B",
+        "border_kit": "#FDB913",
+        "gk_primary": "#18181B",
+        "gk_secondary": "#FDB913",
+        "accent": "#FDB913",
+        "slogan_1": "CIMBOM BOM.",
+        "slogan_2": "SARAYIN EFENDİLERİ.",
+        "chant": "RE RE RE, RA RA RA, GALATASARAY GALATASARAY CİMBOMBOM!",
+        "mascot": "lion",
+    },
 }
 
 # Club alias mappings for robust detection
@@ -655,30 +683,88 @@ CLUB_ALIASES: Dict[str, str] = {
     "city": "manchester city",
     "spurs": "tottenham",
     "thfc": "tottenham",
+    "tottenham hotspur": "tottenham",
     "bayern": "bayern munich",
+    "fc bayern": "bayern munich",
     "bvb": "borussia dortmund",
     "dortmund": "borussia dortmund",
     "leverkusen": "bayer leverkusen",
     "psg": "paris saint-germain",
     "paris": "paris saint-germain",
+    "paris sg": "paris saint-germain",
     "juve": "juventus",
     "bianconeri": "juventus",
     "milan": "ac milan",
+    "ac millan": "ac milan",
     "rossoneri": "ac milan",
     "inter": "inter milan",
+    "inter millan": "inter milan",
+    "internazionale": "inter milan",
     "nerazzurri": "inter milan",
     "atleti": "atletico madrid",
+    "atletico": "atletico madrid",
+    "athletico madrid": "atletico madrid",
     "colchoneros": "atletico madrid",
     "avfc": "aston villa",
     "villa": "aston villa",
     "nufc": "newcastle",
     "toon": "newcastle",
+    "nottingham forrest": "nottingham forest",
+    "notts forest": "nottingham forest",
+    "nffc": "nottingham forest",
+    "forest": "nottingham forest",
+    "gala": "galatasaray",
+    "cimbom": "galatasaray",
+    "gs": "galatasaray",
     "slb": "benfica",
     "sporting": "sporting cp",
     "fcp": "porto",
     "beastlybank": "beastly",
     "beastly fc": "beastly",
 }
+
+
+def get_preset_choices() -> List[str]:
+    """Returns canonical list of supported world club presets."""
+    return [
+        "Aston Villa",
+        "Arsenal",
+        "Inter Milan",
+        "AC Milan",
+        "Bayern Munich",
+        "Barcelona",
+        "Real Madrid",
+        "Manchester United",
+        "Manchester City",
+        "Atlético Madrid",
+        "Nottingham Forest",
+        "Liverpool",
+        "Juventus",
+        "Napoli",
+        "Newcastle",
+        "Borussia Dortmund",
+        "Chelsea",
+        "Tottenham Hotspur",
+        "Paris Saint-Germain (PSG)",
+        "Galatasaray",
+    ]
+
+
+def resolve_club_preset(name: str) -> Optional[Dict[str, Any]]:
+    """Resolve a club preset dictionary by canonical name, lowercase key, or alias."""
+    key = str(name).strip().lower()
+    if key in CLUB_PRESETS:
+        return dict(CLUB_PRESETS[key])
+    target = CLUB_ALIASES.get(key)
+    if target and target in CLUB_PRESETS:
+        return dict(CLUB_PRESETS[target])
+    for k, v in CLUB_PRESETS.items():
+        if k in key or key in k:
+            return dict(v)
+    for alias, target_key in CLUB_ALIASES.items():
+        if alias in key and target_key in CLUB_PRESETS:
+            return dict(CLUB_PRESETS[target_key])
+    return None
 
 
 def get_club_theme(
@@ -814,6 +900,10 @@ def draw_mascot(
         draw.polygon(pts, fill=color)
     elif mascot_type == "dragon":
         draw.polygon([(cx - 7 * s, cy + 8 * s), (cx + 7 * s, cy + 8 * s), (cx + 9 * s, cy - 2 * s), (cx, cy - 10 * s), (cx - 9 * s, cy - 2 * s)], fill=color)
+    elif mascot_type == "tree":
+        draw.rectangle([cx - 2 * s, cy + 3 * s, cx + 2 * s, cy + 11 * s], fill=color)
+        draw.polygon([(cx, cy - 11 * s), (cx + 9 * s, cy - 1 * s), (cx - 9 * s, cy - 1 * s)], fill=color)
+        draw.polygon([(cx, cy - 4 * s), (cx + 12 * s, cy + 4 * s), (cx - 12 * s, cy + 4 * s)], fill=color)
     else:
         shield = [
             (cx - 9 * s, cy - 10 * s), (cx + 9 * s, cy - 10 * s),
@@ -887,54 +977,98 @@ def draw_perspective_pitch(
     bottom_y: float,
     top_w: float,
     bottom_w: float,
-    line_color: str = "#CBD5E1",
+    line_color: str = "#FFFFFF",
 ) -> None:
-    """Render subtle 3D perspective pitch trapezoid with markings."""
+    """Render lush green grass perspective pitch with alternating mowing stripes and authentic markings."""
     tl_x = x_center - top_w / 2
     tr_x = x_center + top_w / 2
     bl_x = x_center - bottom_w / 2
     br_x = x_center + bottom_w / 2
-
-    # Outer trapezoid boundary
-    draw.polygon([(tl_x, top_y), (tr_x, top_y), (br_x, bottom_y), (bl_x, bottom_y)], outline=line_color, width=2)
 
     def get_x(norm_x: float, y: float) -> float:
         t = (y - top_y) / (bottom_y - top_y)
         w = top_w + t * (bottom_w - top_w)
         return x_center + (norm_x - 0.5) * w
 
-    # Halfway line
+    # 1. Alternating horizontal lawn mowing stripes (vibrant rich grass)
+    num_stripes = 10
+    stripe_h = (bottom_y - top_y) / num_stripes
+    col_grass_a = "#166534"  # rich dark emerald
+    col_grass_b = "#15803D"  # vibrant emerald
+    for i in range(num_stripes):
+        sy0 = top_y + i * stripe_h
+        sy1 = top_y + (i + 1) * stripe_h
+        s_col = col_grass_a if i % 2 == 0 else col_grass_b
+        stripe_poly = [
+            (get_x(0, sy0), sy0),
+            (get_x(1, sy0), sy0),
+            (get_x(1, sy1), sy1),
+            (get_x(0, sy1), sy1),
+        ]
+        draw.polygon(stripe_poly, fill=s_col)
+
+    # Outer pitch boundary border
+    draw.polygon([(tl_x, top_y), (tr_x, top_y), (br_x, bottom_y), (bl_x, bottom_y)], outline=line_color, width=3)
+
+    # 2. Halfway line
     mid_y = (top_y + bottom_y) / 2
     draw.line([(get_x(0, mid_y), mid_y), (get_x(1, mid_y), mid_y)], fill=line_color, width=2)
 
-    # Center circle (perspective ellipse)
-    c_w = (top_w + (bottom_w - top_w) * 0.5) * 0.32
+    # Center circle (perspective ellipse) & center spot
+    c_w = (top_w + (bottom_w - top_w) * 0.5) * 0.30
     c_h = (bottom_y - top_y) * 0.16
     draw.ellipse([x_center - c_w / 2, mid_y - c_h / 2, x_center + c_w / 2, mid_y + c_h / 2], outline=line_color, width=2)
-    draw.ellipse([x_center - 3, mid_y - 3, x_center + 3, mid_y + 3], fill=line_color)
+    draw.ellipse([x_center - 4, mid_y - 4, x_center + 4, mid_y + 4], fill=line_color)
 
-    # Opponent penalty area (top)
+    # 3. Opponent penalty area (top)
     box_top_y = top_y
-    box_bot_y = top_y + (bottom_y - top_y) * 0.16
+    box_bot_y = top_y + (bottom_y - top_y) * 0.18
     box_w_top = 0.54
     draw.line([(get_x(0.5 - box_w_top / 2, box_bot_y), box_bot_y), (get_x(0.5 + box_w_top / 2, box_bot_y), box_bot_y)], fill=line_color, width=2)
     draw.line([(get_x(0.5 - box_w_top / 2, box_top_y), box_top_y), (get_x(0.5 - box_w_top / 2, box_bot_y), box_bot_y)], fill=line_color, width=2)
     draw.line([(get_x(0.5 + box_w_top / 2, box_top_y), box_top_y), (get_x(0.5 + box_w_top / 2, box_bot_y), box_bot_y)], fill=line_color, width=2)
 
-    # Home penalty area (bottom)
+    # Opponent 6-yard box
+    six_top_box_y = top_y + (bottom_y - top_y) * 0.07
+    draw.line([(get_x(0.36, six_top_box_y), six_top_box_y), (get_x(0.64, six_top_box_y), six_top_box_y)], fill=line_color, width=1)
+    draw.line([(get_x(0.36, box_top_y), box_top_y), (get_x(0.36, six_top_box_y), six_top_box_y)], fill=line_color, width=1)
+    draw.line([(get_x(0.64, box_top_y), box_top_y), (get_x(0.64, six_top_box_y), six_top_box_y)], fill=line_color, width=1)
+
+    # Opponent penalty spot & arc
+    top_pen_spot_y = top_y + (bottom_y - top_y) * 0.12
+    draw.ellipse([x_center - 3, top_pen_spot_y - 3, x_center + 3, top_pen_spot_y + 3], fill=line_color)
+    arc_w_top = c_w * 0.55
+    arc_h_top = c_h * 0.65
+    draw.arc([x_center - arc_w_top / 2, box_bot_y - arc_h_top / 2, x_center + arc_w_top / 2, box_bot_y + arc_h_top / 2], start=0, end=180, fill=line_color, width=2)
+
+    # 4. Home penalty area (bottom)
     h_box_bot_y = bottom_y
-    h_box_top_y = bottom_y - (bottom_y - top_y) * 0.18
+    h_box_top_y = bottom_y - (bottom_y - top_y) * 0.20
     h_box_w = 0.58
     draw.line([(get_x(0.5 - h_box_w / 2, h_box_top_y), h_box_top_y), (get_x(0.5 + h_box_w / 2, h_box_top_y), h_box_top_y)], fill=line_color, width=2)
     draw.line([(get_x(0.5 - h_box_w / 2, h_box_top_y), h_box_top_y), (get_x(0.5 - h_box_w / 2, h_box_bot_y), h_box_bot_y)], fill=line_color, width=2)
     draw.line([(get_x(0.5 + h_box_w / 2, h_box_top_y), h_box_top_y), (get_x(0.5 + h_box_w / 2, h_box_bot_y), h_box_bot_y)], fill=line_color, width=2)
 
     # Home 6-yard box
-    six_top_y = bottom_y - (bottom_y - top_y) * 0.07
+    six_top_y = bottom_y - (bottom_y - top_y) * 0.08
     six_w = 0.28
     draw.line([(get_x(0.5 - six_w / 2, six_top_y), six_top_y), (get_x(0.5 + six_w / 2, six_top_y), six_top_y)], fill=line_color, width=1)
     draw.line([(get_x(0.5 - six_w / 2, six_top_y), six_top_y), (get_x(0.5 - six_w / 2, h_box_bot_y), h_box_bot_y)], fill=line_color, width=1)
     draw.line([(get_x(0.5 + six_w / 2, six_top_y), six_top_y), (get_x(0.5 + six_w / 2, h_box_bot_y), h_box_bot_y)], fill=line_color, width=1)
+
+    # Home penalty spot & arc (the 'D')
+    bot_pen_spot_y = bottom_y - (bottom_y - top_y) * 0.13
+    draw.ellipse([x_center - 3, bot_pen_spot_y - 3, x_center + 3, bot_pen_spot_y + 3], fill=line_color)
+    arc_w_bot = c_w * 0.65
+    arc_h_bot = c_h * 0.75
+    draw.arc([x_center - arc_w_bot / 2, h_box_top_y - arc_h_bot / 2, x_center + arc_w_bot / 2, h_box_top_y + arc_h_bot / 2], start=180, end=360, fill=line_color, width=2)
+
+    # 4 corner arcs
+    c_r = 18
+    draw.arc([tl_x - c_r, top_y - c_r, tl_x + c_r, top_y + c_r], start=0, end=90, fill=line_color, width=2)
+    draw.arc([tr_x - c_r, top_y - c_r, tr_x + c_r, top_y + c_r], start=90, end=180, fill=line_color, width=2)
+    draw.arc([br_x - c_r, bottom_y - c_r, br_x + c_r, bottom_y + c_r], start=180, end=270, fill=line_color, width=2)
+    draw.arc([bl_x - c_r, bottom_y - c_r, bl_x + c_r, bottom_y + c_r], start=270, end=360, fill=line_color, width=2)
 
 
 def compute_formation_coords(formation_name: str) -> List[Tuple[str, float, float]]:
@@ -1067,6 +1201,7 @@ def generate_lineup_image(
     formation_name: str,
     starting_players: Optional[List[Dict[str, Any]]] = None,
     bench_players: Optional[List[Dict[str, Any]]] = None,
+    reserves: Optional[List[Dict[str, Any]]] = None,
     role_color: Optional[str] = None,
     custom_branding: Optional[Dict[str, Any]] = None,
     manager_avatar_bytes: Optional[bytes] = None,
@@ -1077,60 +1212,62 @@ def generate_lineup_image(
     Returns in-memory PNG BytesIO buffer.
     """
     theme = get_club_theme(team_name, role_color=role_color, custom_branding=custom_branding)
-    width, height = 1080, 1620
+    width, height = 1080, 1560
 
-    # Clean off-white background matching classic matchday program cards
-    bg_color = "#F7F7F8"
+    # Modern broadcast stadium card background (deep rich navy/slate)
+    bg_color = "#0B111E"
     img = Image.new("RGB", (width, height), color=bg_color)
     draw = ImageDraw.Draw(img)
 
     pad = 32
     border_col = theme["accent"]
 
-    # 1. Outer Framing & Chamfered/Indented Double Border
+    # 1. Outer Framing & Broadcast Border
     draw.rectangle([pad, pad, width - pad, height - pad], outline=border_col, width=3)
-    draw.rectangle([pad + 6, pad + 6, width - pad - 6, height - pad - 6], outline="#E2E8F0", width=1)
+    draw.rectangle([pad + 6, pad + 6, width - pad - 6, height - pad - 6], outline="#1E293B", width=1)
 
     # 2. Header: Crest, Mascot, Club Name, STARTING XI, Formation Pill
     crest_cy = pad + 45
-    draw_mascot(draw, width // 2, crest_cy, theme["mascot"], theme["primary"], size=36)
+    draw_mascot(draw, width // 2, crest_cy, theme["mascot"], theme["primary"], size=38)
 
     # Flanking Mascots (Left & Right)
-    mascot_y = pad + 110
-    draw_mascot(draw, pad + 70, mascot_y, theme["mascot"], theme["primary"], size=52)
-    draw_mascot(draw, width - pad - 70, mascot_y, theme["mascot"], theme["primary"], size=52)
+    mascot_y = pad + 108
+    draw_mascot(draw, pad + 70, mascot_y, theme["mascot"], theme["primary"], size=54)
+    draw_mascot(draw, width - pad - 70, mascot_y, theme["mascot"], theme["primary"], size=54)
 
-    # Main Club Name (Bold Condensed Uppercase)
+    # Main Club Name (Crisp Bold Uppercase)
     clean_team = theme["display_name"]
     font_title_size = 46 if len(clean_team) <= 18 else (38 if len(clean_team) <= 24 else 28)
     font_title = get_font(font_title_size, bold=True)
-    draw.text((width // 2, pad + 110), clean_team, fill="#0F172A", font=font_title, anchor="mm")
+    draw.text((width // 2, pad + 108), clean_team, fill="#FFFFFF", font=font_title, anchor="mm")
 
     # STARTING XI divider line
-    sub_y = pad + 165
+    sub_y = pad + 162
     font_sub = get_font(18, bold=True)
     draw.line([(width // 2 - 260, sub_y), (width // 2 - 80, sub_y)], fill=border_col, width=2)
     draw.text((width // 2, sub_y), "STARTING XI", fill=border_col, font=font_sub, anchor="mm")
     draw.line([(width // 2 + 80, sub_y), (width // 2 + 260, sub_y)], fill=border_col, width=2)
 
-    # Formation Pill (in club color)
-    pill_y = pad + 200
+    # Formation Pill (in club primary color)
+    pill_y = pad + 198
     pill_w = 260
     pill_h = 32
     draw.rounded_rectangle(
         [width // 2 - pill_w // 2, pill_y - pill_h // 2, width // 2 + pill_w // 2, pill_y + pill_h // 2],
         radius=6,
         fill=theme["primary"],
+        outline="#FFFFFF",
+        width=1,
     )
     font_form = get_font(16, bold=True)
     draw.text((width // 2, pill_y), formation_name.upper(), fill=theme["secondary"], font=font_form, anchor="mm")
 
-    # 3. 3D Perspective Pitch
+    # 3. 3D Perspective Pitch (Lush Striped Grass)
     pitch_top_y = pad + 235
     pitch_bot_y = pad + 950
-    pitch_top_w = 760
-    pitch_bot_w = 980
-    draw_perspective_pitch(draw, width // 2, pitch_top_y, pitch_bot_y, pitch_top_w, pitch_bot_w, line_color="#CBD5E1")
+    pitch_top_w = 780
+    pitch_bot_w = 1000
+    draw_perspective_pitch(draw, width // 2, pitch_top_y, pitch_bot_y, pitch_top_w, pitch_bot_w, line_color="#FFFFFF")
 
     def get_pitch_pos(norm_x: float, norm_y: float) -> Tuple[float, float]:
         """Project normalized tactical coordinates onto the perspective pitch trapezoid."""
@@ -1140,7 +1277,7 @@ def generate_lineup_image(
         x = (width // 2) + (norm_x - 0.5) * w
         return x, y
 
-    # 4. Render Starting 11 on the Perspective Pitch
+    # 4. Render Starting 11 on the Pitch
     formation_slots = compute_formation_coords(formation_name)
     slot_assignments = assign_players_to_formation_slots(formation_slots, starting_players or [])
 
@@ -1176,86 +1313,138 @@ def generate_lineup_image(
                 border_col=kit_border,
             )
 
-            # Player Name (cleanly truncated if too long)
+            # Player Name in sleek dark pill for high contrast on green pitch
             disp_name = name if len(name) <= 14 else name[:12] + ".."
-            draw.text((px, py + 26), disp_name, fill="#0F172A", font=font_name, anchor="mm")
+            text_w = draw.textlength(disp_name, font=font_name)
+            name_box_h = 20
+            draw.rounded_rectangle(
+                [px - text_w / 2 - 8, py + 16, px + text_w / 2 + 8, py + 16 + name_box_h],
+                radius=4,
+                fill="#0A111F",
+                outline="#334155",
+                width=1,
+            )
+            draw.text((px, py + 26), disp_name, fill="#FFFFFF", font=font_name, anchor="mm")
 
-            # Dark Rating Pill
+            # Rating Badge
             if rating:
-                bx0, by0 = px - 16, py + 36
-                bx1, by1 = px + 16, py + 52
-                draw.rounded_rectangle([bx0, by0, bx1, by1], radius=3, fill="#0F172A")
-                draw.text((px, py + 44), str(rating), fill="#FFFFFF", font=font_rat, anchor="mm")
+                rat_col = "#F59E0B" if int(rating) >= 80 else "#38BDF8"
+                draw.rounded_rectangle([px - 16, py + 38, px + 16, py + 54], radius=3, fill="#0A111F", outline=rat_col, width=1)
+                draw.text((px, py + 46), str(rating), fill=rat_col, font=font_rat, anchor="mm")
         else:
             # Vacant slot with clean outline
             r = 18
-            draw.ellipse([px - r, py - 10 - r, px + r, py - 10 + r], outline="#94A3B8", width=2)
-            draw.text((px, py - 10), slot_pos, fill="#64748B", font=font_rat, anchor="mm")
-            draw.text((px, py + 20), "[VACANT]", fill="#94A3B8", font=font_vacant, anchor="mm")
+            draw.ellipse([px - r, py - 10 - r, px + r, py - 10 + r], outline="#CBD5E1", width=2)
+            draw.text((px, py - 10), slot_pos, fill="#FFFFFF", font=font_rat, anchor="mm")
+            draw.text((px, py + 20), "[VACANT]", fill="#CBD5E1", font=font_vacant, anchor="mm")
 
-    # 5. Bench / Substitutes Section
-    subs_y = pad + 1040
-    draw.line([(pad + 50, subs_y), (width // 2 - 80, subs_y)], fill=border_col, width=2)
-    draw.text((width // 2, subs_y), "BENCH / SUBS", fill=border_col, font=get_font(16, bold=True), anchor="mm")
-    draw.line([(width // 2 + 80, subs_y), (width - pad - 50, subs_y)], fill=border_col, width=2)
+    # 5. Bench / Substitutes Section (Max 9 Players)
+    subs_y = pad + 1030
+    raw_subs = bench_players if bench_players else []
+    subs_list = raw_subs[:9]
+    overflow_subs = raw_subs[9:]
+    all_reserves = (overflow_subs if overflow_subs else []) + (reserves if reserves else [])
 
-    # Use provided bench players or build minimal clean placeholder
-    subs_list = bench_players if bench_players else []
+    draw.line([(pad + 50, subs_y), (width // 2 - 140, subs_y)], fill=border_col, width=2)
+    draw.text((width // 2, subs_y), f"BENCH / SUBSTITUTES ({len(subs_list)}/9)", fill=border_col, font=get_font(16, bold=True), anchor="mm")
+    draw.line([(width // 2 + 140, subs_y), (width - pad - 50, subs_y)], fill=border_col, width=2)
+
+    def render_bench_row(players: List[Dict[str, Any]], y_center: float) -> None:
+        n = len(players)
+        if n == 0:
+            return
+        slot_w = (width - 2 * pad - 40) / 5
+        total_w = n * slot_w
+        start_x = (width - total_w) / 2 + slot_w / 2
+        for s_idx, sp in enumerate(players):
+            scx = start_x + s_idx * slot_w
+            pos_code = (sp.get("position") or "SUB").upper()
+            is_sub_gk = (pos_code == "GK")
+            sub_pri = theme["gk_primary"] if is_sub_gk else theme["primary"]
+            sub_sec = theme["gk_secondary"] if is_sub_gk else theme["secondary"]
+
+            # Sleek background card for each substitute
+            card_w = slot_w - 8
+            card_h = 42
+            draw.rounded_rectangle(
+                [scx - card_w / 2, y_center - card_h / 2, scx + card_w / 2, y_center + card_h / 2],
+                radius=6,
+                fill="#152033",
+                outline="#1E293B",
+                width=1,
+            )
+
+            # Mini jersey on the left
+            mini_x = scx - card_w / 2 + 24
+            mini_y = y_center
+            draw_jersey_kit(draw, mini_x, mini_y, sub_pri, sub_sec, number=None, scale=0.60, is_gk=is_sub_gk)
+            draw.text((mini_x, mini_y + 1), pos_code[:3], fill=sub_sec, font=get_font(9, bold=True), anchor="mm")
+
+            # Sub Name
+            s_name = (sp.get("player_name") or "Sub").upper()
+            disp_sub_name = s_name if len(s_name) <= 10 else s_name[:9] + "."
+            draw.text((scx - card_w / 2 + 48, mini_y - 7), disp_sub_name, fill="#FFFFFF", font=get_font(11, bold=True), anchor="lm")
+
+            # Sub Rating badge
+            s_rat = sp.get("rating")
+            if s_rat:
+                draw.rounded_rectangle([scx - card_w / 2 + 48, mini_y + 4, scx - card_w / 2 + 76, mini_y + 17], radius=2, fill="#0B1323", outline="#38BDF8", width=1)
+                draw.text((scx - card_w / 2 + 62, mini_y + 10), str(s_rat), fill="#38BDF8", font=get_font(9, bold=True), anchor="mm")
+
     if subs_list:
         row1 = subs_list[:5]
-        row2 = subs_list[5:10]
-
-        def render_bench_row(players: List[Dict[str, Any]], y_center: float, n_slots: int) -> None:
-            slot_w = (width - 2 * pad - 80) / n_slots
-            start_x = pad + 40 + slot_w / 2
-            for s_idx, sp in enumerate(players):
-                scx = start_x + s_idx * slot_w
-                pos_code = (sp.get("position") or "SUB").upper()
-                is_sub_gk = (pos_code == "GK")
-                sub_pri = theme["gk_primary"] if is_sub_gk else theme["primary"]
-                sub_sec = theme["gk_secondary"] if is_sub_gk else theme["secondary"]
-
-                # Mini jersey
-                mini_x = scx - 45
-                mini_y = y_center
-                draw_jersey_kit(draw, mini_x, mini_y, sub_pri, sub_sec, number=None, scale=0.62, is_gk=is_sub_gk)
-                draw.text((mini_x, mini_y + 1), pos_code[:3], fill=sub_sec, font=get_font(9, bold=True), anchor="mm")
-
-                # Sub Name
-                s_name = (sp.get("player_name") or "Sub").upper()
-                draw.text((scx - 14, mini_y - 7), s_name[:12], fill="#0F172A", font=get_font(11, bold=True), anchor="lm")
-
-                # Sub Rating box
-                s_rat = sp.get("rating")
-                if s_rat:
-                    draw.rounded_rectangle([scx - 14, mini_y + 3, scx + 14, mini_y + 17], radius=2, fill="#0F172A")
-                    draw.text((scx, mini_y + 10), str(s_rat), fill="#FFFFFF", font=get_font(9, bold=True), anchor="mm")
-
+        row2 = subs_list[5:9]
         if row1:
-            render_bench_row(row1, subs_y + 40, max(5, len(row1)))
+            render_bench_row(row1, subs_y + 36)
         if row2:
-            render_bench_row(row2, subs_y + 88, 5)
+            render_bench_row(row2, subs_y + 82)
+    else:
+        draw.text((width // 2, subs_y + 45), "*No substitutes registered*", fill="#64748B", font=get_font(13), anchor="mm")
+
+    # Reserves Banner (if any players exist beyond the 9 subs)
+    res_y = subs_y + 115
+    if all_reserves:
+        res_text_list = []
+        for r in all_reserves[:6]:
+            r_name = r.get("player_name") or "Player"
+            r_rat = f" ({r['rating']})" if r.get("rating") else ""
+            res_text_list.append(f"{r_name}{r_rat}")
+        res_joined = " • ".join(res_text_list)
+        if len(all_reserves) > 6:
+            res_joined += f" • +{len(all_reserves) - 6} more"
+        draw.rounded_rectangle(
+            [pad + 40, res_y - 12, width - pad - 40, res_y + 16],
+            radius=4,
+            fill="#0F172A",
+            outline="#334155",
+            width=1,
+        )
+        res_label = f"RESERVES ({len(all_reserves)}): {res_joined}"
+        if len(res_label) > 85:
+            res_label = res_label[:82] + "..."
+        draw.text((width // 2, res_y + 2), res_label, fill="#94A3B8", font=get_font(12, bold=True), anchor="mm")
+        mgr_y0 = res_y + 30
+    else:
+        mgr_y0 = subs_y + 118
 
     # 6. Manager & Tactical Philosophy Card
-    mgr_y0 = subs_y + 130
     mgr_y1 = mgr_y0 + 95
     mgr_x0 = pad + 40
     mgr_x1 = width - pad - 40
 
     # Outer container
-    draw.rounded_rectangle([mgr_x0, mgr_y0, mgr_x1, mgr_y1], radius=8, outline="#E2E8F0", fill="#FFFFFF", width=2)
+    draw.rounded_rectangle([mgr_x0, mgr_y0, mgr_x1, mgr_y1], radius=8, outline="#1E293B", fill="#152033", width=2)
 
     # Manager photo box (avatar or executive silhouette)
     photo_w = 90
     photo_box = [mgr_x0 + 10, mgr_y0 + 8, mgr_x0 + 10 + photo_w, mgr_y1 - 8]
-    draw.rounded_rectangle(photo_box, radius=6, fill="#F1F5F9", outline="#CBD5E1")
+    draw.rounded_rectangle(photo_box, radius=6, fill="#0B1323", outline="#334155")
 
     pasted_avatar = False
     if manager_avatar_bytes:
         try:
             av_img = Image.open(io.BytesIO(manager_avatar_bytes)).convert("RGBA")
             av_img = av_img.resize((photo_w, mgr_y1 - mgr_y0 - 16), Image.Resampling.LANCZOS)
-            # Create rounded mask
             mask = Image.new("L", av_img.size, 0)
             mask_draw = ImageDraw.Draw(mask)
             mask_draw.rounded_rectangle([0, 0, av_img.size[0], av_img.size[1]], radius=6, fill=255)
@@ -1266,45 +1455,44 @@ def generate_lineup_image(
 
     if not pasted_avatar:
         s_cx = (photo_box[0] + photo_box[2]) // 2
-        draw.ellipse([s_cx - 14, mgr_y0 + 16, s_cx + 14, mgr_y0 + 44], fill="#1E293B")
+        draw.ellipse([s_cx - 14, mgr_y0 + 16, s_cx + 14, mgr_y0 + 44], fill="#334155")
         draw.polygon([
             (photo_box[0] + 8, photo_box[3]),
             (s_cx - 16, mgr_y0 + 48),
             (s_cx + 16, mgr_y0 + 48),
             (photo_box[2] - 8, photo_box[3])
-        ], fill="#1E293B")
+        ], fill="#334155")
 
-    # Manager Details with collision-safe layout
+    # Manager Details
     info_x = mgr_x0 + photo_w + 30
-    draw.text((info_x, mgr_y0 + 26), "MANAGER", fill=border_col, font=get_font(12, bold=True), anchor="lm")
+    draw.text((info_x, mgr_y0 + 26), "HEAD COACH / MANAGER", fill=border_col, font=get_font(12, bold=True), anchor="lm")
     clean_mgr = manager_name.strip().upper()
     font_mgr = get_font(24 if len(clean_mgr) <= 15 else 20, bold=True)
-    draw.text((info_x, mgr_y0 + 55), clean_mgr, fill="#0F172A", font=font_mgr, anchor="lm")
+    draw.text((info_x, mgr_y0 + 55), clean_mgr, fill="#FFFFFF", font=font_mgr, anchor="lm")
 
-    # Safe divider positioning based on actual text length
+    # Divider
     name_w = draw.textlength(clean_mgr, font=font_mgr)
     div_x = max(info_x + int(name_w) + 30, info_x + 190)
-    draw.line([(div_x, mgr_y0 + 15), (div_x, mgr_y1 - 15)], fill="#E2E8F0", width=2)
+    draw.line([(div_x, mgr_y0 + 15), (div_x, mgr_y1 - 15)], fill="#1E293B", width=2)
 
     # Clipboard icon & Slogans
     clip_x = div_x + 35
     clip_y = (mgr_y0 + mgr_y1) // 2
     draw.rounded_rectangle([clip_x - 14, clip_y - 20, clip_x + 14, clip_y + 20], radius=3, outline=border_col, width=2)
     draw.rectangle([clip_x - 6, clip_y - 23, clip_x + 6, clip_y - 19], fill=border_col)
-    # Tactical board lines
     draw.ellipse([clip_x - 6, clip_y - 8, clip_x - 2, clip_y - 4], fill=border_col)
     draw.ellipse([clip_x + 2, clip_y + 4, clip_x + 6, clip_y + 8], fill=border_col)
     draw.line([(clip_x - 4, clip_y - 6), (clip_x + 4, clip_y + 6)], fill=border_col, width=1)
 
     slogan_x = clip_x + 30
-    draw.text((slogan_x, mgr_y0 + 32), theme["slogan_1"], fill="#334155", font=get_font(14, bold=True), anchor="lm")
+    draw.text((slogan_x, mgr_y0 + 32), theme["slogan_1"], fill="#94A3B8", font=get_font(14, bold=True), anchor="lm")
     draw.text((slogan_x, mgr_y0 + 60), theme["slogan_2"], fill=border_col, font=get_font(15, bold=True), anchor="lm")
 
-    # 7. Bottom Footer: Club Chant flanked by mascots
-    footer_y = height - pad - 20
-    draw.text((width // 2, footer_y), theme["chant"], fill="#1E293B", font=get_font(14, bold=True), anchor="mm")
-    draw_mascot(draw, width // 2 + 200, footer_y, theme["mascot"], theme["primary"], size=20)
-    draw_mascot(draw, width // 2 - 200, footer_y, theme["mascot"], theme["primary"], size=20)
+    # 7. Bottom Footer: Glowing Club Chant flanked by mascots
+    footer_y = height - pad - 22
+    draw.text((width // 2, footer_y), theme["chant"], fill="#F8FAFC", font=get_font(14, bold=True), anchor="mm")
+    draw_mascot(draw, width // 2 + 240, footer_y, theme["mascot"], theme["primary"], size=22)
+    draw_mascot(draw, width // 2 - 240, footer_y, theme["mascot"], theme["primary"], size=22)
 
     # 8. Export to BytesIO PNG buffer
     buf = io.BytesIO()

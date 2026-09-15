@@ -910,8 +910,9 @@ def club_lineup_embed(
     formation: str,
     starting_players: List[Dict[str, Any]],
     bench_players: List[Dict[str, Any]],
+    reserves: Optional[List[Dict[str, Any]]] = None,
 ) -> discord.Embed:
-    """Renders the official tactical pitch lineup and substitutes bench for a club."""
+    """Renders the official tactical pitch lineup, substitutes bench, and reserves for a club."""
     form_meta = SUPPORTED_FORMATIONS.get(formation, {"name": formation, "desc": "Custom"})
     role_str = f"<@&{club['role_id']}>" if club.get("role_id") else f"**[{club['tag']}] {club['name']}**"
 
@@ -948,7 +949,9 @@ def club_lineup_embed(
     def_str = f"{def_avg}" if def_avg is not None else "--"
     ovr_str = f"{ovr_avg}" if ovr_avg is not None else "--"
 
-    total_wage_bill = sum(int(p.get("wage") or 0) for p in (starting_players + bench_players))
+    res_list = reserves or []
+    all_squad = starting_players + bench_players + res_list
+    total_wage_bill = sum(int(p.get("wage") or 0) for p in all_squad)
     wage_bill_str = format_wage(total_wage_bill)
 
     embed = create_beastly_embed(
@@ -1019,7 +1022,7 @@ def club_lineup_embed(
         inline=False,
     )
 
-    # Substitutes Bench
+    # Substitutes Bench (Max 9)
     bench_items = []
     for p in bench_players:
         num = f"#{p['number']} " if p.get("number") is not None else ""
@@ -1031,14 +1034,33 @@ def club_lineup_embed(
 
     bench_text = "\n".join(f"• {x}" for x in bench_items) if bench_items else "*No bench players registered*"
     embed.add_field(
-        name=f"💺 Substitutes Bench ({len(bench_players)})",
+        name=f"💺 Substitutes Bench ({len(bench_players)}/9)",
         value=bench_text,
         inline=False,
     )
 
+    # Reserves
+    if res_list:
+        reserve_items = []
+        for p in res_list:
+            num = f"#{p['number']} " if p.get("number") is not None else ""
+            name = p.get("player_name") or (f"<@{p['user_id']}>" if p.get("user_id") else "Player")
+            r_tag = f" `[{p['rating']}]`" if p.get("rating") else ""
+            w_val = int(p.get("wage") or 0)
+            w_tag = f" • 🪙 `{format_wage(w_val)}`" if w_val > 0 else ""
+            reserve_items.append(f"`{num}{p.get('position', '??')}` **{name}**{r_tag}{w_tag}")
+        res_text = "\n".join(f"• {x}" for x in reserve_items)
+        if len(res_text) > 1024:
+            res_text = res_text[:1020] + "..."
+        embed.add_field(
+            name=f"📦 Reserves ({len(res_list)})",
+            value=res_text,
+            inline=False,
+        )
+
     footer_ovr = f" • Team OVR: {ovr_str}" if ovr_avg is not None else ""
     embed.set_footer(
-        text=f"Total Squad: {len(starting_players) + len(bench_players)} players • Starters: {len(starting_players)}/11 • Wage Bill: {wage_bill_str}/MD{footer_ovr}"
+        text=f"Total Squad: {len(all_squad)} players • Starters: {len(starting_players)}/11 • Bench: {len(bench_players)}/9 • Wage Bill: {wage_bill_str}/MD{footer_ovr}"
     )
     return embed
 
@@ -1048,6 +1070,7 @@ def club_ratings_embed(
     formation: str,
     starting_players: List[Dict[str, Any]],
     bench_players: List[Dict[str, Any]],
+    reserves: Optional[List[Dict[str, Any]]] = None,
 ) -> discord.Embed:
     """Renders a comprehensive TV-broadcast style Team Ratings & Department Strength card."""
     role_str = f"<@&{club['role_id']}>" if club.get("role_id") else f"**[{club['tag']}] {club['name']}**"
@@ -1072,7 +1095,8 @@ def club_ratings_embed(
     def_players = def_outfield + gk_players
     all_starters = [p for p in starting_players if p.get("rating") is not None]
     all_bench = [p for p in bench_players if p.get("rating") is not None]
-    all_squad = all_starters + all_bench
+    all_reserves = [p for p in (reserves or []) if p.get("rating") is not None]
+    all_squad = all_starters + all_bench + all_reserves
 
     att_avg = round(sum(int(p["rating"]) for p in att_players) / len(att_players)) if att_players else None
     mid_avg = round(sum(int(p["rating"]) for p in mid_players) / len(mid_players)) if mid_players else None

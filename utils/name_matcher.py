@@ -13,6 +13,11 @@ from typing import Dict, List, Optional, Sequence, Tuple
 # Known player nicknames & mononyms mapped to canonical forms
 KNOWN_NICKNAMES: Dict[str, str] = {
     "cr7": "Cristiano Ronaldo",
+    "goat": "Cristiano Ronaldo",
+    "the goat": "Cristiano Ronaldo",
+    "siu": "Cristiano Ronaldo",
+    "siuu": "Cristiano Ronaldo",
+    "siuuu": "Cristiano Ronaldo",
     "r9": "Ronaldo Nazario",
     "el fenomeno": "Ronaldo Nazario",
     "kdb": "Kevin De Bruyne",

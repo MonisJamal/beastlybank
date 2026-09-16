@@ -392,3 +392,66 @@ async def test_sep19_2025_fermin_and_official_ratings(db: DatabaseManager):
     assert info["player"]["wage"] == 80000
 
 
+@pytest.mark.asyncio
+async def test_sofifa_goat_alias_cr7(db: DatabaseManager):
+    """Verify typing 'goat' or 'GOAT' in SoFIFA resolves directly to Cristiano Ronaldo."""
+    from utils.name_matcher import KNOWN_NICKNAMES
+
+    assert KNOWN_NICKNAMES.get("goat") == "Cristiano Ronaldo"
+    assert KNOWN_NICKNAMES.get("cr7") == "Cristiano Ronaldo"
+
+    cr7_sample = {
+        "id": 20801,
+        "name": "Cristiano Ronaldo",
+        "full_name": "C. Ronaldo dos Santos Aveiro",
+        "primary_pos": "ST",
+        "positions": "ST",
+        "overall_rating": 85,
+        "potential": 85,
+        "best_pos": "ST",
+        "age": 40,
+        "team": "Al Nassr",
+        "team_logo": "https://cdn.sofifa.net/meta/team/2506/120.png",
+        "nationality": "Portugal",
+        "flag_url": "https://cdn.sofifa.net/flags/pt.png",
+        "value": "€0",
+        "wage": "€58K",
+        "avatar": "https://cdn.sofifa.net/players/020/801/26_120.png",
+        "url": "https://sofifa.com/player/20801/c-ronaldo-dos-santos-aveiro/260004/",
+        "search_text": "cristiano ronaldo c. ronaldo dos santos aveiro goat cr7",
+    }
+    await db.cache_sofifa_players([cr7_sample])
+
+    interaction = MagicMock(spec=discord.Interaction)
+    client_mock = MagicMock()
+    client_mock.db = db
+    interaction.client = client_mock
+
+    for query in ("goat", "GOAT", "Goat", "CR7", "siu"):
+        choices = await sofifa_autocomplete(interaction, query)
+        assert len(choices) >= 1
+        assert choices[0].value == "20801"
+        assert "Cristiano Ronaldo" in choices[0].name
+        assert "🐐" in choices[0].name
+
+    cog = SoFIFACog(client_mock)
+    ctx = MagicMock()
+    ctx.guild = MagicMock()
+    ctx.send = AsyncMock()
+
+    await cog._lookup_and_send(ctx, "goat")
+    ctx.send.assert_called_once()
+    embed = ctx.send.call_args[1]["embed"]
+    assert "Cristiano Ronaldo" in embed.title
+    assert "🐐" in embed.title
+    assert "SIUUU" in embed.footer.text
+
+    ctx.send.reset_mock()
+    await cog._lookup_and_send(ctx, "GOAT")
+    ctx.send.assert_called_once()
+    embed2 = ctx.send.call_args[1]["embed"]
+    assert "Cristiano Ronaldo" in embed2.title
+    assert "🐐" in embed2.title
+
+
+

@@ -241,8 +241,12 @@ def sofifa_player_embed(player: Dict[str, Any]) -> discord.Embed:
     else:
         color = 0xB45309  # Bronze
 
+    is_cr7 = player.get("id") == 20801 or "cristiano ronaldo" in full_name.lower() or "c. ronaldo" in full_name.lower()
+    goat_tag = " 🐐" if is_cr7 else ""
+    display_title_name = "Cristiano Ronaldo" if is_cr7 else full_name
+
     embed = discord.Embed(
-        title=f"⭐ [{ovr}] {full_name}",
+        title=f"⭐ [{ovr}] {display_title_name}{goat_tag}",
         url=sofifa_url,
         description=f"🏛️ **{team}**  •  🌍 **{nat}**",
         color=color,
@@ -283,8 +287,11 @@ def sofifa_player_embed(player: Dict[str, Any]) -> discord.Embed:
         inline=True,
     )
 
+    footer_text = "EA Sports FC 26 Database • Sep 19, 2025 Update (r=260004)"
+    if is_cr7:
+        footer_text += " • SIUUU! 🐐"
     embed.set_footer(
-        text="EA Sports FC 26 Database • Sep 19, 2025 Update (r=260004)",
+        text=footer_text,
         icon_url="https://cdn.sofifa.net/favicon.ico",
     )
     return embed

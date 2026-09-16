@@ -43,28 +43,35 @@ async def sofifa_autocomplete(
     Searches local SQLite cache (<5ms response time).
     If few matches are found and user typed >=3 characters, performs quick background fetch.
     """
+    from utils.name_matcher import normalize_text as nm_normalize_text
     clean = current.strip()
+    norm_q = nm_normalize_text(clean) if clean else ""
+    is_goat_alias = norm_q in ("goat", "the goat", "cr7", "siu", "siuu", "siuuu") or norm_q.startswith("goat")
+    search_term = "Cristiano Ronaldo" if is_goat_alias else clean
+
     db = interaction.client.db  # type: ignore
 
     # Fast cache search
-    results = await db.search_cached_sofifa_players(clean, limit=25)
+    results = await db.search_cached_sofifa_players(search_term, limit=25)
 
     # If no results found in cache and user typed >= 3 chars, attempt live fetch with strict 1.2s timeout
-    if not results and len(clean) >= 3:
+    if not results and len(search_term) >= 3:
         try:
             fetched = await asyncio.wait_for(
-                fetch_sofifa_players(keyword=clean, timeout=2),
+                fetch_sofifa_players(keyword=search_term, timeout=2),
                 timeout=1.2,
             )
             if fetched:
                 await db.cache_sofifa_players(fetched)
-                results = await db.search_cached_sofifa_players(clean, limit=25)
+                results = await db.search_cached_sofifa_players(search_term, limit=25)
         except Exception:
             pass
 
     choices: List[app_commands.Choice[str]] = []
     for p in results:
         label = f"{p['name']} ({p['overall_rating']} {p['primary_pos']}) • {p['team']}"
+        if is_goat_alias and (p.get("id") == 20801 or "ronaldo" in p.get("name", "").lower()):
+            label = f"🐐 {p['name']} ({p['overall_rating']} {p['primary_pos']}) • {p['team']} [GOAT]"
         if len(label) > 100:
             label = label[:97] + "..."
         # Value passed to command handler
@@ -138,13 +145,26 @@ class SoFIFACog(commands.Cog, name="SoFIFA FC 26"):
         if is_interaction and not target.response.is_done():
             await target.response.defer()
 
+        from utils.name_matcher import normalize_text as nm_normalize_text
+        norm_q = nm_normalize_text(clean)
+        is_goat = norm_q in ("goat", "the goat", "cr7", "siu", "siuu", "siuuu") or norm_q.startswith("goat")
+
         player_data: Optional[Dict[str, Any]] = None
 
+        # GOAT easter egg: shortcut directly to Cristiano Ronaldo (CR7, id 20801)
+        if is_goat:
+            player_data = await self.db.get_cached_sofifa_player("20801")
+            if not player_data:
+                player_data = await self.db.get_cached_sofifa_player("Cristiano Ronaldo")
+            if not player_data:
+                clean = "Cristiano Ronaldo"
+
         # Check by numeric ID first (sent by autocomplete selection)
-        if clean.isdigit():
-            player_data = await self.db.get_cached_sofifa_player(clean)
-        elif ":" in clean and clean.split(":")[0].isdigit():
-            player_data = await self.db.get_cached_sofifa_player(clean.split(":")[0])
+        if not player_data:
+            if clean.isdigit():
+                player_data = await self.db.get_cached_sofifa_player(clean)
+            elif ":" in clean and clean.split(":")[0].isdigit():
+                player_data = await self.db.get_cached_sofifa_player(clean.split(":")[0])
 
         # If not found by ID, search cache by name
         if not player_data:

@@ -4858,21 +4858,40 @@ class DatabaseManager:
         guild_id: int,
         tournament_data: Dict[str, Any],
         url: Optional[str] = None,
-        season_number: int = 1,
+        season_number: int = 2,
         competition_type: str = "league",
     ) -> Dict[str, Any]:
         """Insert or update parsed tournament, fixtures, standings, and player stats."""
         conn = await self.connect()
         async with conn.cursor() as cur:
-            name = tournament_data.get("tournament_name", "Tournament")
+            name = tournament_data.get("tournament_name") or f"BEASTLY S{season_number} {competition_type.upper()}"
             tot_md = tournament_data.get("highest_matchday", 38)
             champion = tournament_data.get("champion")
             runner_up = tournament_data.get("runner_up")
 
-            # Check if active tournament exists for this guild and competition_type
+            # Determine current_matchday dynamically: first matchday with unplayed games
+            fixtures_by_md = tournament_data.get("fixtures_by_matchday", {})
+            computed_current_md = 1
+            for md in sorted(fixtures_by_md.keys()):
+                m_list = fixtures_by_md[md]
+                if any(not m.get("is_finished") for m in m_list):
+                    computed_current_md = md
+                    break
+            else:
+                if fixtures_by_md:
+                    computed_current_md = max(fixtures_by_md.keys())
+
+            # Check if tournament with this EXACT season_number exists for this guild and competition_type
             await cur.execute(
-                "SELECT * FROM tournaments WHERE guild_id = ? AND competition_type = ? AND status = 'active';",
-                (guild_id, competition_type),
+                """
+                SELECT * FROM tournaments
+                WHERE (guild_id = ? OR (guild_id = 0 AND ? = 0))
+                  AND competition_type = ?
+                  AND season_number = ?
+                ORDER BY (CASE WHEN guild_id = ? THEN 1 ELSE 2 END) ASC, id DESC
+                LIMIT 1;
+                """,
+                (guild_id, guild_id, competition_type, season_number, guild_id),
             )
             existing = await cur.fetchone()
             if existing:
@@ -4881,11 +4900,12 @@ class DatabaseManager:
                     """
                     UPDATE tournaments
                     SET name = ?, season_number = ?, url = COALESCE(?, url),
-                        total_matchdays = ?, champion = ?, runner_up = ?,
+                        current_matchday = ?, total_matchdays = ?,
+                        champion = ?, runner_up = ?, status = 'active',
                         updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?;
                     """,
-                    (name, season_number, url, tot_md, champion, runner_up, tournament_id),
+                    (name, season_number, url, computed_current_md, tot_md, champion, runner_up, tournament_id),
                 )
             else:
                 await cur.execute(
@@ -4893,39 +4913,72 @@ class DatabaseManager:
                     INSERT INTO tournaments (
                         guild_id, name, season_number, competition_type,
                         url, current_matchday, total_matchdays, status, champion, runner_up
-                    ) VALUES (?, ?, ?, ?, ?, 1, ?, 'active', ?, ?);
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?);
                     """,
-                    (guild_id, name, season_number, competition_type, url, tot_md, champion, runner_up),
+                    (guild_id, name, season_number, competition_type, url, computed_current_md, tot_md, champion, runner_up),
                 )
                 tournament_id = cur.lastrowid
 
-            # Save Fixtures
-            fixtures_by_md = tournament_data.get("fixtures_by_matchday", {})
+            # Mark any previous seasons for this competition as completed so the newest season is active
+            await cur.execute(
+                """
+                UPDATE tournaments
+                SET status = 'completed', updated_at = CURRENT_TIMESTAMP
+                WHERE (guild_id = ? OR guild_id = 0)
+                  AND competition_type = ?
+                  AND season_number < ?
+                  AND status = 'active';
+                """,
+                (guild_id, competition_type, season_number),
+            )
+
+            # Save Fixtures and track valid IDs for this tournament
+            incoming_fixture_ids = set()
             for md, match_list in fixtures_by_md.items():
                 for m in match_list:
+                    h_id = str(m["home_team_id"])
+                    a_id = str(m["away_team_id"])
                     await cur.execute(
                         """
                         SELECT id FROM tournament_fixtures
                         WHERE tournament_id = ? AND matchday = ? AND home_team_id = ? AND away_team_id = ?;
                         """,
-                        (tournament_id, md, m["home_team_id"], m["away_team_id"]),
+                        (tournament_id, md, h_id, a_id),
                     )
                     fix_row = await cur.fetchone()
+                    h_name = m.get("home_team_name", "Home Team")
+                    a_name = m.get("away_team_name", "Away Team")
+                    h_short = m.get("home_team_short", "")
+                    a_short = m.get("away_team_short", "")
+                    gh = m.get("goals_home", 0)
+                    ga = m.get("goals_away", 0)
+                    pen_h = m.get("penalties_home", 0)
+                    pen_a = m.get("penalties_away", 0)
+                    is_fin = 1 if m.get("is_finished") else 0
+                    rep = 1 if m.get("replay_exists") else 0
+
                     if fix_row:
+                        f_id = fix_row["id"]
                         await cur.execute(
                             """
                             UPDATE tournament_fixtures
                             SET goals_home = ?, goals_away = ?, penalties_home = ?, penalties_away = ?,
                                 is_finished = ?, replay_exists = ?, match_uid = COALESCE(?, match_uid),
-                                stage_name = COALESCE(?, stage_name)
+                                stage_name = COALESCE(?, stage_name),
+                                home_team_name = ?, away_team_name = ?,
+                                home_team_short = ?, away_team_short = ?
                             WHERE id = ?;
                             """,
                             (
-                                m["goals_home"], m["goals_away"], m["penalties_home"], m["penalties_away"],
-                                1 if m["is_finished"] else 0, 1 if m["replay_exists"] else 0,
-                                m.get("match_uid"), m.get("stage_name"), fix_row["id"],
+                                gh, ga, pen_h, pen_a,
+                                is_fin, rep,
+                                m.get("match_uid"), m.get("stage_name"),
+                                h_name, a_name,
+                                h_short, a_short,
+                                f_id,
                             ),
                         )
+                        incoming_fixture_ids.add(f_id)
                     else:
                         await cur.execute(
                             """
@@ -4938,19 +4991,31 @@ class DatabaseManager:
                             """,
                             (
                                 tournament_id, guild_id, md, m.get("stage_name"), m.get("match_uid"),
-                                m["home_team_id"], m["away_team_id"], m["home_team_name"], m["away_team_name"],
-                                m["home_team_short"], m["away_team_short"], m["goals_home"], m["goals_away"],
-                                m["penalties_home"], m["penalties_away"], 1 if m["is_finished"] else 0,
-                                1 if m["replay_exists"] else 0,
+                                h_id, a_id, h_name, a_name,
+                                h_short, a_short, gh, ga,
+                                pen_h, pen_a, is_fin,
+                                rep,
                             ),
                         )
+                        incoming_fixture_ids.add(cur.lastrowid)
+
+            # Prune stale fixtures for this tournament_id that are not part of the incoming data
+            if incoming_fixture_ids:
+                placeholders = ",".join("?" for _ in incoming_fixture_ids)
+                await cur.execute(
+                    f"DELETE FROM tournament_fixtures WHERE tournament_id = ? AND id NOT IN ({placeholders});",
+                    [tournament_id, *incoming_fixture_ids],
+                )
 
             # Save Standings
             standings = tournament_data.get("standings", [])
+            valid_team_ids = set()
             for s in standings:
+                t_id = str(s["team_id"])
+                valid_team_ids.add(t_id)
                 await cur.execute(
                     "SELECT id FROM tournament_standings WHERE tournament_id = ? AND team_id = ?;",
-                    (tournament_id, s["team_id"]),
+                    (tournament_id, t_id),
                 )
                 st_row = await cur.fetchone()
                 if st_row:
@@ -4959,13 +5024,13 @@ class DatabaseManager:
                         UPDATE tournament_standings
                         SET rank = ?, played = ?, won = ?, drawn = ?, lost = ?,
                             goals_for = ?, goals_against = ?, goal_difference = ?,
-                            clean_sheets = ?, points = ?, updated_at = CURRENT_TIMESTAMP
+                            clean_sheets = ?, points = ?, name = ?, short = ?, updated_at = CURRENT_TIMESTAMP
                         WHERE id = ?;
                         """,
                         (
                             s["rank"], s["played"], s["won"], s["drawn"], s["lost"],
                             s["goals_for"], s["goals_against"], s["goal_difference"],
-                            s["clean_sheets"], s["points"], st_row["id"],
+                            s["clean_sheets"], s["points"], s["name"], s.get("short", ""), st_row["id"],
                         ),
                     )
                 else:
@@ -4978,11 +5043,18 @@ class DatabaseManager:
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
                         """,
                         (
-                            tournament_id, s["team_id"], s["name"], s["short"], s["rank"],
+                            tournament_id, t_id, s["name"], s.get("short", ""), s["rank"],
                             s["played"], s["won"], s["drawn"], s["lost"], s["goals_for"],
                             s["goals_against"], s["goal_difference"], s["clean_sheets"], s["points"],
                         ),
                     )
+
+            if valid_team_ids:
+                st_placeholders = ",".join("?" for _ in valid_team_ids)
+                await cur.execute(
+                    f"DELETE FROM tournament_standings WHERE tournament_id = ? AND team_id NOT IN ({st_placeholders});",
+                    [tournament_id, *valid_team_ids],
+                )
 
             # Save Player Stats
             all_players = tournament_data.get("player_stats", {}).get("all_players", [])
@@ -5039,12 +5111,168 @@ class DatabaseManager:
             t_row = await cur.fetchone()
             return dict(t_row)
 
-    async def ensure_tournament_seeded(self, guild_id: int) -> Optional[Dict[str, Any]]:
-        """Ensure Season 1 tournaments (League and UCL) exist for this guild; if not, seed immediately from data/."""
+    async def repair_and_activate_s2(self, guild_id: int):
+        """
+        Self-healing routine to cleanly separate Season 1 and Season 2:
+        1. Ensures Season 1 (League & UCL) fixtures are separated from Season 2.
+        2. Detects any non-S1 fixtures co-mingled in Season 1 and migrates them to Season 2.
+        3. Ensures Season 2 League exists and is marked 'active'.
+        4. Ensures Season 1 League and UCL are marked 'completed' (archived).
+        """
         from pathlib import Path
         from utils.match_parser import parse_matchsimulator_html
 
-        # 1. League Season 1
+        s1_triples = set()
+        s1_uids = set()
+        s1_file = Path("data/beastly_s1_cup.html")
+        if s1_file.exists():
+            try:
+                with open(s1_file, "r", encoding="utf-8") as f:
+                    parsed_s1 = parse_matchsimulator_html(f.read())
+                for md, m_list in parsed_s1.get("fixtures_by_matchday", {}).items():
+                    for m in m_list:
+                        s1_triples.add((int(md), str(m["home_team_id"]), str(m["away_team_id"])))
+                        if m.get("match_uid"):
+                            s1_uids.add(m["match_uid"])
+            except Exception as e:
+                logger.warning("Could not parse s1_file for repair: %s", e)
+
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            # Check S1 tournaments
+            await cur.execute(
+                "SELECT * FROM tournaments WHERE (guild_id = ? OR guild_id = 0) AND competition_type = 'league' AND (season_number = 1 OR name LIKE '%S1%');",
+                (guild_id,),
+            )
+            s1_tournaments = await cur.fetchall()
+
+            for s1_t in s1_tournaments:
+                s1_id = s1_t["id"]
+                t_gid = s1_t["guild_id"]
+
+                # Check if Season 2 tournament already exists for this guild
+                await cur.execute(
+                    "SELECT * FROM tournaments WHERE guild_id = ? AND competition_type = 'league' AND season_number = 2;",
+                    (t_gid,),
+                )
+                s2_t = await cur.fetchone()
+                s2_id = s2_t["id"] if s2_t else None
+
+                if s1_triples:
+                    # Find all fixtures in s1_id that do not belong to S1
+                    await cur.execute(
+                        "SELECT id, matchday, home_team_id, away_team_id, match_uid FROM tournament_fixtures WHERE tournament_id = ?;",
+                        (s1_id,),
+                    )
+                    all_fixes = await cur.fetchall()
+                    non_s1_fixture_ids = []
+                    for fx in all_fixes:
+                        triple = (int(fx["matchday"]), str(fx["home_team_id"]), str(fx["away_team_id"]))
+                        uid = fx["match_uid"]
+                        if uid and uid in s1_uids:
+                            continue
+                        if triple in s1_triples:
+                            continue
+                        non_s1_fixture_ids.append(fx["id"])
+
+                    if non_s1_fixture_ids:
+                        logger.info("Found %d Season 2 fixtures co-mingled in Tournament ID %d. Migrating to Season 2.", len(non_s1_fixture_ids), s1_id)
+                        if not s2_id:
+                            await cur.execute(
+                                """
+                                INSERT INTO tournaments (
+                                    guild_id, name, season_number, competition_type,
+                                    current_matchday, total_matchdays, status
+                                ) VALUES (?, 'BEASTLY S2 LEAGUE', 2, 'league', 1, 38, 'active');
+                                """,
+                                (t_gid,),
+                            )
+                            s2_id = cur.lastrowid
+
+                        # Move co-mingled fixtures to Season 2 tournament
+                        placeholders = ",".join("?" for _ in non_s1_fixture_ids)
+                        await cur.execute(
+                            f"UPDATE tournament_fixtures SET tournament_id = ? WHERE id IN ({placeholders});",
+                            [s2_id, *non_s1_fixture_ids],
+                        )
+
+                # Ensure Season 1 is cleanly titled and marked completed
+                await cur.execute(
+                    """
+                    UPDATE tournaments
+                    SET name = 'BEASTLY S1 LEAGUE', season_number = 1,
+                        champion = COALESCE(champion, 'Manchester City'),
+                        runner_up = COALESCE(runner_up, 'Arsenal'),
+                        status = 'completed', updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?;
+                    """,
+                    (s1_id,),
+                )
+
+            # Ensure Season 2 League tournament exists for guild_id and 0
+            for gid in {guild_id, 0}:
+                await cur.execute(
+                    "SELECT * FROM tournaments WHERE guild_id = ? AND competition_type = 'league' AND season_number = 2;",
+                    (gid,),
+                )
+                row_s2 = await cur.fetchone()
+                if not row_s2:
+                    await cur.execute(
+                        """
+                        INSERT INTO tournaments (
+                            guild_id, name, season_number, competition_type,
+                            current_matchday, total_matchdays, status
+                        ) VALUES (?, 'BEASTLY S2 LEAGUE', 2, 'league', 1, 38, 'active');
+                        """,
+                        (gid,),
+                    )
+                    row_s2_id = cur.lastrowid
+                else:
+                    row_s2_id = row_s2["id"]
+                    await cur.execute(
+                        "UPDATE tournaments SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
+                        (row_s2_id,),
+                    )
+
+                # Calculate accurate current_matchday for Season 2 based on unfinished fixtures
+                await cur.execute(
+                    "SELECT MIN(matchday) FROM tournament_fixtures WHERE tournament_id = ? AND is_finished = 0;",
+                    (row_s2_id,),
+                )
+                next_md_row = await cur.fetchone()
+                cur_md = next_md_row[0] if (next_md_row and next_md_row[0] is not None) else 1
+                await cur.execute(
+                    """
+                    UPDATE tournaments
+                    SET current_matchday = ?,
+                        total_matchdays = COALESCE((SELECT MAX(matchday) FROM tournament_fixtures WHERE tournament_id = ?), 38)
+                    WHERE id = ?;
+                    """,
+                    (cur_md, row_s2_id, row_s2_id),
+                )
+
+            # Ensure Season 1 UCL tournaments are also marked completed
+            await cur.execute(
+                """
+                UPDATE tournaments
+                SET status = 'completed', updated_at = CURRENT_TIMESTAMP
+                WHERE competition_type = 'ucl' AND season_number = 1 AND (champion IS NOT NULL OR status = 'active');
+                """
+            )
+            await conn.commit()
+
+    async def ensure_tournament_seeded(self, guild_id: int) -> Optional[Dict[str, Any]]:
+        """Ensure Season 1 & 2 tournaments exist, fixtures are clean, and S2 is active."""
+        from pathlib import Path
+        from utils.match_parser import parse_matchsimulator_html
+
+        # 1. First run self-healing routine to cleanly separate S1 and S2
+        try:
+            await self.repair_and_activate_s2(guild_id)
+        except Exception as e:
+            logger.warning("repair_and_activate_s2 notice: %s", e)
+
+        # 2. Ensure Season 1 League seeded
         existing_league = await self.get_tournament_by_season(guild_id, "league", 1)
         if not existing_league:
             s1_file = Path("data/beastly_s1_cup.html")
@@ -5063,14 +5291,15 @@ class DatabaseManager:
                     hist = await self.get_season_history(guild_id, season_number=1, competition_name="league")
                     if not hist:
                         await self.conclude_tournament(saved["id"])
-                        conn = await self.connect()
-                        async with conn.cursor() as cur:
-                            await cur.execute("UPDATE tournaments SET status = 'active' WHERE id = ?;", (saved["id"],))
-                            await conn.commit()
+                    # Keep Season 1 completed since Season 2 is active
+                    conn = await self.connect()
+                    async with conn.cursor() as cur:
+                        await cur.execute("UPDATE tournaments SET status = 'completed' WHERE id = ?;", (saved["id"],))
+                        await conn.commit()
                 except Exception as e:
                     logger.warning("ensure_tournament_seeded league error: %s", e)
 
-        # 2. UCL Season 1
+        # 3. Ensure Season 1 UCL seeded
         existing_ucl = await self.get_tournament_by_season(guild_id, "ucl", 1)
         if not existing_ucl:
             ucl_file = Path("data/beastly_ucl_s1.html")
@@ -5089,29 +5318,43 @@ class DatabaseManager:
                     hist_ucl = await self.get_season_history(guild_id, season_number=1, competition_name="ucl")
                     if not hist_ucl:
                         await self.conclude_tournament(saved_ucl["id"])
-                        conn = await self.connect()
-                        async with conn.cursor() as cur:
-                            await cur.execute("UPDATE tournaments SET status = 'active' WHERE id = ?;", (saved_ucl["id"],))
-                            await conn.commit()
+                    conn = await self.connect()
+                    async with conn.cursor() as cur:
+                        await cur.execute("UPDATE tournaments SET status = 'completed' WHERE id = ?;", (saved_ucl["id"],))
+                        await conn.commit()
                 except Exception as e:
                     logger.warning("ensure_tournament_seeded ucl error: %s", e)
 
-        return await self.get_tournament_by_season(guild_id, "league", 1)
+        # 4. Return the active tournament (Season 2)
+        return await self.get_active_tournament(guild_id, "league")
 
     async def get_active_tournament(self, guild_id: int, competition_type: str = "league") -> Optional[Dict[str, Any]]:
-        """Fetch the currently active tournament for a given competition type in a guild."""
+        """Fetch the currently active tournament for a given competition type in a guild, prioritizing S2 and exact guild match."""
         conn = await self.connect()
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT * FROM tournaments WHERE (guild_id = ? OR guild_id = 0) AND competition_type = ? AND status = 'active' ORDER BY id DESC LIMIT 1;",
-                (guild_id, competition_type),
+                """
+                SELECT * FROM tournaments
+                WHERE (guild_id = ? OR guild_id = 0)
+                  AND competition_type = ?
+                  AND status = 'active'
+                ORDER BY (CASE WHEN guild_id = ? THEN 1 ELSE 2 END) ASC, season_number DESC, id DESC
+                LIMIT 1;
+                """,
+                (guild_id, competition_type, guild_id),
             )
             row = await cur.fetchone()
             if not row:
                 # Fallback: if no active tournament, get latest completed tournament so standings/stats are accessible
                 await cur.execute(
-                    "SELECT * FROM tournaments WHERE (guild_id = ? OR guild_id = 0) AND competition_type = ? ORDER BY id DESC LIMIT 1;",
-                    (guild_id, competition_type),
+                    """
+                    SELECT * FROM tournaments
+                    WHERE (guild_id = ? OR guild_id = 0)
+                      AND competition_type = ?
+                    ORDER BY (CASE WHEN guild_id = ? THEN 1 ELSE 2 END) ASC, season_number DESC, id DESC
+                    LIMIT 1;
+                    """,
+                    (guild_id, competition_type, guild_id),
                 )
                 row = await cur.fetchone()
             return dict(row) if row else None
@@ -5125,14 +5368,21 @@ class DatabaseManager:
             return dict(row) if row else None
 
     async def get_tournament_by_season(
-        self, guild_id: int, competition_type: str = "league", season_number: int = 1
+        self, guild_id: int, competition_type: str = "league", season_number: int = 2
     ) -> Optional[Dict[str, Any]]:
-        """Fetch tournament record by guild, competition type, and season number."""
+        """Fetch tournament record by guild, competition type, and season number (exact guild prioritised)."""
         conn = await self.connect()
         async with conn.cursor() as cur:
             await cur.execute(
-                "SELECT * FROM tournaments WHERE (guild_id = ? OR guild_id = 0) AND competition_type = ? AND season_number = ? ORDER BY id DESC LIMIT 1;",
-                (guild_id, competition_type, season_number),
+                """
+                SELECT * FROM tournaments
+                WHERE (guild_id = ? OR guild_id = 0)
+                  AND competition_type = ?
+                  AND season_number = ?
+                ORDER BY (CASE WHEN guild_id = ? THEN 1 ELSE 2 END) ASC, id DESC
+                LIMIT 1;
+                """,
+                (guild_id, competition_type, season_number, guild_id),
             )
             row = await cur.fetchone()
             return dict(row) if row else None

@@ -175,7 +175,7 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
     @app_commands.describe(
         matchday="Specific matchday to inspect (optional)",
         competition="Competition type (league, ucl, cup, default: league)",
-        season="Specific season number to view (e.g. 1, default: active season)",
+        season="Specific season number to view (e.g. 2, default: active season - Season 2)",
     )
     @app_commands.choices(competition=COMPETITION_CHOICES)
     async def matches_view(
@@ -308,7 +308,7 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
     @app_commands.command(name="upcoming", description="View the next upcoming matchday and unplayed fixtures.")
     @app_commands.describe(
         competition="Competition type (league, ucl, cup, default: league)",
-        season="Specific season number to view (e.g. 1, default: active season)",
+        season="Specific season number to view (e.g. 2, default: active season - Season 2)",
     )
     @app_commands.choices(competition=COMPETITION_CHOICES)
     async def matches_upcoming(
@@ -367,6 +367,7 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
     @app_commands.describe(
         file="Attach the saved .html webpage file from matchsimulator.com",
         competition="Competition type (league, ucl, cup, default: auto-detect)",
+        season="Specific season number to import into (e.g. 2, default: auto-detect from file or S2)",
     )
     @app_commands.choices(competition=COMPETITION_CHOICES)
     async def matches_import(
@@ -374,6 +375,7 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
         interaction: discord.Interaction,
         file: discord.Attachment,
         competition: str = "league",
+        season: Optional[int] = None,
     ):
         await interaction.response.defer()
         if not file.filename.endswith((".html", ".htm")):
@@ -394,9 +396,16 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
                 elif "cup" in name_lower and "league" not in name_lower:
                     comp_type = "cup"
 
-            # Auto-detect season number from tournament name
-            s_match = re.search(r'\b(?:s|season)\s*(\d+)\b', name_lower)
-            season_num = int(s_match.group(1)) if s_match else 1
+            # Determine season number:
+            if season is not None:
+                season_num = season
+            else:
+                s_match = re.search(r'\b(?:s|season)\s*(\d+)\b', name_lower)
+                if s_match:
+                    season_num = int(s_match.group(1))
+                else:
+                    active_t = await self.db.get_active_tournament(interaction.guild_id, competition_type=comp_type)
+                    season_num = (active_t.get("season_number") or 2) if active_t else 2
 
             saved = await self.db.save_parsed_tournament(
                 guild_id=interaction.guild_id,
@@ -514,7 +523,7 @@ class Standings(commands.Cog):
     @app_commands.command(name="standings", description="View the league standings and leaderboard table.")
     @app_commands.describe(
         competition="Competition type (league, ucl, cup, default: league)",
-        season="Specific season number to view (e.g. 1, default: active season)",
+        season="Specific season number to view (e.g. 2, default: active season - Season 2)",
     )
     @app_commands.choices(competition=COMPETITION_CHOICES)
     async def standings_cmd(

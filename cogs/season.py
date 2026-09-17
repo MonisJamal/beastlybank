@@ -58,7 +58,10 @@ class Season(commands.GroupCog, name="season", description="Manage BeastlyFC Sea
 
         # 2. Determine season number for this competition
         comp_hist = await self.db.get_season_history(interaction.guild_id, competition_name=competition.lower())
-        max_s = max([r["season_number"] for r in comp_hist], default=0)
+        all_seasons = [r["season_number"] for r in comp_hist]
+        if existing and existing.get("season_number"):
+            all_seasons.append(existing["season_number"])
+        max_s = max(all_seasons, default=0)
         next_season_num = max_s + 1
 
         # 3. Create fresh season skeleton

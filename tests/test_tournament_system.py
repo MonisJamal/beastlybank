@@ -346,3 +346,182 @@ async def test_ucl_s1_knockout_tournament(temp_db):
     comp_names = [h["competition_name"] for h in hof]
     assert "BEASTLY S1 LEAGUE" in comp_names
     assert "BEASTLY UCL S1" in comp_names
+
+
+@pytest.mark.asyncio
+async def test_season_isolation_and_s2_default(temp_db):
+    """Test that importing Season 2 creates a distinct tournament, preserves S1, and makes S2 active default."""
+    guild_id = 444555
+    # 1. Seed Season 1
+    t_league = await temp_db.ensure_tournament_seeded(guild_id)
+    assert t_league is not None
+
+    s1_t = await temp_db.get_tournament_by_season(guild_id, "league", season_number=1)
+    assert s1_t is not None
+    s1_fixtures = await temp_db.get_tournament_fixtures(s1_t["id"])
+    assert len(s1_fixtures) == 380
+
+    # 2. Simulate importing Season 2 HTML data
+    s2_data = {
+        "tournament_name": "BEASTLY S2 LEAGUE",
+        "highest_matchday": 38,
+        "champion": None,
+        "runner_up": None,
+        "standings": [
+            {"team_id": "1", "name": "Arsenal", "short": "ARS", "rank": 1, "played": 0, "won": 0, "drawn": 0, "lost": 0, "goals_for": 0, "goals_against": 0, "goal_difference": 0, "clean_sheets": 0, "points": 0},
+            {"team_id": "5", "name": "Chelsea", "short": "CHE", "rank": 2, "played": 0, "won": 0, "drawn": 0, "lost": 0, "goals_for": 0, "goals_against": 0, "goal_difference": 0, "clean_sheets": 0, "points": 0},
+        ],
+        "fixtures_by_matchday": {
+            1: [
+                {
+                    "matchday": 1,
+                    "stage_name": "Matchday 1",
+                    "match_uid": "s2_md1_match1",
+                    "home_team_id": "1",
+                    "away_team_id": "5",
+                    "home_team_name": "Arsenal",
+                    "away_team_name": "Chelsea",
+                    "home_team_short": "ARS",
+                    "away_team_short": "CHE",
+                    "goals_home": 0,
+                    "goals_away": 0,
+                    "penalties_home": 0,
+                    "penalties_away": 0,
+                    "is_finished": False,
+                    "replay_exists": False,
+                }
+            ]
+        },
+    }
+
+    saved_s2 = await temp_db.save_parsed_tournament(
+        guild_id=guild_id,
+        tournament_data=s2_data,
+        season_number=2,
+        competition_type="league",
+    )
+    assert saved_s2["season_number"] == 2
+    assert saved_s2["id"] != s1_t["id"]
+
+    # 3. Verify Active Tournament is now Season 2!
+    active_t = await temp_db.get_active_tournament(guild_id, "league")
+    assert active_t is not None
+    assert active_t["season_number"] == 2
+    assert active_t["name"] == "BEASTLY S2 LEAGUE"
+    assert active_t["status"] == "active"
+
+    # 4. Verify Season 1 remains completed with all 380 fixtures intact
+    s1_after = await temp_db.get_tournament_by_season(guild_id, "league", season_number=1)
+    assert s1_after["status"] == "completed"
+    s1_fixes_after = await temp_db.get_tournament_fixtures(s1_t["id"])
+    assert len(s1_fixes_after) == 380
+
+    # 5. Verify Season 2 Matchday 1 has ONLY Season 2 fixtures (no random S1 results)
+    s2_md1 = await temp_db.get_tournament_fixtures(saved_s2["id"], matchday=1)
+    assert len(s2_md1) == 1
+    assert s2_md1[0]["home_team_name"] == "Arsenal"
+    assert s2_md1[0]["away_team_name"] == "Chelsea"
+    assert not s2_md1[0]["is_finished"]
+
+
+@pytest.mark.asyncio
+async def test_stale_fixtures_pruned_on_reimport(temp_db):
+    """Test that re-importing a tournament prunes stale fixtures so old results never appear above new ones."""
+    guild_id = 111222
+    t_data_v1 = {
+        "tournament_name": "BEASTLY S2 LEAGUE",
+        "highest_matchday": 1,
+        "fixtures_by_matchday": {
+            1: [
+                {
+                    "matchday": 1,
+                    "home_team_id": "100",
+                    "away_team_id": "200",
+                    "home_team_name": "Old Home",
+                    "away_team_name": "Old Away",
+                    "goals_home": 3,
+                    "goals_away": 0,
+                    "is_finished": True,
+                }
+            ]
+        },
+        "standings": [],
+    }
+
+    t1 = await temp_db.save_parsed_tournament(guild_id, t_data_v1, season_number=2)
+    fixes1 = await temp_db.get_tournament_fixtures(t1["id"], matchday=1)
+    assert len(fixes1) == 1
+    assert fixes1[0]["home_team_name"] == "Old Home"
+
+    # Now re-import with new schedule
+    t_data_v2 = {
+        "tournament_name": "BEASTLY S2 LEAGUE",
+        "highest_matchday": 1,
+        "fixtures_by_matchday": {
+            1: [
+                {
+                    "matchday": 1,
+                    "home_team_id": "300",
+                    "away_team_id": "400",
+                    "home_team_name": "New Home",
+                    "away_team_name": "New Away",
+                    "goals_home": 0,
+                    "goals_away": 0,
+                    "is_finished": False,
+                }
+            ]
+        },
+        "standings": [],
+    }
+
+    t2 = await temp_db.save_parsed_tournament(guild_id, t_data_v2, season_number=2)
+    assert t2["id"] == t1["id"]
+    fixes2 = await temp_db.get_tournament_fixtures(t2["id"], matchday=1)
+    assert len(fixes2) == 1
+    assert fixes2[0]["home_team_name"] == "New Home"
+    assert not fixes2[0]["is_finished"]
+
+
+@pytest.mark.asyncio
+async def test_self_healing_migration_recovers_comingled_fixtures(temp_db):
+    """Test that repair_and_activate_s2 detects co-mingled S2 fixtures in S1 and migrates them cleanly."""
+    guild_id = 333444
+    await temp_db.ensure_tournament_seeded(guild_id)
+    s1_t = await temp_db.get_tournament_by_season(guild_id, "league", season_number=1)
+
+    # Intentionally corrupt S1 by injecting an S2 fixture directly into S1's tournament_id
+    conn = await temp_db.connect()
+    async with conn.cursor() as cur:
+        await cur.execute(
+            """
+            INSERT INTO tournament_fixtures (
+                tournament_id, guild_id, matchday, home_team_id, away_team_id,
+                home_team_name, away_team_name, goals_home, goals_away, is_finished
+            ) VALUES (?, ?, 1, '9999', '8888', 'S2 Injected Home', 'S2 Injected Away', 0, 0, 0);
+            """,
+            (s1_t["id"], guild_id),
+        )
+        injected_id = cur.lastrowid
+        await conn.commit()
+
+    # Verify S1 currently has 381 fixtures (polluted)
+    fixes_corrupt = await temp_db.get_tournament_fixtures(s1_t["id"])
+    assert len(fixes_corrupt) == 381
+
+    # Run repair
+    await temp_db.repair_and_activate_s2(guild_id)
+
+    # Verify S1 is repaired to exactly 380 fixtures
+    s1_clean = await temp_db.get_tournament_fixtures(s1_t["id"])
+    assert len(s1_clean) == 380
+
+    # Verify S2 exists, is active, and contains the injected fixture
+    s2_t = await temp_db.get_tournament_by_season(guild_id, "league", season_number=2)
+    assert s2_t is not None
+    assert s2_t["status"] == "active"
+    s2_fixes = await temp_db.get_tournament_fixtures(s2_t["id"])
+    assert len(s2_fixes) >= 1
+    injected_found = next((f for f in s2_fixes if f["id"] == injected_id), None)
+    assert injected_found is not None
+    assert injected_found["home_team_name"] == "S2 Injected Home"
+

@@ -4120,6 +4120,193 @@ class DatabaseManager:
                 msg += f" ({len(skipped_clubs)} clubs were already settled for MD {matchday})."
             return True, msg, report
 
+    async def rollback_matchday_wages(
+        self,
+        guild_id: int,
+        tournament_id: Optional[int] = None,
+        matchday: Optional[int] = None,
+        admin_id: Optional[int] = None,
+    ) -> Tuple[bool, str, Dict[str, Any]]:
+        """
+        Reverses erroneously deducted matchday wages, restoring each club's treasury
+        by the exact amount that was deducted from it, and clearing the wage payout records.
+        Preserves all other club and user funds without any data loss.
+        """
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            # 1. First find records in matchday_wage_payouts
+            query = "SELECT * FROM matchday_wage_payouts WHERE guild_id = ?"
+            params: List[Any] = [guild_id]
+            if tournament_id is not None:
+                query += " AND (tournament_id = ? OR tournament_id IS NULL)"
+                params.append(tournament_id)
+            if matchday is not None:
+                query += " AND matchday = ?"
+                params.append(matchday)
+            query += " ORDER BY club_id ASC, matchday ASC, id ASC;"
+
+            await cur.execute(query, tuple(params))
+            payout_rows = [dict(r) for r in await cur.fetchall()]
+
+            refunded_clubs = []
+            total_cash_restored = 0
+            total_records_cleared = len(payout_rows)
+
+            if payout_rows:
+                from collections import defaultdict
+                club_groups = defaultdict(list)
+                for r in payout_rows:
+                    club_groups[r["club_id"]].append(r)
+
+                for cid, records in club_groups.items():
+                    await cur.execute("SELECT * FROM clubs WHERE id = ?;", (cid,))
+                    club_row = await cur.fetchone()
+                    if not club_row:
+                        continue
+                    club = dict(club_row)
+
+                    total_deducted = sum(int(r["total_wages"]) for r in records)
+                    current_treasury = int(club.get("treasury_cash") or 0)
+                    new_treasury = current_treasury + total_deducted
+
+                    # Restore treasury_cash
+                    await cur.execute(
+                        "UPDATE clubs SET treasury_cash = ? WHERE id = ?;",
+                        (new_treasury, cid),
+                    )
+
+                    # Delete matchday wage payouts for this club
+                    rec_ids = [r["id"] for r in records]
+                    placeholders = ",".join("?" for _ in rec_ids)
+                    await cur.execute(
+                        f"DELETE FROM matchday_wage_payouts WHERE id IN ({placeholders});",
+                        tuple(rec_ids),
+                    )
+
+                    # Remove erroneous matchday_wage transactions
+                    tag = club.get("tag", "")
+                    owner_id = club.get("owner_id")
+                    await cur.execute(
+                        """
+                        DELETE FROM transactions
+                        WHERE guild_id = ? AND tx_type = 'matchday_wage'
+                        AND (sender_id = ? OR reason LIKE ?);
+                        """,
+                        (guild_id, owner_id, f"%[{tag}]%"),
+                    )
+
+                    # Insert audit transaction
+                    if total_deducted > 0:
+                        await cur.execute(
+                            """
+                            INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                            VALUES (?, ?, NULL, 'cash', ?, 'wage_refund', ?);
+                            """,
+                            (
+                                guild_id,
+                                admin_id or owner_id,
+                                total_deducted,
+                                f"Wage Refund: Restored {total_deducted:,} cash across {len(records)} matchdays for [{tag}] {club['name']}",
+                            ),
+                        )
+
+                    total_cash_restored += total_deducted
+                    refunded_clubs.append({
+                        "club_id": cid,
+                        "name": club["name"],
+                        "tag": club["tag"],
+                        "owner_id": owner_id,
+                        "refund_amount": total_deducted,
+                        "old_treasury": current_treasury,
+                        "restored_treasury": new_treasury,
+                        "matchdays_count": len(records),
+                        "matchdays": sorted({r["matchday"] for r in records}),
+                    })
+
+                await conn.commit()
+
+            else:
+                # Fallback: check transactions table for tx_type = 'matchday_wage'
+                # in case matchday_wage_payouts was emptied
+                await cur.execute(
+                    "SELECT * FROM transactions WHERE guild_id = ? AND tx_type = 'matchday_wage' ORDER BY id ASC;",
+                    (guild_id,),
+                )
+                tx_wages = [dict(r) for r in await cur.fetchall()]
+                if tx_wages:
+                    await cur.execute("SELECT * FROM clubs WHERE guild_id = ? ORDER BY id ASC;", (guild_id,))
+                    all_clubs = [dict(r) for r in await cur.fetchall()]
+                    for club in all_clubs:
+                        cid = club["id"]
+                        tag = club.get("tag", "")
+                        owner_id = club.get("owner_id")
+                        matching_txs = [
+                            t for t in tx_wages
+                            if t.get("sender_id") == owner_id or f"[{tag}]" in (t.get("reason") or "")
+                        ]
+                        if not matching_txs:
+                            continue
+                        total_deducted = sum(int(t["amount"]) for t in matching_txs)
+                        if total_deducted <= 0:
+                            continue
+
+                        current_treasury = int(club.get("treasury_cash") or 0)
+                        new_treasury = current_treasury + total_deducted
+                        await cur.execute(
+                            "UPDATE clubs SET treasury_cash = ? WHERE id = ?;",
+                            (new_treasury, cid),
+                        )
+
+                        # Delete the erroneous transactions
+                        tx_ids = [t["id"] for t in matching_txs]
+                        placeholders = ",".join("?" for _ in tx_ids)
+                        await cur.execute(
+                            f"DELETE FROM transactions WHERE id IN ({placeholders});",
+                            tuple(tx_ids),
+                        )
+
+                        # Insert audit log
+                        await cur.execute(
+                            """
+                            INSERT INTO transactions (guild_id, sender_id, receiver_id, currency, amount, tx_type, reason)
+                            VALUES (?, ?, NULL, 'cash', ?, 'wage_refund', ?);
+                            """,
+                            (
+                                guild_id,
+                                admin_id or owner_id,
+                                total_deducted,
+                                f"Wage Refund: Restored {total_deducted:,} cash across {len(matching_txs)} records for [{tag}] {club['name']}",
+                            ),
+                        )
+
+                        total_cash_restored += total_deducted
+                        total_records_cleared += len(matching_txs)
+                        refunded_clubs.append({
+                            "club_id": cid,
+                            "name": club["name"],
+                            "tag": club["tag"],
+                            "owner_id": owner_id,
+                            "refund_amount": total_deducted,
+                            "old_treasury": current_treasury,
+                            "restored_treasury": new_treasury,
+                            "matchdays_count": len(matching_txs),
+                            "matchdays": [],
+                        })
+
+                    await conn.commit()
+
+            report = {
+                "total_clubs_affected": len(refunded_clubs),
+                "total_cash_restored": total_cash_restored,
+                "total_matchday_records_cleared": total_records_cleared,
+                "clubs": refunded_clubs,
+            }
+            if not refunded_clubs:
+                return True, "No matchday wage deductions found to roll back. Club treasuries are already clean!", report
+
+            msg = f"Successfully rolled back wage deductions for {len(refunded_clubs)} clubs. Restored a total of {total_cash_restored:,} cash."
+            return True, msg, report
+
     async def get_club_payroll(self, guild_id: int, club_query: Any) -> Tuple[bool, str, Dict[str, Any]]:
         """Fetch full payroll summary for a club: starters wage, bench wage, total wage, treasury, and runway."""
         success, msg, lineup = await self.get_club_lineup(guild_id, club_query)
@@ -5260,6 +5447,37 @@ class DatabaseManager:
                 """
             )
             await conn.commit()
+
+        # Auto-rollback any erroneous bulk wage deductions from import bug
+        try:
+            conn = await self.connect()
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT COUNT(DISTINCT matchday) as md_count, COUNT(*) as total_rows FROM matchday_wage_payouts WHERE guild_id = ?;",
+                    (guild_id,),
+                )
+                pw_stats = await cur.fetchone()
+                await cur.execute(
+                    "SELECT COUNT(*) as tx_w_count FROM transactions WHERE guild_id = ? AND tx_type = 'matchday_wage';",
+                    (guild_id,),
+                )
+                tx_w_stats = await cur.fetchone()
+
+                has_bulk_wage_payouts = pw_stats and (pw_stats["md_count"] or 0) > 1
+                has_bulk_wage_txs = tx_w_stats and (tx_w_stats["tx_w_count"] or 0) > 10
+
+            if has_bulk_wage_payouts or has_bulk_wage_txs:
+                logger.warning(
+                    "Detected erroneous bulk wage deductions for guild %d (md_count=%s, tx_w_count=%s). Initiating automatic payroll rollback...",
+                    guild_id,
+                    pw_stats["md_count"] if pw_stats else 0,
+                    tx_w_stats["tx_w_count"] if tx_w_stats else 0,
+                )
+                rb_ok, rb_msg, rb_report = await self.rollback_matchday_wages(guild_id)
+                if rb_ok and rb_report.get("total_clubs_affected", 0) > 0:
+                    logger.info("Automatic wage rollback success for guild %d: %s", guild_id, rb_msg)
+        except Exception as e:
+            logger.warning("repair_and_activate_s2 wage rollback notice: %s", e)
 
     async def ensure_tournament_seeded(self, guild_id: int) -> Optional[Dict[str, Any]]:
         """Ensure Season 1 & 2 tournaments exist, fixtures are clean, and S2 is active."""

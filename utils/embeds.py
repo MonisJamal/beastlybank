@@ -1446,3 +1446,52 @@ def beastlybank_announcement_embed() -> discord.Embed:
     embed.set_footer(text="Official Announcement • BeastlyBank System • BeastlyFC")
     return embed
 
+
+def wage_rollback_report_embed(report: Dict[str, Any]) -> discord.Embed:
+    """Generates an audit report embed for rolling back matchday wage deductions."""
+    tot_restored = report.get("total_cash_restored", 0)
+    clubs = report.get("clubs", [])
+    cleared_count = report.get("total_matchday_records_cleared", 0)
+
+    embed = create_beastly_embed(
+        title="💸 MATCHDAY WAGE ROLLBACK & RESTORATION",
+        description=(
+            "Erroneous matchday wage deductions have been safely rolled back!\n"
+            "Each club has been credited back their own exact deducted wages, with zero loss of user or club funds.\n\n"
+            f"### 💰 Total Treasury Cash Restored: **{format_wage(tot_restored)}**\n"
+            f"• Clubs Refunded: **{len(clubs)}**\n"
+            f"• Wage Entries Cleared: **{cleared_count}**\n"
+            "━━━━━━━━━━━━━━━━━━━━━━"
+        ),
+        color=COLOR_BEASTLY_GOLD,
+    )
+
+    if clubs:
+        lines = []
+        for c in clubs:
+            tag = c.get("tag", "???")
+            name = c.get("name", "Unknown")
+            ref = c.get("refund_amount", 0)
+            rest = c.get("restored_treasury", 0)
+            cnt = c.get("matchdays_count", 0)
+            lines.append(
+                f"• **[{tag}] {name}**: `+`**{format_wage(ref)}** ➔ New Treasury: `🪙 {rest:,} Cash` *({cnt} MDs)*"
+            )
+        for i in range(0, len(lines), 10):
+            chunk = lines[i:i + 10]
+            embed.add_field(
+                name=f"🏛️ Restored Club Treasuries ({i + 1}-{i + len(chunk)})",
+                value="\n".join(chunk),
+                inline=False,
+            )
+    else:
+        embed.add_field(
+            name="🏛️ Restored Club Treasuries",
+            value="*No wage deductions found to roll back. All club treasuries are clean!*",
+            inline=False,
+        )
+
+    embed.set_footer(text=f"{BOT_NAME} • Payroll Rollback & Treasury Protection")
+    return embed
+
+

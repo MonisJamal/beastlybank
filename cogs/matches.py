@@ -19,6 +19,7 @@ from utils.embeds import (
     error_embed,
     matchday_payroll_report_embed,
     success_embed,
+    wage_rollback_report_embed,
 )
 from utils.match_parser import parse_matchsimulator_html
 
@@ -419,11 +420,6 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
             for md in range(1, parsed.get("highest_matchday", 38) + 1):
                 payouts = await self.db.settle_matchday_bets(saved["id"], matchday=md)
                 settled_total += len([p for p in payouts if p["status"] == "won"])
-                # Auto-settle matchday wages if not yet processed
-                try:
-                    await self.db.deduct_matchday_wages(interaction.guild_id, matchday=md, tournament_id=saved["id"])
-                except Exception as w_err:
-                    logger.debug("Auto matchday wage settlement on import notice: %s", w_err)
 
             champ_msg = f"• Champion: **{saved.get('champion', 'TBD')}**\n" if saved.get("champion") else ""
             await interaction.followup.send(
@@ -435,8 +431,7 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
                     f"• Total Matchdays: **{saved['total_matchdays']}**\n"
                     f"• Teams: **{len(parsed['standings'])}**\n"
                     f"{champ_msg}"
-                    f"• Winning Bets Settled: **{settled_total}**\n"
-                    f"• Matchday Payrolls: **Auto-Synced**",
+                    f"• Winning Bets Settled: **{settled_total}**",
                 )
             )
         except Exception as e:
@@ -460,6 +455,29 @@ class Matches(commands.GroupCog, name="matches", description="BeastlyFC Match Ce
             return
 
         embed = matchday_payroll_report_embed(report)
+        await interaction.followup.send(embed=embed)
+
+    @app_commands.command(name="rollbackpayroll", description="Rollback matchday wage deductions and restore club treasuries.")
+    @app_commands.describe(matchday="Optional matchday number to roll back (leave empty to roll back all)")
+    async def matches_rollbackpayroll(self, interaction: discord.Interaction, matchday: Optional[int] = None):
+        await interaction.response.defer()
+        if not is_banker_or_admin(interaction.user):
+            await interaction.followup.send(
+                embed=error_embed("Permission Denied", "Only BeastlyBank Bankers or Server Admins can roll back matchday payrolls."),
+                ephemeral=True,
+            )
+            return
+
+        success, msg, report = await self.db.rollback_matchday_wages(
+            guild_id=interaction.guild_id,
+            matchday=matchday,
+            admin_id=interaction.user.id,
+        )
+        if not success:
+            await interaction.followup.send(embed=error_embed("Rollback Error", msg), ephemeral=True)
+            return
+
+        embed = wage_rollback_report_embed(report)
         await interaction.followup.send(embed=embed)
 
 
@@ -489,10 +507,33 @@ class Matchday(commands.GroupCog, name="matchday", description="BeastlyFC Matchd
         embed = matchday_payroll_report_embed(report)
         await interaction.followup.send(embed=embed)
 
+    @app_commands.command(name="rollbackpayroll", description="Rollback matchday wage deductions and restore club treasuries.")
+    @app_commands.describe(matchday="Optional matchday number to roll back (leave empty to roll back all)")
+    async def matchday_rollback(self, interaction: discord.Interaction, matchday: Optional[int] = None):
+        await interaction.response.defer()
+        if not is_banker_or_admin(interaction.user):
+            await interaction.followup.send(
+                embed=error_embed("Permission Denied", "Only BeastlyBank Bankers or Server Admins can roll back matchday payrolls."),
+                ephemeral=True,
+            )
+            return
+
+        success, msg, report = await self.db.rollback_matchday_wages(
+            guild_id=interaction.guild_id,
+            matchday=matchday,
+            admin_id=interaction.user.id,
+        )
+        if not success:
+            await interaction.followup.send(embed=error_embed("Rollback Error", msg), ephemeral=True)
+            return
+
+        embed = wage_rollback_report_embed(report)
+        await interaction.followup.send(embed=embed)
+
     @commands.group(name="matchday", invoke_without_command=True)
     async def prefix_matchday(self, ctx: commands.Context, sub: Optional[str] = None):
         """Matchday operations. Usage: bb!matchday start <matchday>"""
-        await ctx.send(embed=error_embed("Matchday Command", "Usage: `bb!matchday start <matchday>` or `bb!startmd <matchday>`"))
+        await ctx.send(embed=error_embed("Matchday Command", "Usage: `bb!matchday start <matchday>` or `bb!matchday rollback`"))
 
     @prefix_matchday.command(name="start")
     async def prefix_matchday_start(self, ctx: commands.Context, matchday: int):
@@ -509,10 +550,34 @@ class Matchday(commands.GroupCog, name="matchday", description="BeastlyFC Matchd
         embed = matchday_payroll_report_embed(report)
         await ctx.send(embed=embed)
 
+    @prefix_matchday.command(name="rollback")
+    async def prefix_matchday_rollback(self, ctx: commands.Context, matchday: Optional[int] = None):
+        """Rollback matchday wages. Usage: bb!matchday rollback [matchday]"""
+        if not is_banker_or_admin(ctx.author):
+            await ctx.send(embed=error_embed("Permission Denied", "Only BeastlyBank Bankers or Server Admins can roll back matchday payrolls."))
+            return
+
+        success, msg, report = await self.db.rollback_matchday_wages(
+            guild_id=ctx.guild.id,
+            matchday=matchday,
+            admin_id=ctx.author.id,
+        )
+        if not success:
+            await ctx.send(embed=error_embed("Rollback Error", msg))
+            return
+
+        embed = wage_rollback_report_embed(report)
+        await ctx.send(embed=embed)
+
     @commands.command(name="startmd")
     async def prefix_startmd(self, ctx: commands.Context, matchday: int):
         """Kick off matchday and settle club wages. Usage: bb!startmd <matchday>"""
         await self.prefix_matchday_start(ctx, matchday=matchday)
+
+    @commands.command(name="rollbackpayroll")
+    async def prefix_rollbackpayroll(self, ctx: commands.Context, matchday: Optional[int] = None):
+        """Rollback matchday wages. Usage: bb!rollbackpayroll [matchday]"""
+        await self.prefix_matchday_rollback(ctx, matchday=matchday)
 
 
 class Standings(commands.Cog):

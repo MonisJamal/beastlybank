@@ -674,9 +674,11 @@ class Clubs(commands.GroupCog, name="club", description="Manage BeastlyFC Club T
         club: Optional[discord.Role] = None,
     ):
         if club:
-            target_club = await self.db.get_or_create_club_from_role(
-                interaction.guild_id, club, default_owner_id=interaction.user.id
-            )
+            target_club = await self.db.get_club_by_name(interaction.guild_id, club)
+            if not target_club:
+                target_club = await self.db.get_or_create_club_from_role(
+                    interaction.guild_id, club, default_owner_id=interaction.user.id
+                )
         else:
             target_club = await self.db.get_club_by_user(interaction.guild_id, interaction.user.id)
 
@@ -1460,11 +1462,23 @@ class ClubHistoryTop(commands.Cog):
     @commands.command(name="clubhistory", aliases=["chistory", "ch"])
     async def prefix_clubhistory(self, ctx: commands.Context, *, club_query: Optional[str] = None):
         """bb!clubhistory [@role_or_club_name]"""
-        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        role_mentions = [r for r in getattr(ctx.message, "role_mentions", []) if hasattr(r, "id") and isinstance(r.id, int)]
+        target_role = role_mentions[0] if role_mentions else None
+        user_mentions = [m for m in getattr(ctx.message, "mentions", []) if hasattr(m, "id") and isinstance(m.id, int)]
+
         if target_role:
-            club = await self.db.get_or_create_club_from_role(ctx.guild.id, target_role, default_owner_id=ctx.author.id)
+            club = await self.db.get_club_by_name(ctx.guild.id, target_role)
+            if not club:
+                club = await self.db.get_or_create_club_from_role(ctx.guild.id, target_role, default_owner_id=ctx.author.id)
+        elif user_mentions:
+            target_user = user_mentions[0]
+            club = await self.db.get_club_by_user(ctx.guild.id, target_user.id)
+            if not club:
+                club = await self.db.get_club_by_name(ctx.guild.id, target_user.id)
+                if not club:
+                    club = await self.db.get_club_by_name(ctx.guild.id, target_user.mention)
         elif club_query:
-            club = await self.db.get_or_create_club_from_role(ctx.guild.id, club_query.strip(), default_owner_id=ctx.author.id)
+            club = await self.db.get_club_by_name(ctx.guild.id, club_query.strip())
         else:
             club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
 
@@ -1510,11 +1524,23 @@ class ClubPrefixCommands(commands.Cog):
     @commands.group(name="club", invoke_without_command=True)
     async def prefix_club(self, ctx: commands.Context, *, club_query: Optional[str] = None):
         """bb!club [@role_or_club_name]"""
-        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        role_mentions = [r for r in getattr(ctx.message, "role_mentions", []) if hasattr(r, "id") and isinstance(r.id, int)]
+        target_role = role_mentions[0] if role_mentions else None
+        user_mentions = [m for m in getattr(ctx.message, "mentions", []) if hasattr(m, "id") and isinstance(m.id, int)]
+
         if target_role:
-            club = await self.db.get_or_create_club_from_role(ctx.guild.id, target_role, default_owner_id=ctx.author.id)
+            club = await self.db.get_club_by_name(ctx.guild.id, target_role)
+            if not club:
+                club = await self.db.get_or_create_club_from_role(ctx.guild.id, target_role, default_owner_id=ctx.author.id)
+        elif user_mentions:
+            target_user = user_mentions[0]
+            club = await self.db.get_club_by_user(ctx.guild.id, target_user.id)
+            if not club:
+                club = await self.db.get_club_by_name(ctx.guild.id, target_user.id)
+                if not club:
+                    club = await self.db.get_club_by_name(ctx.guild.id, target_user.mention)
         elif club_query:
-            club = await self.db.get_or_create_club_from_role(ctx.guild.id, club_query.strip(), default_owner_id=ctx.author.id)
+            club = await self.db.get_club_by_name(ctx.guild.id, club_query.strip())
         else:
             club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
 
@@ -1539,13 +1565,23 @@ class ClubPrefixCommands(commands.Cog):
     @prefix_club.command(name="payroll")
     async def prefix_club_payroll(self, ctx: commands.Context, *, club_query: Optional[str] = None):
         """View a club's matchday payroll and wage bill. Usage: bb!club payroll [@role/tag]"""
-        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
-        q = target_role if target_role else club_query
+        role_mentions = [r for r in getattr(ctx.message, "role_mentions", []) if hasattr(r, "id") and isinstance(r.id, int)]
+        target_role = role_mentions[0] if role_mentions else None
+        user_mentions = [m for m in getattr(ctx.message, "mentions", []) if hasattr(m, "id") and isinstance(m.id, int)]
 
-        if q:
-            target_club = await self.db.get_or_create_club_from_role(
-                ctx.guild.id, q, default_owner_id=ctx.author.id
-            )
+        if target_role:
+            target_club = await self.db.get_club_by_name(ctx.guild.id, target_role)
+            if not target_club:
+                target_club = await self.db.get_or_create_club_from_role(ctx.guild.id, target_role, default_owner_id=ctx.author.id)
+        elif user_mentions:
+            target_user = user_mentions[0]
+            target_club = await self.db.get_club_by_user(ctx.guild.id, target_user.id)
+            if not target_club:
+                target_club = await self.db.get_club_by_name(ctx.guild.id, target_user.id)
+                if not target_club:
+                    target_club = await self.db.get_club_by_name(ctx.guild.id, target_user.mention)
+        elif club_query:
+            target_club = await self.db.get_club_by_name(ctx.guild.id, club_query.strip())
         else:
             target_club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
 
@@ -1910,7 +1946,8 @@ class ClubPrefixCommands(commands.Cog):
     @prefix_club.command(name="roster", aliases=["members", "squadmembers"])
     async def prefix_club_roster(self, ctx: commands.Context, *args):
         """bb!club roster [@role_or_club_name] [page]"""
-        target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        role_mentions = [r for r in getattr(ctx.message, "role_mentions", []) if hasattr(r, "id") and isinstance(r.id, int)]
+        target_role = role_mentions[0] if role_mentions else None
         target_page = 1
         club_query = None
 
@@ -1921,10 +1958,20 @@ class ClubPrefixCommands(commands.Cog):
             elif not target_role and not clean.startswith("<@&"):
                 club_query = clean
 
+        user_mentions = [m for m in getattr(ctx.message, "mentions", []) if hasattr(m, "id") and isinstance(m.id, int)]
         if target_role:
-            club = await self.db.get_or_create_club_from_role(ctx.guild.id, target_role, default_owner_id=ctx.author.id)
+            club = await self.db.get_club_by_name(ctx.guild.id, target_role)
+            if not club:
+                club = await self.db.get_or_create_club_from_role(ctx.guild.id, target_role, default_owner_id=ctx.author.id)
+        elif user_mentions:
+            target_user = user_mentions[0]
+            club = await self.db.get_club_by_user(ctx.guild.id, target_user.id)
+            if not club:
+                club = await self.db.get_club_by_name(ctx.guild.id, target_user.id)
+                if not club:
+                    club = await self.db.get_club_by_name(ctx.guild.id, target_user.mention)
         elif club_query:
-            club = await self.db.get_or_create_club_from_role(ctx.guild.id, club_query, default_owner_id=ctx.author.id)
+            club = await self.db.get_club_by_name(ctx.guild.id, club_query)
         else:
             club = await self.db.get_club_by_user(ctx.guild.id, ctx.author.id)
 

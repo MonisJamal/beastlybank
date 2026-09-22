@@ -26,6 +26,42 @@ from utils.embeds import create_beastly_embed, error_embed, success_embed, safe_
 from cogs.clubs import club_name_autocomplete
 
 
+async def club_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    """Autocomplete all registered clubs in the guild by name, tag, ID, or role."""
+    try:
+        db = interaction.client.db  # type: ignore
+        clubs = await db.get_all_clubs(interaction.guild_id)
+        choices = []
+        cur_low = current.strip().lower()
+        for c in clubs:
+            tag = c.get("tag") or "FC"
+            name = c.get("name") or "Unnamed"
+            cid = c.get("id")
+            rid = c.get("role_id")
+            display_name = f"[{tag}] {name} (ID: {cid})"
+            if len(display_name) > 100:
+                display_name = display_name[:97] + "..."
+
+            if (
+                not current
+                or cur_low in display_name.lower()
+                or cur_low in str(tag).lower()
+                or cur_low in str(name).lower()
+                or str(cid) == cur_low
+                or (rid and str(rid) == cur_low)
+            ):
+                choices.append(app_commands.Choice(name=display_name, value=str(cid)))
+                if len(choices) >= 25:
+                    break
+        return choices
+    except Exception:
+        return []
+
+
+
 async def get_role_members(guild: Optional[discord.Guild], role: discord.Role) -> list[discord.Member]:
     """Retrieve all human members belonging to a role, handling unchunked member caches and fetch fallbacks."""
     if not guild:
@@ -233,18 +269,19 @@ class ManageCurrency(commands.GroupCog, name="manage", description="Manage User 
         description="Manage and operate a club's treasury vault (BeastlyBank Banker command).",
     )
     @app_commands.describe(
-        club="Club role mention to adjust",
+        club="Target club (search by name, tag, ID, or select from autocomplete)",
         currency="Currency type (Cash, Points/CP, Tokens)",
         action="Adjustment type (add, remove, or set)",
         amount="Amount (e.g. 26e6, 3e7, 500k, 1000)",
         reason="Official memo explaining the vault adjustment",
     )
+    @app_commands.autocomplete(club=club_autocomplete)
     @require_beastlyfc()
     @require_banker_or_admin()
     async def manage_vault(
         self,
         interaction: discord.Interaction,
-        club: discord.Role,
+        club: str,
         currency: Literal["cash", "points", "tokens"],
         action: Literal["add", "remove", "set"],
         amount: str,
@@ -301,17 +338,18 @@ class ManageCurrency(commands.GroupCog, name="manage", description="Manage User 
     )
     @app_commands.describe(
         action="Appoint or remove manager role (add or remove)",
-        club="Target club Discord role",
+        club="Target club (search by name, tag, ID, or select from autocomplete)",
         user="Squad member to promote or demote",
         reason="Official memo explaining the appointment or demotion",
     )
+    @app_commands.autocomplete(club=club_autocomplete)
     @require_beastlyfc()
     @require_banker_or_admin()
     async def manage_manager(
         self,
         interaction: discord.Interaction,
         action: Literal["add", "remove"],
-        club: discord.Role,
+        club: str,
         user: discord.Member,
         reason: Optional[str] = "BeastlyBank Staff Operation",
     ):
@@ -352,17 +390,18 @@ class ManageCurrency(commands.GroupCog, name="manage", description="Manage User 
     )
     @app_commands.describe(
         action="Operation: add, remove, or change club owner",
-        club="Target club Discord role",
+        club="Target club (search by name, tag, ID, or select from autocomplete)",
         user="Squad member to appoint or transfer ownership to (required for add/change)",
         reason="Official memo explaining the ownership change",
     )
+    @app_commands.autocomplete(club=club_autocomplete)
     @require_beastlyfc()
     @require_banker_or_admin()
     async def manage_owner(
         self,
         interaction: discord.Interaction,
         action: Literal["add", "remove", "change"],
-        club: discord.Role,
+        club: str,
         user: Optional[discord.Member] = None,
         reason: Optional[str] = "BeastlyBank Staff Operation",
     ):
@@ -420,15 +459,16 @@ class ManageCurrency(commands.GroupCog, name="manage", description="Manage User 
         description="Disband and delete a club completely (Admin only).",
     )
     @app_commands.describe(
-        club="Target club Discord role",
+        club="Target club (search by name, tag, ID, or select from autocomplete)",
         reason="Official memo explaining why the club is being deleted",
     )
+    @app_commands.autocomplete(club=club_autocomplete)
     @require_beastlyfc()
     @require_banker_or_admin()
     async def manage_deleteclub(
         self,
         interaction: discord.Interaction,
-        club: discord.Role,
+        club: str,
         reason: Optional[str] = "BeastlyBank Staff Operation",
     ):
         memo = reason or "BeastlyBank Staff Operation"
@@ -817,17 +857,18 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
     )
     @app_commands.describe(
         action="Appoint or remove manager role (add or remove)",
-        club="Target club Discord role",
+        club="Target club (search by name, tag, ID, or select from autocomplete)",
         user="Squad member to promote or demote",
         reason="Official memo explaining the appointment or demotion",
     )
+    @app_commands.autocomplete(club=club_autocomplete)
     @require_beastlyfc()
     @require_banker_or_admin()
     async def bank_manager(
         self,
         interaction: discord.Interaction,
         action: Literal["add", "remove"],
-        club: discord.Role,
+        club: str,
         user: discord.Member,
         reason: Optional[str] = "BeastlyBank Staff Operation",
     ):
@@ -868,17 +909,18 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
     )
     @app_commands.describe(
         action="Operation: add, remove, or change club owner",
-        club="Target club Discord role",
+        club="Target club (search by name, tag, ID, or select from autocomplete)",
         user="Squad member to appoint or transfer ownership to (required for add/change)",
         reason="Official memo explaining the ownership change",
     )
+    @app_commands.autocomplete(club=club_autocomplete)
     @require_beastlyfc()
     @require_banker_or_admin()
     async def bank_owner(
         self,
         interaction: discord.Interaction,
         action: Literal["add", "remove", "change"],
-        club: discord.Role,
+        club: str,
         user: Optional[discord.Member] = None,
         reason: Optional[str] = "BeastlyBank Staff Operation",
     ):
@@ -936,15 +978,16 @@ class BankAdmin(commands.GroupCog, name="bank", description="BeastlyBank Staff &
         description="Disband and delete a club completely (Admin only).",
     )
     @app_commands.describe(
-        club="Target club Discord role",
+        club="Target club (search by name, tag, ID, or select from autocomplete)",
         reason="Official memo explaining why the club is being deleted",
     )
+    @app_commands.autocomplete(club=club_autocomplete)
     @require_beastlyfc()
     @require_banker_or_admin()
     async def bank_deleteclub(
         self,
         interaction: discord.Interaction,
-        club: discord.Role,
+        club: str,
         reason: Optional[str] = "BeastlyBank Staff Operation",
     ):
         memo = reason or "BeastlyBank Staff Operation"
@@ -1234,9 +1277,9 @@ class BankerPrefixCommands(commands.Cog):
         if len(args) < 2 and not (ctx.message.role_mentions and ctx.message.mentions):
             embed = error_embed(
                 "Invalid Command Usage",
-                "**Usage:** `bb!manager <add|remove> <@club_role> <@user> [reason]`\n"
+                "**Usage:** `bb!manager <add|remove> <@club_role|club_name|ID> <@user> [reason]`\n"
                 "**Example:** `bb!manager add @RealMadrid @Member Official Appointment`\n"
-                "*(Or use `bb!addmanager @ClubRole @User` / `bb!removemanager @ClubRole @User`)*",
+                "*(Or use `bb!addmanager @Club @User` / `bb!removemanager @Club @User`)*",
             )
             await ctx.send(embed=embed)
             return
@@ -1259,10 +1302,30 @@ class BankerPrefixCommands(commands.Cog):
         if not action:
             action = "add"
 
-        # Target role
+        # Target role or club
         target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
-        # Target user
-        target_user = ctx.message.mentions[0] if ctx.message.mentions else None
+        target_user = None
+        club_query = target_role
+
+        if not club_query:
+            if len(ctx.message.mentions) >= 2:
+                # First mention is club (user-named club), second is user to promote/demote
+                club_query = str(ctx.message.mentions[0].id)
+                target_user = ctx.message.mentions[1]
+            elif len(ctx.message.mentions) == 1:
+                target_user = ctx.message.mentions[0]
+                # Look for club identifier among non-mention args
+                for a in list(cur_args):
+                    clean_a = a.strip()
+                    c = await self.db.get_club_by_name(ctx.guild.id, clean_a)
+                    if c:
+                        club_query = clean_a
+                        cur_args.remove(a)
+                        break
+                if not club_query and cur_args:
+                    club_query = cur_args.pop(0)
+        else:
+            target_user = ctx.message.mentions[0] if ctx.message.mentions else None
 
         # Filter out mentions from args to get reason
         filtered_args = []
@@ -1275,8 +1338,8 @@ class BankerPrefixCommands(commands.Cog):
 
         reason = " ".join(filtered_args).strip() or "BeastlyBank Banker Club Operation"
 
-        if not target_role:
-            await ctx.send(embed=error_embed("Missing Club Role", "Please mention the club's Discord role (e.g. `@RealMadrid`)."))
+        if not club_query:
+            await ctx.send(embed=error_embed("Missing Club", "Please specify the club role, name, tag, ID, or mention (e.g. `bb!manager add @RealMadrid @User`)."))
             return
 
         if not target_user:
@@ -1286,7 +1349,7 @@ class BankerPrefixCommands(commands.Cog):
         is_manager = (action == "add")
         success, msg, target_club = await self.db.admin_set_club_manager(
             guild_id=ctx.guild.id,
-            club_query=target_role,
+            club_query=club_query,
             target_user_id=target_user.id,
             is_manager=is_manager,
             admin_id=ctx.author.id,
@@ -1345,7 +1408,7 @@ class BankerPrefixCommands(commands.Cog):
         if not args and not ctx.message.role_mentions:
             embed = error_embed(
                 "Invalid Command Usage",
-                "**Usage:** `bb!owner <add|remove|change> <@club_role> [@user] [reason]`\n"
+                "**Usage:** `bb!owner <add|remove|change> <@club_role|club_name|ID> [@user] [reason]`\n"
                 "**Examples:**\n"
                 "• `bb!owner add @RealMadrid @User Official Appointment`\n"
                 "• `bb!owner change @RealMadrid @NewUser Ownership Transfer`\n"
@@ -1374,10 +1437,35 @@ class BankerPrefixCommands(commands.Cog):
                 cur_args.pop(i)
                 break
 
-        # Target role
+        # Target role or club
         target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
-        # Target user
-        target_user = ctx.message.mentions[0] if ctx.message.mentions else None
+        target_user = None
+        club_query = target_role
+
+        if not club_query:
+            if action == "remove":
+                if ctx.message.mentions:
+                    club_query = str(ctx.message.mentions[0].id)
+                elif cur_args:
+                    club_query = cur_args.pop(0)
+            else:
+                if len(ctx.message.mentions) >= 2:
+                    club_query = str(ctx.message.mentions[0].id)
+                    target_user = ctx.message.mentions[1]
+                elif len(ctx.message.mentions) == 1:
+                    target_user = ctx.message.mentions[0]
+                    # Check if any arg matches a club
+                    for a in list(cur_args):
+                        clean_a = a.strip()
+                        c = await self.db.get_club_by_name(ctx.guild.id, clean_a)
+                        if c:
+                            club_query = clean_a
+                            cur_args.remove(a)
+                            break
+                    if not club_query and cur_args:
+                        club_query = cur_args.pop(0)
+        else:
+            target_user = ctx.message.mentions[0] if ctx.message.mentions else None
 
         # Filter out role and user mentions from args to extract reason
         filtered_args = []
@@ -1393,8 +1481,8 @@ class BankerPrefixCommands(commands.Cog):
         if not action:
             action = "remove" if (not target_user and "remove" in ctx.invoked_with.lower()) else ("change" if target_user else "add")
 
-        if not target_role:
-            await ctx.send(embed=error_embed("Missing Club Role", "Please mention the club's Discord role (e.g. `@RealMadrid`)."))
+        if not club_query:
+            await ctx.send(embed=error_embed("Missing Club", "Please specify the club role, name, tag, ID, or mention (e.g. `bb!owner add @RealMadrid @User`)."))
             return
 
         if action in ("add", "change") and not target_user:
@@ -1404,14 +1492,14 @@ class BankerPrefixCommands(commands.Cog):
         if action == "remove":
             success, msg, target_club = await self.db.admin_remove_club_owner(
                 guild_id=ctx.guild.id,
-                club_query=target_role,
+                club_query=club_query,
                 admin_id=ctx.author.id,
                 reason=reason,
             )
         else:
             success, msg, target_club = await self.db.admin_set_club_owner(
                 guild_id=ctx.guild.id,
-                club_query=target_role,
+                club_query=club_query,
                 new_owner_id=target_user.id,
                 admin_id=ctx.author.id,
                 reason=reason,
@@ -1444,19 +1532,25 @@ class BankerPrefixCommands(commands.Cog):
 
     async def _handle_deleteclub_prefix(self, ctx: commands.Context, args):
         target_role = ctx.message.role_mentions[0] if ctx.message.role_mentions else None
+        club_query = target_role
         cur_args = list(args)
         if target_role:
             cur_args = [a for a in cur_args if not (a.startswith("<@&") and a.endswith(">"))]
+        elif ctx.message.mentions:
+            club_query = str(ctx.message.mentions[0].id)
+            cur_args = [a for a in cur_args if not ((a.startswith("<@!") or a.startswith("<@")) and a.endswith(">"))]
+        elif cur_args:
+            club_query = cur_args.pop(0)
 
         reason = " ".join(cur_args).strip() or "BeastlyBank Banker Club Operation"
 
-        if not target_role:
-            await ctx.send(embed=error_embed("Missing Club Role", "Please mention the club's Discord role to delete (e.g. `bb!deleteclub @ClubRole [reason]`)."))
+        if not club_query:
+            await ctx.send(embed=error_embed("Missing Club", "Please specify the club's role, name, tag, ID, or mention to delete (e.g. `bb!deleteclub @ClubRole [reason]`)."))
             return
 
         success, msg, target_club = await self.db.admin_delete_club(
             guild_id=ctx.guild.id,
-            club_query=target_role,
+            club_query=club_query,
             admin_id=ctx.author.id,
             reason=reason,
         )

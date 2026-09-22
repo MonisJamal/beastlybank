@@ -1302,13 +1302,27 @@ class DatabaseManager:
         if club:
             return club
 
+        # Guard: NEVER auto-create a club from a user mention, user ID, or member object
+        try:
+            import discord
+            if isinstance(query, (discord.User, discord.Member)):
+                return None
+        except ImportError:
+            pass
+
+        clean = str(query).strip() if isinstance(query, (int, str)) else ""
+        import re
+        if isinstance(clean, str) and (clean.startswith("<@!") or (clean.startswith("<@") and not clean.startswith("<@&"))):
+            return None
+        if re.search(r"^<@!?\d+>$", clean):
+            return None
+
         role_id = None
         role_name = None
         if hasattr(query, "id") and hasattr(query, "name"):
             role_id = query.id
             role_name = str(query.name).strip()
         elif isinstance(query, (int, str)):
-            clean = str(query).strip()
             if clean.startswith("<@&") and clean.endswith(">"):
                 raw = clean.strip("<@&>")
                 if raw.isdigit():
@@ -1322,7 +1336,10 @@ class DatabaseManager:
         if not role_name and not role_id:
             return None
 
-        import re
+        # Guard: if role_name looks like a user mention, do not auto-create
+        if role_name and (role_name.startswith("<@") or role_name.startswith("@") or re.search(r"^<@!?\d+>$", role_name)):
+            return None
+
         display_name = role_name or f"Club-{str(role_id)[-4:]}"
         tag_match = re.search(r"\[(.*?)\]", display_name)
         if tag_match:
@@ -1372,15 +1389,25 @@ class DatabaseManager:
             logger.info("Auto-registered club '%s' [%s] for role %s in guild %d", display_name, tag, role_id, guild_id)
             return dict(new_row) if new_row else None
 
+    async def get_all_clubs(self, guild_id: int) -> List[Dict[str, Any]]:
+        """Fetch all clubs registered in a guild, ordered by name ASC."""
+        conn = await self.connect()
+        async with conn.cursor() as cur:
+            await cur.execute("SELECT * FROM clubs WHERE guild_id = ? ORDER BY name ASC;", (guild_id,))
+            rows = await cur.fetchall()
+            return [dict(r) for r in rows]
+
     async def get_club_by_name(self, guild_id: int, query: Any) -> Optional[Dict[str, Any]]:
         """
-        Search club by Discord role object, role mention, role ID, database ID, exact name/tag, or case-insensitive partial match.
+        Search club by Discord role object, role mention, role ID, database ID, exact name/tag,
+        user mention, or case-insensitive partial match.
         """
         if not query:
             return None
 
         role_id = None
         role_name = None
+        import re
 
         if hasattr(query, "id") and hasattr(query, "name"):
             role_id = query.id
@@ -1388,27 +1415,26 @@ class DatabaseManager:
             q = role_name
         else:
             q = str(query).strip()
-            import re
             m = re.search(r"<@&(\d+)>", q)
             if m:
                 role_id = int(m.group(1))
-            elif q.isdigit():
-                role_id = int(q)
 
         conn = await self.connect()
         async with conn.cursor() as cur:
-            # 0. If integer ID, match by database primary key or role_id
-            if isinstance(query, int):
+            # 0. If query is integer or purely numeric string: match by database primary key ID first!
+            if isinstance(query, int) or (isinstance(q, str) and q.isdigit()):
+                num_id = int(query if isinstance(query, int) else q)
                 await cur.execute(
                     "SELECT * FROM clubs WHERE guild_id = ? AND id = ?;",
-                    (guild_id, query),
+                    (guild_id, num_id),
                 )
                 row = await cur.fetchone()
                 if row:
                     return dict(row)
+
                 await cur.execute(
                     "SELECT * FROM clubs WHERE guild_id = ? AND role_id = ?;",
-                    (guild_id, query),
+                    (guild_id, num_id),
                 )
                 row = await cur.fetchone()
                 if row:
@@ -1424,7 +1450,29 @@ class DatabaseManager:
                 if row:
                     return dict(row)
 
-            # 2. Exact match by name or tag (case-insensitive)
+            # 2. Check if user mention was passed (<@123> or <@!123>)
+            user_m = re.search(r"<@!?(\d+)>", q)
+            if user_m:
+                uid = int(user_m.group(1))
+                # Check if a club's name matches the mention string, or user ID
+                await cur.execute(
+                    "SELECT * FROM clubs WHERE guild_id = ? AND (name = ? OR name = ? OR name LIKE ?);",
+                    (guild_id, q, str(uid), f"%{uid}%"),
+                )
+                row = await cur.fetchone()
+                if row:
+                    return dict(row)
+
+                # Check if a club is owned by this user
+                await cur.execute(
+                    "SELECT * FROM clubs WHERE guild_id = ? AND owner_id = ? LIMIT 1;",
+                    (guild_id, uid),
+                )
+                row = await cur.fetchone()
+                if row:
+                    return dict(row)
+
+            # 3. Exact match by name or tag (case-insensitive)
             await cur.execute(
                 """
                 SELECT * FROM clubs
@@ -1441,7 +1489,7 @@ class DatabaseManager:
                     res["role_id"] = role_id
                 return res
 
-            # 3. If query had brackets like "[RDF] Red Dragons", try stripping them
+            # 4. If query had brackets like "[RDF] Red Dragons", try stripping them
             import re
             bracket_match = re.search(r"\[(.*?)\]", q)
             if bracket_match:
@@ -1673,7 +1721,9 @@ class DatabaseManager:
 
         conn = await self.connect()
         async with conn.cursor() as cur:
-            club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=admin_id)
+            club = await self.get_club_by_name(guild_id, club_query)
+            if not club:
+                club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=admin_id)
             if not club:
                 return False, f"Club '{club_query}' not found in BeastlyFC.", {}
 
@@ -1907,9 +1957,11 @@ class DatabaseManager:
         Guarantees that user currency balances, club treasuries, squad players,
         and transaction history remain 100% intact.
         """
-        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=admin_id)
+        club = await self.get_club_by_name(guild_id, club_query)
         if not club:
-            return False, "Club not found. Please provide a valid club role mention, tag, or name.", None
+            club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=admin_id)
+        if not club:
+            return False, "Club not found. Please provide a valid club role mention, tag, ID, or name.", None
 
         club_id = club["id"]
         # Ensure target user account exists in DB (balances untouched)
@@ -2029,9 +2081,11 @@ class DatabaseManager:
         Guarantees that former and new owner's personal balances, club treasuries,
         squad players, and transaction history remain 100% intact.
         """
-        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=0)
+        club = await self.get_club_by_name(guild_id, club_query)
         if not club:
-            return False, "Club not found. Please provide a valid club role mention, tag, or name.", None
+            club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=0)
+        if not club:
+            return False, "Club not found. Please provide a valid club role mention, tag, ID, or name.", None
 
         club_id = club["id"]
         # Ensure target new owner account exists in DB (balances untouched)
@@ -2162,9 +2216,11 @@ class DatabaseManager:
         Staff/Banker command to vacate/remove a club owner with zero data loss.
         Former owner's balances, club treasury, and squad remain 100% preserved.
         """
-        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=0)
+        club = await self.get_club_by_name(guild_id, club_query)
         if not club:
-            return False, "Club not found. Please provide a valid club role mention, tag, or name.", None
+            club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=0)
+        if not club:
+            return False, "Club not found. Please provide a valid club role mention, tag, ID, or name.", None
 
         club_id = club["id"]
         conn = await self.connect()
@@ -2225,9 +2281,11 @@ class DatabaseManager:
         Staff/Banker command to delete/disband a club completely.
         Ensures members' personal balances are untouched, and squad/club records are cleanly cleaned up.
         """
-        club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=0)
+        club = await self.get_club_by_name(guild_id, club_query)
         if not club:
-            return False, "Club not found. Please provide a valid club role mention, tag, or name.", None
+            club = await self.get_or_create_club_from_role(guild_id, club_query, default_owner_id=0)
+        if not club:
+            return False, "Club not found. Please provide a valid club role mention, tag, ID, or name.", None
 
         club_id = club["id"]
         conn = await self.connect()
@@ -5303,15 +5361,21 @@ class DatabaseManager:
         Self-healing routine to cleanly separate Season 1 and Season 2:
         1. Ensures Season 1 (League & UCL) fixtures are separated from Season 2.
         2. Detects any non-S1 fixtures co-mingled in Season 1 and migrates them to Season 2.
-        3. Ensures Season 2 League exists and is marked 'active'.
-        4. Ensures Season 1 League and UCL are marked 'completed' (archived).
+        3. Detects any S1 fixtures co-mingled or duplicated in Season 2 and removes/transfers them.
+        4. Ensures Season 2 League exists and is marked 'active'.
+        5. Ensures Season 1 League and UCL are marked 'completed' (archived).
         """
         from pathlib import Path
         from utils.match_parser import parse_matchsimulator_html
 
         s1_triples = set()
+        s1_name_triples = set()
         s1_uids = set()
-        s1_file = Path("data/beastly_s1_cup.html")
+        base_dir = Path(__file__).resolve().parent.parent
+        s1_file = base_dir / "data" / "beastly_s1_cup.html"
+        if not s1_file.exists():
+            s1_file = Path("data/beastly_s1_cup.html")
+
         if s1_file.exists():
             try:
                 with open(s1_file, "r", encoding="utf-8") as f:
@@ -5319,6 +5383,10 @@ class DatabaseManager:
                 for md, m_list in parsed_s1.get("fixtures_by_matchday", {}).items():
                     for m in m_list:
                         s1_triples.add((int(md), str(m["home_team_id"]), str(m["away_team_id"])))
+                        h_name = str(m.get("home_team_name", "")).strip().lower()
+                        a_name = str(m.get("away_team_name", "")).strip().lower()
+                        if h_name and a_name:
+                            s1_name_triples.add((int(md), h_name, a_name))
                         if m.get("match_uid"):
                             s1_uids.add(m["match_uid"])
             except Exception as e:
@@ -5326,84 +5394,22 @@ class DatabaseManager:
 
         conn = await self.connect()
         async with conn.cursor() as cur:
-            # Check S1 tournaments
-            await cur.execute(
-                "SELECT * FROM tournaments WHERE (guild_id = ? OR guild_id = 0) AND competition_type = 'league' AND (season_number = 1 OR name LIKE '%S1%');",
-                (guild_id,),
-            )
-            s1_tournaments = await cur.fetchall()
-
-            for s1_t in s1_tournaments:
-                s1_id = s1_t["id"]
-                t_gid = s1_t["guild_id"]
-
-                # Check if Season 2 tournament already exists for this guild
+            for gid in {guild_id, 0}:
+                # Fetch S1 league tournament
                 await cur.execute(
-                    "SELECT * FROM tournaments WHERE guild_id = ? AND competition_type = 'league' AND season_number = 2;",
-                    (t_gid,),
+                    "SELECT * FROM tournaments WHERE (guild_id = ? OR (guild_id = 0 AND ? = 0)) AND competition_type = 'league' AND (season_number = 1 OR name LIKE '%S1%') ORDER BY (CASE WHEN guild_id = ? THEN 1 ELSE 2 END) ASC, id ASC LIMIT 1;",
+                    (gid, gid, gid),
+                )
+                s1_t = await cur.fetchone()
+
+                # Fetch S2 league tournament
+                await cur.execute(
+                    "SELECT * FROM tournaments WHERE (guild_id = ? OR (guild_id = 0 AND ? = 0)) AND competition_type = 'league' AND season_number = 2 ORDER BY (CASE WHEN guild_id = ? THEN 1 ELSE 2 END) ASC, id DESC LIMIT 1;",
+                    (gid, gid, gid),
                 )
                 s2_t = await cur.fetchone()
-                s2_id = s2_t["id"] if s2_t else None
 
-                if s1_triples:
-                    # Find all fixtures in s1_id that do not belong to S1
-                    await cur.execute(
-                        "SELECT id, matchday, home_team_id, away_team_id, match_uid FROM tournament_fixtures WHERE tournament_id = ?;",
-                        (s1_id,),
-                    )
-                    all_fixes = await cur.fetchall()
-                    non_s1_fixture_ids = []
-                    for fx in all_fixes:
-                        triple = (int(fx["matchday"]), str(fx["home_team_id"]), str(fx["away_team_id"]))
-                        uid = fx["match_uid"]
-                        if uid and uid in s1_uids:
-                            continue
-                        if triple in s1_triples:
-                            continue
-                        non_s1_fixture_ids.append(fx["id"])
-
-                    if non_s1_fixture_ids:
-                        logger.info("Found %d Season 2 fixtures co-mingled in Tournament ID %d. Migrating to Season 2.", len(non_s1_fixture_ids), s1_id)
-                        if not s2_id:
-                            await cur.execute(
-                                """
-                                INSERT INTO tournaments (
-                                    guild_id, name, season_number, competition_type,
-                                    current_matchday, total_matchdays, status
-                                ) VALUES (?, 'BEASTLY S2 LEAGUE', 2, 'league', 1, 38, 'active');
-                                """,
-                                (t_gid,),
-                            )
-                            s2_id = cur.lastrowid
-
-                        # Move co-mingled fixtures to Season 2 tournament
-                        placeholders = ",".join("?" for _ in non_s1_fixture_ids)
-                        await cur.execute(
-                            f"UPDATE tournament_fixtures SET tournament_id = ? WHERE id IN ({placeholders});",
-                            [s2_id, *non_s1_fixture_ids],
-                        )
-
-                # Ensure Season 1 is cleanly titled and marked completed
-                await cur.execute(
-                    """
-                    UPDATE tournaments
-                    SET name = 'BEASTLY S1 LEAGUE', season_number = 1,
-                        champion = COALESCE(champion, 'Manchester City'),
-                        runner_up = COALESCE(runner_up, 'Arsenal'),
-                        status = 'completed', updated_at = CURRENT_TIMESTAMP
-                    WHERE id = ?;
-                    """,
-                    (s1_id,),
-                )
-
-            # Ensure Season 2 League tournament exists for guild_id and 0
-            for gid in {guild_id, 0}:
-                await cur.execute(
-                    "SELECT * FROM tournaments WHERE guild_id = ? AND competition_type = 'league' AND season_number = 2;",
-                    (gid,),
-                )
-                row_s2 = await cur.fetchone()
-                if not row_s2:
+                if not s2_t:
                     await cur.execute(
                         """
                         INSERT INTO tournaments (
@@ -5413,18 +5419,109 @@ class DatabaseManager:
                         """,
                         (gid,),
                     )
-                    row_s2_id = cur.lastrowid
+                    s2_id = cur.lastrowid
                 else:
-                    row_s2_id = row_s2["id"]
+                    s2_id = s2_t["id"]
                     await cur.execute(
                         "UPDATE tournaments SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ?;",
-                        (row_s2_id,),
+                        (s2_id,),
+                    )
+
+                s1_id = s1_t["id"] if s1_t else None
+
+                if s1_triples or s1_name_triples or s1_uids:
+                    # 1. Clean S2 tournament: remove or transfer S1 fixtures inside S2
+                    await cur.execute(
+                        "SELECT id, matchday, home_team_id, away_team_id, home_team_name, away_team_name, match_uid FROM tournament_fixtures WHERE tournament_id = ?;",
+                        (s2_id,),
+                    )
+                    s2_fixtures = await cur.fetchall()
+                    for fx in s2_fixtures:
+                        triple = (int(fx["matchday"]), str(fx["home_team_id"]), str(fx["away_team_id"]))
+                        h_n = str(fx["home_team_name"] or "").strip().lower()
+                        a_n = str(fx["away_team_name"] or "").strip().lower()
+                        name_triple = (int(fx["matchday"]), h_n, a_n)
+                        uid = fx["match_uid"]
+                        is_s1 = (uid and uid in s1_uids) or (triple in s1_triples) or (name_triple in s1_name_triples)
+                        if is_s1:
+                            if s1_id:
+                                await cur.execute(
+                                    """
+                                    SELECT id FROM tournament_fixtures
+                                    WHERE tournament_id = ? AND matchday = ? AND (
+                                        (home_team_id = ? AND away_team_id = ?)
+                                        OR (LOWER(home_team_name) = ? AND LOWER(away_team_name) = ?)
+                                        OR (match_uid IS NOT NULL AND match_uid = ?)
+                                    );
+                                    """,
+                                    (s1_id, fx["matchday"], fx["home_team_id"], fx["away_team_id"], h_n, a_n, uid or "__none__"),
+                                )
+                                existing_in_s1 = await cur.fetchone()
+                                if existing_in_s1:
+                                    await cur.execute(
+                                        "UPDATE matchday_bets SET tournament_id = ?, fixture_id = ? WHERE fixture_id = ?;",
+                                        (s1_id, existing_in_s1["id"], fx["id"]),
+                                    )
+                                    await cur.execute("DELETE FROM tournament_fixtures WHERE id = ?;", (fx["id"],))
+                                else:
+                                    await cur.execute("UPDATE tournament_fixtures SET tournament_id = ? WHERE id = ?;", (s1_id, fx["id"]))
+                            else:
+                                await cur.execute("DELETE FROM tournament_fixtures WHERE id = ?;", (fx["id"],))
+
+                    # 2. Clean S1 tournament: transfer any non-S1 fixtures to S2
+                    if s1_id:
+                        await cur.execute(
+                            "SELECT id, matchday, home_team_id, away_team_id, home_team_name, away_team_name, match_uid FROM tournament_fixtures WHERE tournament_id = ?;",
+                            (s1_id,),
+                        )
+                        s1_fixtures = await cur.fetchall()
+                        for fx in s1_fixtures:
+                            triple = (int(fx["matchday"]), str(fx["home_team_id"]), str(fx["away_team_id"]))
+                            h_n = str(fx["home_team_name"] or "").strip().lower()
+                            a_n = str(fx["away_team_name"] or "").strip().lower()
+                            name_triple = (int(fx["matchday"]), h_n, a_n)
+                            uid = fx["match_uid"]
+                            is_s1 = (uid and uid in s1_uids) or (triple in s1_triples) or (name_triple in s1_name_triples)
+                            if not is_s1:
+                                await cur.execute(
+                                    """
+                                    SELECT id FROM tournament_fixtures
+                                    WHERE tournament_id = ? AND matchday = ? AND (
+                                        (home_team_id = ? AND away_team_id = ?)
+                                        OR (LOWER(home_team_name) = ? AND LOWER(away_team_name) = ?)
+                                        OR (match_uid IS NOT NULL AND match_uid = ?)
+                                    );
+                                    """,
+                                    (s2_id, fx["matchday"], fx["home_team_id"], fx["away_team_id"], h_n, a_n, uid or "__none__"),
+                                )
+                                existing_in_s2 = await cur.fetchone()
+                                if existing_in_s2:
+                                    await cur.execute(
+                                        "UPDATE matchday_bets SET tournament_id = ?, fixture_id = ? WHERE fixture_id = ?;",
+                                        (s2_id, existing_in_s2["id"], fx["id"]),
+                                    )
+                                    await cur.execute("DELETE FROM tournament_fixtures WHERE id = ?;", (fx["id"],))
+                                else:
+                                    await cur.execute("UPDATE tournament_fixtures SET tournament_id = ? WHERE id = ?;", (s2_id, fx["id"]))
+
+                # Ensure Season 1 is cleanly titled and marked completed
+                if s1_id:
+                    await cur.execute(
+                        """
+                        UPDATE tournaments
+                        SET name = 'BEASTLY S1 LEAGUE', season_number = 1,
+                            champion = COALESCE(champion, 'Manchester City'),
+                            runner_up = COALESCE(runner_up, 'Arsenal'),
+                            status = 'completed', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?;
+                        """,
+                        (s1_id,),
                     )
 
                 # Calculate accurate current_matchday for Season 2 based on unfinished fixtures
                 await cur.execute(
                     "SELECT MIN(matchday) FROM tournament_fixtures WHERE tournament_id = ? AND is_finished = 0;",
-                    (row_s2_id,),
+                    (s2_id,),
                 )
                 next_md_row = await cur.fetchone()
                 cur_md = next_md_row[0] if (next_md_row and next_md_row[0] is not None) else 1
@@ -5435,7 +5532,7 @@ class DatabaseManager:
                         total_matchdays = COALESCE((SELECT MAX(matchday) FROM tournament_fixtures WHERE tournament_id = ?), 38)
                     WHERE id = ?;
                     """,
-                    (cur_md, row_s2_id, row_s2_id),
+                    (cur_md, s2_id, s2_id),
                 )
 
             # Ensure Season 1 UCL tournaments are also marked completed
